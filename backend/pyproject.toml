@@ -38,6 +38,7 @@ dev = [
 [tool.pytest.ini_options]
 markers = [
     "no_auto_user: disable the conftest autouse contextvar fixture for this test",
+    "live: test that requires a real LLM connection (API key needed, skipped by default)",
 ]
 
 [tool.uv]

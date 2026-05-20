@@ -202,3 +202,90 @@ def _make_state(**overrides) -> CollaborationState:
     }
     base.update(overrides)
     return base  # type: ignore[return-value]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P0: Lead Agent 路由到协作图
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLeadAgentCollaborationRouting:
+    """验证 make_lead_agent() 在 collaboration.enabled 时路由到协作图。"""
+
+    def test_routes_to_collaboration_when_enabled(self, monkeypatch):
+        """collaboration.enabled=true → 返回协作图而非 ReAct agent。"""
+        import deerflow.agents.lead_agent.agent as agent_module
+
+        mock_config = _mock_app_config(collaboration_enabled=True)
+        monkeypatch.setattr(agent_module, "get_app_config", lambda: mock_config)
+        monkeypatch.setattr(agent_module, "_get_runtime_config", lambda c: {})
+
+        graph = agent_module.make_lead_agent({})
+        nodes = graph.get_graph().nodes
+        assert "research_subgraph" in nodes
+        assert "analysis_subgraph" in nodes
+        assert "hitl_gate" in nodes
+
+    def test_routes_to_react_when_disabled(self, monkeypatch):
+        """collaboration.enabled=false → 调用 _make_lead_agent 返回标准 ReAct agent。"""
+        import deerflow.agents.lead_agent.agent as agent_module
+
+        mock_config = _mock_app_config(collaboration_enabled=False)
+        monkeypatch.setattr(agent_module, "get_app_config", lambda: mock_config)
+        monkeypatch.setattr(agent_module, "_get_runtime_config", lambda c: {})
+
+        called_with = {}
+
+        def fake_make_lead_agent(config, *, app_config):
+            called_with["called"] = True
+            from langgraph.graph import StateGraph
+
+            builder = StateGraph(dict)
+            builder.add_node("test", lambda s: {})
+            builder.set_entry_point("test")
+            builder.set_finish_point("test")
+            return builder.compile()
+
+        monkeypatch.setattr(agent_module, "_make_lead_agent", fake_make_lead_agent)
+
+        graph = agent_module.make_lead_agent({})
+        assert called_with["called"]
+
+    def test_routes_to_react_when_collaboration_field_missing(self, monkeypatch):
+        """collaboration 配置段缺失 → 调用 _make_lead_agent（向后兼容）。"""
+        import deerflow.agents.lead_agent.agent as agent_module
+
+        mock_config = _mock_app_config(collaboration_enabled=None)
+        monkeypatch.setattr(agent_module, "get_app_config", lambda: mock_config)
+        monkeypatch.setattr(agent_module, "_get_runtime_config", lambda c: {})
+
+        called_with = {}
+
+        def fake_make_lead_agent(config, *, app_config):
+            called_with["called"] = True
+            from langgraph.graph import StateGraph
+
+            builder = StateGraph(dict)
+            builder.add_node("test", lambda s: {})
+            builder.set_entry_point("test")
+            builder.set_finish_point("test")
+            return builder.compile()
+
+        monkeypatch.setattr(agent_module, "_make_lead_agent", fake_make_lead_agent)
+
+        graph = agent_module.make_lead_agent({})
+        assert called_with["called"]
+
+
+def _mock_app_config(collaboration_enabled: bool | None):
+    """Create a minimal mock AppConfig for routing tests."""
+    from unittest.mock import MagicMock
+
+    config = MagicMock()
+    if collaboration_enabled is not None:
+        collab = MagicMock()
+        collab.enabled = collaboration_enabled
+        config.collaboration = collab
+    else:
+        config.collaboration = None
+    return config

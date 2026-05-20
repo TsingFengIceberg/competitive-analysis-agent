@@ -347,10 +347,25 @@ def _load_enabled_skills_for_tool_policy(available_skills: set[str] | None, *, a
 
 
 def make_lead_agent(config: RunnableConfig):
-    """LangGraph graph factory; keep the signature compatible with LangGraph Server."""
+    """LangGraph graph factory; keep the signature compatible with LangGraph Server.
+
+    When collaboration.enabled is true in config.yaml, routes to the collaboration
+    graph (Research→Analysis→HITL→Report) instead of the standard ReAct agent.
+    """
     runtime_config = _get_runtime_config(config)
     runtime_app_config = runtime_config.get("app_config")
-    return _make_lead_agent(config, app_config=runtime_app_config or get_app_config())
+    app_config = runtime_app_config or get_app_config()
+
+    # P0: Route to collaboration graph when collaboration is enabled.
+    # The checkpointer is attached later by the DeerFlow Worker (agent.checkpointer = ...),
+    # so we don't need to pass it here.
+    if app_config.collaboration and app_config.collaboration.enabled:
+        logger.info("Collaboration mode enabled — routing to collaboration graph")
+        from deerflow.collaboration.graph import make_collaboration_agent
+
+        return make_collaboration_agent(config)
+
+    return _make_lead_agent(config, app_config=app_config)
 
 
 def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
