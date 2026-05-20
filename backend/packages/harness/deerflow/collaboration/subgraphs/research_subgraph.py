@@ -37,6 +37,7 @@ from deerflow.collaboration.router import route_after_critic, route_after_pi_rev
 from deerflow.collaboration.state import ResearchSubGraphState
 
 if TYPE_CHECKING:
+    from langgraph.checkpoint.base import Checkpointer
     from langgraph.graph import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,13 @@ logger = logging.getLogger(__name__)
 # ── SubGraph 构建 ────────────────────────────────────────────────────────────
 
 
-def build_research_subgraph() -> CompiledStateGraph:
+def build_research_subgraph(checkpointer: "Checkpointer | None" = None) -> CompiledStateGraph:
     """构建 Research SubGraph（独立编译）。
 
     返回编译后的子图，由 Parent Graph 通过 add_node(subgraph, state_in=fn, state_out=fn) 挂载。
 
     LangGraph 要求子图必须先 .compile() 才能挂载到父图。
+    Nested SubGraph 不会继承父图的 Checkpointer，必须显式传入以持久化子图内部状态。
     """
     builder = StateGraph(ResearchSubGraphState)
 
@@ -79,4 +81,4 @@ def build_research_subgraph() -> CompiledStateGraph:
     })
     builder.add_edge("error_handler", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

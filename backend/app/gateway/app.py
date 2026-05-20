@@ -16,6 +16,7 @@ from app.gateway.routers import (
     assistants_compat,
     auth,
     channels,
+    collaboration,
     feedback,
     mcp,
     memory,
@@ -368,6 +369,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Stateless Runs API (stream/wait without a pre-existing thread)
     app.include_router(runs.router)
+
+    # Collaboration HITL Resume API (interrupt status + resume endpoints)
+    app.include_router(collaboration.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:

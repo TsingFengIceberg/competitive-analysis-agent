@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from langgraph.types import Command, Send
 
+from deerflow.collaboration.context import current_role
 from deerflow.collaboration.protocols.debate import MAX_DEBATE_ROUNDS, DebateState, create_debate_state
 from deerflow.collaboration.protocols.messages import Challenge, Rebuttal, Ruling, Severity
 from deerflow.collaboration.prompts import (
@@ -127,7 +128,8 @@ def pi_agent_node(state: ResearchSubGraphState) -> dict:
             "Output your plan as a JSON object with keys: 'topic', 'sub_tasks' (list of {id, query, "
             "target_sources, method}), 'num_scouts' (int, 2-4).",
         )
-        result = executor.execute(task)
+        with current_role("pi_agent"):
+            result = executor.execute(task)
         plan = _extract_json(result) or {"raw_output": result}
     except Exception as e:
         logger.exception("pi_agent_node failed")
@@ -212,7 +214,8 @@ def data_scout_node(state: ResearchSubGraphState) -> dict:
             )
             task = _build_task_description(state, "Data Scout (Rebuttal Mode)", instruction)
             executor = SubagentExecutor(config, tools)
-            result = executor.execute(task)
+            with current_role("data_scout"):
+                result = executor.execute(task)
             rebuttal_data = _extract_json(result) or {"raw_output": result}
 
             return {
@@ -240,7 +243,8 @@ def data_scout_node(state: ResearchSubGraphState) -> dict:
                 )
             task = _build_task_description(state, "Data Scout (Collection Mode)", instruction)
             executor = SubagentExecutor(config, tools)
-            result = executor.execute(task)
+            with current_role("data_scout"):
+                result = executor.execute(task)
             scout_data = _extract_json(result) or {"raw_output": result}
 
             return {"scout_results": [scout_data]}
@@ -303,7 +307,8 @@ def critic_agent_node(state: ResearchSubGraphState) -> dict:
             )
         task = _build_task_description(state, "Critic Agent", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("critic_agent"):
+            result = executor.execute(task)
 
         challenges_data = _extract_json(result)
         if isinstance(challenges_data, list):
@@ -374,7 +379,8 @@ def meta_judge_node(state: ResearchSubGraphState) -> dict:
         )
         task = _build_task_description(state, "Meta-Judge", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("meta_judge"):
+            result = executor.execute(task)
 
         ruling_data = _extract_json(result) or {}
         ruling = Ruling(
@@ -449,7 +455,8 @@ def pi_review_node(state: ResearchSubGraphState) -> dict:
         )
         task = _build_task_description(state, "PI Review", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("pi_review"):
+            result = executor.execute(task)
 
         review_data = _extract_json(result) or {}
         validated_brief = review_data.get("validated_brief") or review_data

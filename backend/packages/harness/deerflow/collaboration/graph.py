@@ -93,8 +93,8 @@ def build_collaboration_graph(checkpointer: "Checkpointer | None" = None) -> Com
     # ── SubGraph 挂载 ──
     # 关键：build_*_subgraph() 返回的是 CompiledStateGraph，
     # 可以直接传给 add_node() 作为嵌套子图。
-    research_subgraph = build_research_subgraph()
-    analysis_subgraph = build_analysis_subgraph()
+    research_subgraph = build_research_subgraph(checkpointer=checkpointer)
+    analysis_subgraph = build_analysis_subgraph(checkpointer=checkpointer)
 
     builder.add_node(
         "research_subgraph",

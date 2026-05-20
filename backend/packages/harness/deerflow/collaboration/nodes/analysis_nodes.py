@@ -11,6 +11,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from deerflow.collaboration.context import current_role
 from deerflow.collaboration.prompts import (
     ANALYST_LEAD_PROMPT,
     INTERNAL_REVIEWER_PROMPT,
@@ -118,7 +119,8 @@ def analyst_lead_node(state: AnalysisSubGraphState) -> dict:
         )
         task = _build_analysis_task(state, "Analyst Lead", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("analyst_lead"):
+            result = executor.execute(task)
         plan = _extract_json(result) or {"raw_output": result}
     except Exception as e:
         logger.exception("analyst_lead_node failed")
@@ -163,7 +165,8 @@ def synthesizer_node(state: AnalysisSubGraphState) -> dict:
         )
         task = _build_analysis_task(state, "Synthesizer", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("synthesizer"):
+            result = executor.execute(task)
 
         synthesis_data = _extract_json(result) or {}
         dimension_result = {
@@ -217,7 +220,8 @@ def internal_reviewer_node(state: AnalysisSubGraphState) -> dict:
         )
         task = _build_analysis_task(state, "Internal Reviewer", instruction)
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("internal_reviewer"):
+            result = executor.execute(task)
 
         review_data = _extract_json(result) or {}
         passed = review_data.get("passed", True)
@@ -268,7 +272,8 @@ def report_composer_node(state: CollaborationState) -> dict:
             f"## Synthesis Report\n{json.dumps(state.get('synthesis_report', {}), ensure_ascii=False, indent=2)}"
         )
         executor = SubagentExecutor(config, tools)
-        result = executor.execute(task)
+        with current_role("report_composer"):
+            result = executor.execute(task)
     except Exception as e:
         logger.exception("report_composer_node failed")
         return {"collaboration_error": f"Report Composer: {e}"}

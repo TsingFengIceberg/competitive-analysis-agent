@@ -27,6 +27,7 @@ from deerflow.collaboration.router import route_after_reviewer
 from deerflow.collaboration.state import AnalysisSubGraphState
 
 if TYPE_CHECKING:
+    from langgraph.checkpoint.base import Checkpointer
     from langgraph.graph import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,11 @@ logger = logging.getLogger(__name__)
 # ── SubGraph 构建 ────────────────────────────────────────────────────────────
 
 
-def build_analysis_subgraph() -> CompiledStateGraph:
+def build_analysis_subgraph(checkpointer: "Checkpointer | None" = None) -> CompiledStateGraph:
     """构建 Analysis SubGraph（独立编译）。
 
     返回编译后的子图，由 Parent Graph 挂载。
+    Nested SubGraph 不会继承父图的 Checkpointer，必须显式传入以持久化子图内部状态。
     """
     builder = StateGraph(AnalysisSubGraphState)
 
@@ -56,7 +58,7 @@ def build_analysis_subgraph() -> CompiledStateGraph:
     })
     builder.add_edge("error_handler", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 def error_handler_node(state: AnalysisSubGraphState) -> dict:
