@@ -23,7 +23,7 @@ Parent Graph 职责：
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.constants import END
@@ -31,6 +31,11 @@ from langgraph.graph import StateGraph
 
 from deerflow.collaboration.nodes.analysis_nodes import report_composer_node
 from deerflow.collaboration.nodes.hitl_gate import hitl_gate_node
+from deerflow.collaboration.router import (
+    route_after_analysis,
+    route_after_hitl,
+    route_after_research,
+)
 from deerflow.collaboration.state import CollaborationState
 from deerflow.collaboration.subgraphs.analysis_subgraph import build_analysis_subgraph
 from deerflow.collaboration.subgraphs.research_subgraph import build_research_subgraph
@@ -60,46 +65,6 @@ def error_handler_node(state: CollaborationState) -> dict:
     error_msg = state.get("collaboration_error", "Unknown error")
     logger.error("Collaboration error handler triggered: %s", error_msg)
     return {}  # 错误已记录，终止图运行
-
-
-# ── 条件路由 ─────────────────────────────────────────────────────────────────
-
-
-def route_after_research(state: CollaborationState) -> Literal["analysis_subgraph", "error_handler"]:
-    """Research 完成后的路径选择。
-
-    如果 Research SubGraph 异常（collaboration_error 不为空），
-    跳到错误处理而非继续 Analysis。
-    """
-    if state.get("collaboration_error"):
-        logger.warning("Research SubGraph error, routing to error_handler")
-        return "error_handler"
-    return "analysis_subgraph"
-
-
-def route_after_analysis(state: CollaborationState) -> Literal["hitl_gate", "error_handler"]:
-    """Analysis 完成后的路径选择。"""
-    if state.get("collaboration_error"):
-        logger.warning("Analysis SubGraph error, routing to error_handler")
-        return "error_handler"
-    return "hitl_gate"
-
-
-def route_after_hitl(state: CollaborationState) -> Literal["report_composer", "research_subgraph", "analysis_subgraph", "__end__"]:
-    """HITL 审批后的路径选择。
-
-    - approve → Report Composer
-    - modify → Analysis SubGraph（重新合成）
-    - replan → Research SubGraph（重新规划）
-    """
-    decision = state.get("review_decision")
-    if decision == "approve":
-        return "report_composer"
-    elif decision == "modify":
-        return "analysis_subgraph"
-    elif decision == "replan":
-        return "research_subgraph"
-    return "__end__"
 
 
 # ── Parent Graph 构建 ────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from langgraph.constants import END
 from langgraph.graph import StateGraph
@@ -23,27 +23,13 @@ from deerflow.collaboration.nodes.analysis_nodes import (
     internal_reviewer_node,
     synthesizer_node,
 )
+from deerflow.collaboration.router import route_after_reviewer
 from deerflow.collaboration.state import AnalysisSubGraphState
 
 if TYPE_CHECKING:
     from langgraph.graph import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
-
-
-# ── 条件路由 ─────────────────────────────────────────────────────────────────
-
-
-def route_after_reviewer(state: AnalysisSubGraphState) -> Literal["__end__", "error_handler"]:
-    """Internal Reviewer 后的路径选择。
-
-    审查未通过或发生异常时跳到错误处理。
-    """
-    if state.get("error"):
-        return "error_handler"
-    if state.get("internal_review_passed") is False:
-        return "error_handler"
-    return "__end__"
 
 
 # ── SubGraph 构建 ────────────────────────────────────────────────────────────

@@ -167,21 +167,21 @@ class TestAnalysisSubGraphIntegration:
 
     def test_route_after_reviewer_passed(self):
         """审查通过 → END。"""
-        from deerflow.collaboration.subgraphs.analysis_subgraph import route_after_reviewer
+        from deerflow.collaboration.router import route_after_reviewer
 
         state = _make_analysis_state(internal_review_passed=True)
         assert route_after_reviewer(state) == "__end__"
 
     def test_route_after_reviewer_failed(self):
         """审查未通过 → error_handler。"""
-        from deerflow.collaboration.subgraphs.analysis_subgraph import route_after_reviewer
+        from deerflow.collaboration.router import route_after_reviewer
 
         state = _make_analysis_state(internal_review_passed=False)
         assert route_after_reviewer(state) == "error_handler"
 
     def test_route_after_reviewer_error(self):
         """节点异常 → error_handler。"""
-        from deerflow.collaboration.subgraphs.analysis_subgraph import route_after_reviewer
+        from deerflow.collaboration.router import route_after_reviewer
 
         state = _make_analysis_state(error="something wrong")
         assert route_after_reviewer(state) == "error_handler"

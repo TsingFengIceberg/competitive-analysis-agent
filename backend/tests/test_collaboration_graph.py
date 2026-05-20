@@ -13,6 +13,8 @@ import pytest
 
 from deerflow.collaboration.graph import (
     build_collaboration_graph,
+)
+from deerflow.collaboration.router import (
     route_after_analysis,
     route_after_hitl,
     route_after_research,

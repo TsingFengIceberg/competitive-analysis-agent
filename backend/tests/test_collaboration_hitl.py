@@ -259,25 +259,25 @@ class TestHitlGateNode:
 
 class TestHitlRouting:
     def test_approve_routes_to_report_composer(self):
-        from deerflow.collaboration.graph import route_after_hitl
+        from deerflow.collaboration.router import route_after_hitl
 
         state = _make_state(review_decision="approve")
         assert route_after_hitl(state) == "report_composer"
 
     def test_modify_routes_to_analysis_subgraph(self):
-        from deerflow.collaboration.graph import route_after_hitl
+        from deerflow.collaboration.router import route_after_hitl
 
         state = _make_state(review_decision="modify")
         assert route_after_hitl(state) == "analysis_subgraph"
 
     def test_replan_routes_to_research_subgraph(self):
-        from deerflow.collaboration.graph import route_after_hitl
+        from deerflow.collaboration.router import route_after_hitl
 
         state = _make_state(review_decision="replan")
         assert route_after_hitl(state) == "research_subgraph"
 
     def test_missing_decision_routes_to_end(self):
-        from deerflow.collaboration.graph import route_after_hitl
+        from deerflow.collaboration.router import route_after_hitl
 
         state = _make_state()
         from langgraph.constants import END

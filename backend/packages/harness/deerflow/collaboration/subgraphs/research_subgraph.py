@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from langgraph.constants import END
 from langgraph.graph import StateGraph
@@ -33,44 +33,13 @@ from deerflow.collaboration.nodes.research_nodes import (
     pi_dispatch_node,
     pi_review_node,
 )
+from deerflow.collaboration.router import route_after_critic, route_after_pi_review
 from deerflow.collaboration.state import ResearchSubGraphState
 
 if TYPE_CHECKING:
     from langgraph.graph import CompiledStateGraph
 
 logger = logging.getLogger(__name__)
-
-
-# ── 条件路由 ─────────────────────────────────────────────────────────────────
-
-
-def route_after_critic(state: ResearchSubGraphState) -> Literal["data_scout", "meta_judge"]:
-    """Critic 之后的路径选择。
-
-    只检查本轮新产生的 pending challenges（未被 rebuttals 覆盖的），
-    避免因 add reducer 累加导致旧 challenges 反复触发循环。
-    """
-    debate_round = state.get("debate_round", 0) or 0
-    challenges = state.get("challenges", [])
-    rebuttals = state.get("rebuttals", [])
-
-    if not challenges:
-        return "meta_judge"
-
-    # 只有未被 rebuttal 覆盖的 challenge 才需要补采
-    rebutted_ids = {r.get("challenge_id") for r in rebuttals if isinstance(r, dict)}
-    pending = [c for c in challenges if isinstance(c, dict) and c.get("challenge_id") not in rebutted_ids]
-
-    if pending and debate_round < 2:
-        return "data_scout"
-    return "meta_judge"
-
-
-def route_after_pi_review(state: ResearchSubGraphState) -> Literal["__end__", "error_handler"]:
-    """PI 审核后的路径选择。"""
-    if state.get("error"):
-        return "error_handler"
-    return "__end__"
 
 
 # ── SubGraph 构建 ────────────────────────────────────────────────────────────
