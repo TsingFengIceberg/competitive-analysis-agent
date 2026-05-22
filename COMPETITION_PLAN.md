@@ -40,24 +40,24 @@
 
 | # | 竞赛要求（原文关键词） | 来源 | 实现章节 | 实现方式 |
 |---|---------------------|------|---------|---------|
-| R1 | 角色 Agent：采集/分析/撰写/质检，职责边界明确 | 开题 §2 | [§3.3](#33-4-个-agent-角色定义) | 4 Agent 角色定义 + 职责表 |
-| R2 | 采集 Agent 含问卷设计/问卷调研/用户访谈 | 开题 §2 | [§4.4](#44-用户声音聚合器-voice-of-customer-aggregator) + [§3.3](#33-4-个-agent-角色定义) | VoC Aggregator（主）+ 问卷生成（辅）双轨 |
-| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.6](#36-竞品知识-schemapydantic-强制校验) | 3 个 Pydantic BaseModel + 校验链 |
-| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.9](#39-agent-间结构化通信协议) | CollectedDataPoint / ReviewGap JSON Schema |
-| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.4](#34-dag-工作流) + [§3.8](#38-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮 |
-| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.8.1](#381-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
-| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.5](#35-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
-| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.6.1](#361-schema-强制校验链竞赛要求) | model_validate() + 自动重试 + 降级 |
+| R1 | 角色 Agent：采集/分析/撰写/质检，职责边界明确 | 开题 §2 | [§3.3 角色定义](#33-4-个-agent-角色定义) + [§3.4 Collector采集规范](#34-collector-采集规范-竞赛要求-r1-r2) | 4 Agent 角色定义 + Collector 6 项采集规则 |
+| R2 | 采集 Agent 含问卷设计/问卷调研/用户访谈 | 开题 §2 | [§4.4 VoC Aggregator](#44-用户声音聚合器-voice-of-customer-aggregator-竞赛要求-r2) + [§3.3 Collector双轨](#33-4-个-agent-角色定义) | VoC Aggregator（主）+ 问卷生成（辅）双轨 |
+| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.8 竞品知识 Schema](#38-竞品知识-schemapydantic-强制校验) + [§3.9 Schema强制校验链](#39-schema-强制校验链竞赛要求-r3-r8) | 3 个 Pydantic BaseModel + model_validate() 强制校验 |
+| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.11 结构化通信协议](#311-agent-间结构化通信协议-竞赛要求-r4) | CollectedDataPoint / ReviewGap JSON Schema |
+| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.5 Reviewer审阅清单](#35-reviewer-审阅清单与判定规则-竞赛要求-r5) + [§3.6 DAG工作流](#36-dag-工作流) + [§3.10 路由逻辑](#310-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮，8 种 gap 判定规则 |
+| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.10.1 改善追踪](#3101-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
+| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.7 CompetitionState](#37-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
+| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.9 Schema强制校验链](#39-schema-强制校验链竞赛要求-r3-r8) | model_validate() + 自动重试 + 降级 |
 | R9 | DAG 任务流转可视化、可追溯 | 判标 §4 | [§7.2](#72-dag-执行图核心展示位) | ReactFlow 节点高亮 + 边动画 |
 | R10 | 可观测性：Prompt/输入/输出/决策过程/Token 可查 | 开题 §2 + 判标 §4 | [§7.1-7.7](#七答辩呈现设计--内部工作流可视化) | 双面板 + Agent 详情 + 消息流日志 |
-| R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.4](#34-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
-| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.10](#310-工程质量保障机制竞赛要求) | 自一致性校验 + 引用强制 + 超长分片 |
-| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.10](#310-工程质量保障机制竞赛要求) | per-Agent 超时 + 指数退避 + 降级 |
+| R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.6 DAG工作流](#36-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
+| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.12.1 幻觉抑制](#3121-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
+| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.12.5 超时重试](#3125-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
 | R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) | 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
-| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.10.4](#3104-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
+| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.12.4 业务指标](#3124-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
 | R16 | 交互设计流畅：报告查看、溯源跳转、人工介入修正 | 判标 §4 | [§5.7](#57-人对报告的细粒度交互式编辑p0--答辩核心交互) + [§7.5](#75-溯源链视图traceability-viewer) | 飞书文档交互 + 溯源链视图 |
-| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.10.2](#3102-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
-| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.10.3](#3103-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
+| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.12.2 采集合规](#3122-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
+| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.12.3 数据脱敏](#3123-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
 | R19 | TRAE 等 AI 编程工具使用痕迹清晰 | 判标 §4 | [§8](#八3-周开发计划含答辩呈现) | Git 提交记录 + TRAE IDE 工作流 |
 | R20 | 项目文档齐全：README/架构图/角色协议/部署说明 | 判标 §4 | [§10](#十参考信息) + README + PA-AGENT-DOCS/ | 文档体系 |
 | R21 | 前段展示页面，可现场演示 | 开题 + 会议纪要 | [§7](#七答辩呈现设计--内部工作流可视化) + [§8 Week 2](#week-2-527--63-前端--可观测--飞书集成) | Gradio/Next.js + DAG 可视化 |
@@ -143,8 +143,9 @@
 │  Collector ──→ Analyst ──→ Reviewer ──→ Writer ──→ HITL   │
 │      ↑             ↑           │            │         │    │
 │      │             │           │ ❌          │    approve │
-│      └─────────────┴── gap ────┘            │    modify  │
-│           (结构化 JSON, 最多 2 轮)            │    replan  │
+│      └─────────────┴── gap ────┘            │   replan   │
+│           (结构化 JSON, 最多 2 轮)           │ reanalyze  │
+│                                              │  rewrite   │
 │                                              │         │    │
 │                                         普通报告输出       │
 │                                         (前端展示)         │
@@ -238,15 +239,253 @@
 
 **访谈支持**：Collector 可生成结构化访谈提纲 + 接收用户粘贴的访谈记录/上传的音频转录文本 → 自动提取关键观点 → 结构化为 `CollectedDataPoint` → 纳入 State。
 
-### 3.4 DAG 工作流
+### 3.4 Collector 采集规范 `**[竞赛要求 R1, R2]**`
+
+> 采集是整个系统的感官，Collector 不是"无脑搜"，而是按以下固定规则执行——搜什么、怎么搜、何时停、去重逻辑。
+
+#### 3.4.1 有效数据点最低门槛
+
+**字段完整性（结构门槛，必须全部满足才能进入 State）：**
+
+| 字段 | 要求 | 缺失时行为 |
+|------|------|-----------|
+| `id` | 非空，格式 `dp-{timestamp}-{seq}` | 系统自动生成，不会缺失 |
+| `product` | 非空，必须匹配 target_products 之一 | LLM 未填 → 重试 1 次；仍缺失 → 丢弃，记日志 |
+| `category` | 必须属于 features / pricing / users / market | 其他值 → LLM 重分类 1 次；无法分类 → 归入 market |
+| `label` | 非空，一句话描述（如 "Cursor Pro 月费价格"） | 缺失 → 重试 1 次；仍缺失 → 丢弃 |
+| `value` | str 或 float，非 None | 缺失 → 重试 1 次；仍缺失 → 丢弃 |
+| `source_url` | 非空，必须是有效 URL 格式 | 缺失 → **拒绝入库**（引用强制 §3.11.1） |
+| `source_type` | 必须属于 official / review / news / interview / social | 缺失 → LLM 推断 1 次；推断不出 → 标记 "unknown" |
+| `collected_at` | ISO 8601 格式 | 缺失 → 系统自动填当前时间 |
+
+**内容可信度信号（不阻止入库，影响后续 Reviewer 判定）：**
+
+| 信号 | 阈值 | 处理 |
+|------|------|------|
+| `confidence` | LLM 自评或 API 返回 | < 0.5 → 标记 `low_confidence=True`，Reviewer G8 触发复核 |
+| source_url 可达性 | 暂不校验（留给 Reviewer G1） | Collector 不做 HEAD 请求，避免拖慢采集 |
+| value 内容长度 | < 3 字符 | 标记 "⚠ 可能截断" |
+
+> **关键决策**：Collector 只管"有没有来源 URL"，不管"来源对不对"——后者是 Reviewer 的职责。分割依据：判标 §4 35% 要求"引用强制"（Collector 负责），"自一致性校验"（Reviewer 负责）。
+
+#### 3.4.2 去重规则
+
+**两条数据点判定重复的标准**：
+
+```
+product 相同 + category 相同 + label 语义等价（LLM 判定指向同一事实）
+```
+
+语义等价示例：
+- ✅ 重复 → "Cursor Pro 月费" ≈ "Cursor Pro 订阅价格（月度）"
+- ❌ 不重复 → "Cursor Pro 月费" ≠ "Cursor 团队版年费"
+
+**合并 vs 保留**：
+
+| 场景 | 处理 |
+|------|------|
+| 重复 + value 差异 < 5% | **合并**：保留最早采集的那条，source_url 追加第二个来源，confidence 取 max |
+| 重复 + value 差异 ≥ 5% | **都不合并**：两条都保留，label 后加来源标识（如 "[官网]" vs "[G2]"），留给 Reviewer G2 判定 source_conflict |
+| 重复 + 来自同一 source_url | **丢弃**最新的一条（同源重复 = 采集 bug） |
+
+**实现**：Collector 写入 State 前，对本轮 `collected_data` 做 pandas `groupby(["product", "category", "label_norm"]) → agg` 风格过滤。
+
+#### 3.4.3 停止条件
+
+Collector 不能让 Agent 无限搜索。两层停止：
+
+**硬停止（无视结果质量，强制终止）：**
+
+| 条件 | 值 |
+|------|-----|
+| max_turns 耗尽 | SubagentConfig.max_turns=30 |
+| timeout | timeout_seconds=600s |
+| 连续空结果 | 连续 3 次工具调用返回 0 条结果 |
+
+**软停止（结果足够好时提前结束）：**
+
+| 条件 | 阈值 |
+|------|------|
+| 维度覆盖 | 每个 target_product 在每个 category 均有 ≥ 2 条数据 |
+| 来源多样性 | ≥ 3 种 source_type |
+| 数据点总量 | ≥ 20 条 |
+
+软停止 3 个条件**同时满足** → Collector 主动结束，不等 max_turns。
+
+> **设计理由**：不加软停止，Collector 每次跑到 max_turns=30 才停，浪费 2-3 分钟。加软停止后大多数场景 15-20 轮结束。答辩话术："系统知道什么时候搜够了，不会无限搜索。"
+
+#### 3.4.4 搜索词生成规则
+
+从用户自然语言输入生成精确搜索词。由 LLM 生成，受规则约束。
+
+**输入**：`"帮我分析一下 Cursor vs Copilot vs Windsurf 的竞争力"`
+
+**搜索词生成策略**：
+
+| 搜索维度 | 模板 | 示例 |
+|---------|------|------|
+| 基础信息 | `{product} pricing 2026` | `Cursor AI editor pricing 2026` |
+| | `{product} features` | `GitHub Copilot features list` |
+| | `{product} vs` | `Cursor vs Copilot comparison 2026` |
+| 用户口碑 | `{product} review reddit` | `Cursor AI editor review reddit 2026` |
+| | `{product} g2 rating` | `Windsurf editor g2 rating` |
+| 技术深度 | `{product} github` | `Cursor AI github repository stars` |
+| | `{product} tech stack` | `GitHub Copilot technical architecture` |
+| 商业信息 | `{product} funding` | `Windsurf AI funding round 2026` |
+| | `{product} market share` | `AI code editor market share 2026` |
+| 中文市场 | `{product中文名/英文名} 评测` | `Cursor 编辑器 评测 2026` |
+| | `{product中文名} 定价` | `Copilot 中文 定价` |
+
+**规则约束**：
+- 每个 target_product × 每个 category（features/pricing/users/market）至少 1 条
+- 搜索词总数下限 = `len(target_products) × 4 × 1.5`
+- 中英文搜索词**各至少 1/3**
+- 时间限定词（"2026"、"latest"、"最新"）默认附加
+
+**实现**：Collector 的 system prompt 注入 `SEARCH_QUERY_TEMPLATE`，LLM 按模板填充。
+
+#### 3.4.5 来源优先级与 Fallback 链
+
+按**查询意图**分叉，不是平面列表：
+
+```
+Collector 搜索决策
+  │
+  ├─ 中文内容?
+  │   ├─ 1st: 火山引擎联网搜索（中文原生 + 多模态）
+  │   ├─ fallback: Tavily Search
+  │   └─ last: Brave Search
+  │
+  ├─ 英文技术/产品信息?
+  │   ├─ 1st: Tavily Search（英文优化）
+  │   ├─ fallback: Brave Search
+  │   └─ 补充: GitHub API（开源项目）
+  │
+  ├─ 用户评价/口碑?
+  │   ├─ 1st: G2 / Product Hunt（web_fetch 专用页）
+  │   ├─ fallback: Reddit API
+  │   └─ 中文: 知乎 web_fetch
+  │
+  ├─ 官方信息（定价/功能/更新）?
+  │   ├─ 1st: Firecrawl 抓官网文档站
+  │   ├─ fallback: Jina AI Reader 抓具体页面
+  │   └─ last: web_search 搜 "site:product.com pricing"
+  │
+  └─ 视频舆情（深度模式）?
+      ├─ 1st: YouTube transcript API
+      ├─ 中文: Bilibili API
+      └─ 多模态: 火山引擎图搜/视频搜
+```
+
+**Fallback 触发条件**：
+- 工具调用返回空结果
+- 工具调用超时（30s）
+- 返回结果与查询目标不相关（LLM 判定）
+- 连续 2 次同源查询无有效结果
+
+> **关键决策**：Fallback 不只是调用失败——"搜到了但 LLM 判定不相关"也触发。防止静默失败。
+
+#### 3.4.6 Collector 产出摘要
+
+Collector 产出不仅是 `list[CollectedDataPoint]`，附带摘要供可观测面板展示：
+
+```python
+{
+    "collected_data": [...],           # Annotated[list, op_add] 自动累加
+    "collection_summary": {            # 日志/可观测用，非 State 字段
+        "total_data_points": 42,
+        "products_covered": {"cursor": 15, "copilot": 14, "windsurf": 13},
+        "categories_covered": {"features": 12, "pricing": 10, "users": 8, "market": 12},
+        "source_types": {"official": 18, "review": 14, "news": 6, "social": 4},
+        "languages": {"zh": 15, "en": 27},
+        "stopped_by": "soft_stop",     # "soft_stop" | "max_turns" | "timeout"
+        "search_rounds": 18,
+        "avg_confidence": 0.87,
+        "low_confidence_points": 3,
+    }
+}
+```
+
+答辩时直接展示在 Collector 详情面板——"42 条数据、3 产品全覆盖、18 轮后软停止"。
+
+### 3.5 Reviewer 审阅清单与判定规则 `**[竞赛要求 R5]**`
+
+> 判标 §4 要求"质检 Agent 能识别问题并打回采集/分析 Agent 重做"。审阅不是 LLM 自由发挥——Reviewer 按以下固定清单逐项检查，每条判定必须附带计算依据或来源证据。
+
+#### 3.4.1 四类 Gap 判定规则
+
+| # | 检查项 | 判定方法 | 判定依据 | 触发条件 | Gap 类型 | Gap 生成内容 |
+|---|-------|---------|---------|---------|---------|------------|
+| G1 | **来源可达性** | 计算验证 | `requests.head(url, timeout=10)` → status ≥ 400 | URL 返回 4xx/5xx | `fact_error` | `{claim: "从 {url} 获取的数据", evidence: "HTTP {status}", correction: "寻找替代来源"}` |
+| G2 | **多源一致性** | 计算验证 + LLM | pandas `groupby("label")` → `nunique("value") > 1` | 同一 label 在不同来源的值差异 > 5% | `source_conflict` | `{conflict: {label, values_by_source, max_diff}, suggested_remedy: "定向搜索权威来源裁决"}` |
+| G3 | **时效性** | 计算验证 | `now - collected_at > 180 days` | 数据超过 180 天 | `outdated` | `{current_value, age_days, target_collect: "搜索 {label} 最新数据"}` |
+| G4 | **维度覆盖** | 计算验证 | 检查 `comparison_matrix` 中每个维度是否有 ≥1 条数据 | 某维度 0 条数据 | `missing_data` | `{dimension, expected_products, target_collect: "搜索 {dimension} 相关数据"}` |
+| G5 | **来源多样性** | 计算验证 | `groupby("source_type")` — 检查是否有 ≥2 种来源类型 | 所有数据来自同一 source_type | `missing_data` | `{current_type, suggested_types: ["review", "news"], target_collect: "补充用户评价/媒体报道来源"}` |
+| G6 | **统计异常** | 计算验证 | `scipy.stats.zscore(values)` → |z| > 3 | 某数值偏离总体 3σ 以上 | `fact_error` | `{outlier: {value, zscore, compared_to}, action: "验证异常值是否为采集错误"}` |
+| G7 | **语义矛盾** | LLM 推理 | 同一产品/维度的两条文字描述语义相反 | LLM 判定语义冲突 | `source_conflict` | `{conflicting_claims: [text_a, text_b, source_a, source_b], suggested_remedy: "搜索更多来源判决"}` |
+| G8 | **置信度偏低** | 计算验证 | `confidence < 0.5` 的数据点 | LLM 或 API 返回的低置信度标记 | `missing_data` | `{low_confidence_points, target_collect: "重新搜索高置信度来源"}` |
+
+#### 3.4.2 判定优先级
+
+Gap 不是平级的——`fact_error` 最严重，需要立即修正：
+
+| 优先级 | Gap 类型 | 处理策略 |
+|-------|---------|---------|
+| P0 | `fact_error` | 该数据点**不进入 Analyst**，立即打回 Collector 补采 |
+| P1 | `source_conflict` | 该数据点标注 "⚠ 来源冲突" 进入 Analyst，同时打回补采裁决来源 |
+| P1 | `outdated` | 保留旧数据但标注 "⚠ 数据可能过时（X天前）"，打回补采最新数据 |
+| P2 | `missing_data` | 不阻塞，标注缺失维度，打回补采。≥2 轮仍缺失则写入 `unresolved_issues` |
+
+#### 3.4.3 审阅输出结构
+
+Reviewer 完成后输出到 State：
+
+```python
+{
+    "review_verdict": {
+        "passed": False,            # 无 P0 gap 且 review_round < 2
+        "round": 1,
+        "gaps": [...],
+        "fact_errors": [...],
+        "quality_summary": {...},
+        "reviewer_notes": "..."
+    },
+    "review_round": 1,
+    "gaps": [
+        {
+            "gap_id": "gap-001",
+            "type": "source_conflict",     # G1-G8 之一
+            "check_method": "multi_source_consistency",  # 判定方法
+            "description": "Copilot Business 定价：官网 $19 vs G2 $24.67，差异 29.8%",
+            "evidence": "HEAD github.com → 200 OK; HEAD g2.com → 200 OK; 两来源均可达",
+            "target_collect_task": "搜索 Copilot 官方定价页面或第三方权威评测验证实际价格",
+            "severity": "major",           # critical | major | minor
+            "related_data_point_ids": ["dp-015", "dp-028"],
+        }
+    ],
+    "fact_errors": [...],
+    "gap_coverage_improvement": 0.0,  # 补采前无对比基线
+}
+```
+
+#### 3.4.4 为什么不需要 Critic+Judge 分离
+
+PA-Agent-DF 用 Critic（提出质疑）+ Meta-Judge（裁决）是因为当时依靠 LLM 辩论做验证，存在"自己质疑自己裁决"的结构问题。
+
+但 CI-Agent 的 Reviewer **主要依赖计算验证**（G1-G6、G8 共 7 项是计算判定，只有 G7 是 LLM 推理），计算工具的输出是客观的——URL 400 就是 400，zscore > 3 就是 > 3。不需要另一个 LLM 来"裁决"计算工具的结果。
+
+这与判标 §4 25% 的"上下文管理、错误恢复、幻觉抑制有明确策略（自一致性校验、引用强制）"**直接对应**——我们的"自一致性"不是 LLM 自我审查，而是 Python 计算工具的硬验证。
+
+### 3.6 DAG 工作流
 
 ```
 普通模式 (始终执行):
   Collector → Analyst → Reviewer → Writer → HITL Gate
       ↑          ↑          │            │
       │          │          │ ❌          ├─ approve → END (输出普通报告)
-      └──────────┴── gap ───┘            ├─ modify → Analyst
-              (最多 2 轮)                 └─ replan → Collector
+      └──────────┴── gap ───┘            ├─ reanalyze → Analyst
+              (最多 2 轮)                 ├─ rewrite → Writer
+                                          └─ replan → Collector
 
 深度模式 (deep_mode=true 时, 紧随普通模式):
   普通报告 (state 中所有累积数据) → Deep Collector → Deep Analyst → Deep Reviewer
@@ -259,7 +498,7 @@
                                                                    Feishu 交付
 ```
 
-### 3.5 CompetitionState 设计
+### 3.7 CompetitionState 设计
 
 ```python
 class CompetitionState(AgentState):
@@ -270,43 +509,39 @@ class CompetitionState(AgentState):
     deep_mode: bool                     # False=仅普通模式, True=普通+深度
 
     # ── Collector 输出（普通模式累积，深度模式增量追加）──
-    collected_data: Annotated[list[dict], op_add]
-    # 每条: {source_url, source_type, data_points, confidence, timestamp, collector_notes}
-    knowledge_gaps: list[dict]          # Reviewer 发现的知识缺口 → 深度模式 Collector 目标
+    collected_data: Annotated[list[CollectedDataPoint], op_add]
+    knowledge_gaps: list[ReviewGap]     # Reviewer 发现的知识缺口 → 深度模式 Collector 目标
 
-    # ── Analyst 输出 ──
-    comparison_matrix: dict             # 功能/价格/用户画像对比
-    swot: dict                          # per-product SWOT
-    trends: list[dict]                  # 趋势分析
+    # ── Analyst 输出 ── `**[竞赛要求 R4]**`
+    analysis_result: AnalysisResult | None  # comparison_matrix + swot + trends + visualization_paths
 
     # ── Reviewer 输出 ──
-    review_passed: bool
-    gaps: list[dict]                    # {type, description, target_collect, severity}
-    fact_errors: list[dict]             # {claim, evidence, correction}
-    review_round: int                   # 当前反馈轮次
+    review_verdict: ReviewVerdict | None    # passed + gaps + fact_errors + quality_summary
+    review_round: int                       # 当前反馈轮次（路由判断用，保留顶层）
     gap_coverage_improvement: float | None  # 反馈闭环改善度量：本轮填补的 gap 比例
 
     # ── Writer 输出（普通模式）── `**[竞赛要求 R7]**`
-    final_report: str                   # Markdown (普通模式最终报告)，事实性结论以 [n] 上标标注来源
-    traceability_map: dict              # claim_id → {url, fetch_timestamp, confidence}
-    pm_report: str                      # PM 视角报告
-    entrepreneur_report: str            # 创业者视角报告
+    final_report: str                       # Markdown (普通模式最终报告)，事实性结论以 [n] 上标标注来源
+    traceability_map: dict                  # claim_id → {url, fetch_timestamp, confidence}
+    pm_report: str                          # PM 视角报告
+    entrepreneur_report: str                # 创业者视角报告
+    review_package: ReviewPackage | None    # Writer → HITL 审批简报
 
     # ── 深度模式专用 ──
-    deep_collected_data: Annotated[list[dict], op_add]  # 深度增量采集
-    deep_review_round: int              # 深度模式 Reviewer 轮数
-    deep_report: str                    # 深度模式最终报告 (HTML)
-    deep_feishu_url: str | None         # 飞书文档 URL
+    deep_collected_data: Annotated[list[CollectedDataPoint], op_add]
+    deep_review_round: int                  # 深度模式 Reviewer 轮数
+    deep_report: str                        # 深度模式最终报告 (HTML)
+    deep_feishu_url: str | None             # 飞书文档 URL
 
     # ── HITL ──
-    review_decision: str | None         # "approve" | "modify" | "replan"
-    deep_review_decision: str | None
+    hitl_decision: HitlDecision | None      # action + comment + target_focus + timestamp
+    deep_hitl_decision: HitlDecision | None
 
     # ── 异常 ──
     error: str | None
 ```
 
-### 3.6 竞品知识 Schema（Pydantic 强制校验）
+### 3.8 竞品知识 Schema（Pydantic 强制校验）
 
 **Schema 1 — 功能树**:
 ```python
@@ -357,7 +592,7 @@ class UserPersona(BaseModel):
     primary_segments: list[UserSegment]
 ```
 
-### 3.7 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
+### 3.9 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
 
 > 评审明确要求"输出严格符合预定义 Schema，字段完整、格式一致"。我们不仅定义 Schema，更在每个 Agent 输出边界做强制校验。
 
@@ -386,7 +621,7 @@ Agent LLM 输出 (JSON string)
 - 每次校验失败时记录日志（时间、Agent、Schema 类型、原始输出、校验错误）
 - Schema 校验日志作为可观测面板的一部分展示
 
-### 3.8 路由逻辑（普通模式 + 深度模式流水线）
+### 3.10 路由逻辑（普通模式 + 深度模式流水线）
 
 ```python
 # competition/router.py
@@ -404,7 +639,8 @@ def route_after_analyst(state: CompetitionState) -> str:
 
 def route_after_reviewer(state: CompetitionState) -> str:
     """校验通过 → Writer / 有 gap → 打回 Collector / 超轮 → 带着问题进 Writer。"""
-    if state.get("review_passed"):
+    verdict: ReviewVerdict | None = state.get("review_verdict")
+    if verdict and verdict.passed:
         return "writer"
     review_round = state.get("review_round", 0)
     if review_round >= 2:
@@ -418,15 +654,19 @@ def route_after_writer(state: CompetitionState) -> str:
     return "hitl_gate"
 
 def route_after_hitl(state: CompetitionState) -> str:
-    """HITL 决策路由。"""
-    decision = state.get("review_decision")
-    if decision == "approve":
-        # 普通模式完成。如果开启深度模式则进入 deep_collector，否则结束
+    """HITL 决策路由（对应 §3.11.7 HitlDecision.action）。"""
+    decision: HitlDecision | None = state.get("hitl_decision")
+    if not decision:
+        return "__end__"
+    action = decision.action
+    if action == "approve":
         return "deep_collector" if state.get("deep_mode") else "__end__"
-    elif decision == "modify":
-        return "analyst"
-    elif decision == "replan":
+    elif action == "replan":
         return "collector"
+    elif action == "reanalyze":
+        return "analyst"
+    elif action == "rewrite":
+        return "writer"
     return "__end__"
 
 # ── 深度模式路由 ──
@@ -514,7 +754,7 @@ def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     return builder.compile(checkpointer=checkpointer)
 ```
 
-#### 3.8.1 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
+#### 3.10.1 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
 
 > 判标 §4 明确要求"反馈闭环真实可触发，重做后输出有改善（非伪闭环）"。我们不仅实现打回，更量化改善。
 
@@ -539,12 +779,31 @@ def measure_improvement(gaps_before: list, gaps_after: list) -> dict:
 
 **答辩展示**：在 DAG 图上，反馈回环边标注改善数据，如 "🔁 Round 1 → 2 gaps → Round 2 → 0 gaps (改善率 100%)"。如果改善率为 0（伪闭环），可从日志看出 LLM 没有真正生成新搜索词。
 
-### 3.9 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
+### 3.11 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
 
-不再使用自然语言对话，而是 JSON Schema：
+> 判标 §4 35% 明确要求"Agent 间采用结构化消息传递（function calling / 标准 Schema），非纯自然语言对话"。
+> 以下 6 条边全部定义为 Pydantic 模型，每条消息可被日志捕获、可被前端渲染。
+
+#### 3.11.1 通信契约总览
+
+```
+Collector ──①──→ Analyst ──②──→ Reviewer ──③──→ Writer ──④──→ HITL
+    ↑                    ↑                                    │
+    └──── ⑤ gap ────────┘                   ⑥ replan/reanalyze/rewrite
+```
+
+| 边 | 发送方 | 接收方 | Schema | State 字段 | 作用 |
+|---|-------|-------|--------|-----------|------|
+| ① | Collector | Analyst | `CollectedDataPoint` | `collected_data` | 结构化采集结果 |
+| ② | Analyst | Reviewer | `AnalysisResult` | `analysis_result` | 可验证的分析输出 |
+| ③ | Reviewer | Writer | `ReviewVerdict` | `review_verdict` | 数据质量报告 |
+| ④ | Writer | HITL Gate | `ReviewPackage` | `review_package` | 审批简报 |
+| ⑤ | Reviewer | Collector | `ReviewGap` | `gaps` | 定向补采指令 |
+| ⑥ | HITL Gate | 目标节点 | `HitlDecision` | `hitl_decision` | 精准回退指令 |
+
+#### 3.11.2 边 ①：Collector → Analyst
 
 ```python
-# Collector → Analyst 传递格式
 class CollectedDataPoint(BaseModel):
     id: str
     product: str
@@ -555,8 +814,110 @@ class CollectedDataPoint(BaseModel):
     source_url: str
     source_type: str            # "official" | "review" | "news" | "interview"
     collected_at: str           # ISO 8601
+```
 
-# Reviewer → Collector 打回格式
+#### 3.11.3 边 ②：Analyst → Reviewer
+
+每条分析结论必须带 `source_data_point_ids`，让 Reviewer 能从结论反向追溯到原始数据点。没有这个字段，Reviewer 无法做计算验证。
+
+```python
+class ComparisonCell(BaseModel):
+    product: str
+    dimension: str              # 如 "代码补全"、"定价"、"用户群"
+    rating: Literal[1, 2, 3, 4, 5] | None  # None = 无数据
+    evidence: str               # 支撑这个评分的具体事实
+    source_data_point_ids: list[str]
+
+
+class ComparisonMatrix(BaseModel):
+    products: list[str]
+    dimensions: list[str]
+    cells: list[ComparisonCell]
+    summary: str                # 一句话概述
+
+
+class SWOTItem(BaseModel):
+    category: Literal["strength", "weakness", "opportunity", "threat"]
+    statement: str
+    evidence: str
+    source_data_point_ids: list[str]
+
+
+class SWOTAnalysis(BaseModel):
+    product: str
+    items: list[SWOTItem]
+
+
+class TrendFinding(BaseModel):
+    dimension: str              # "市场份额" | "定价趋势" | "功能演进"
+    direction: Literal["up", "down", "stable", "unclear"]
+    confidence: float
+    evidence: str
+    source_data_point_ids: list[str]
+
+
+class AnalysisResult(BaseModel):
+    """Analyst → Reviewer，写入 State.analysis_result"""
+    comparison_matrix: ComparisonMatrix
+    swot: dict[str, SWOTAnalysis]       # key = product name
+    trends: list[TrendFinding]
+    visualization_paths: list[str]       # Sandbox 中图表文件路径
+```
+
+#### 3.11.4 边 ③：Reviewer → Writer
+
+Writer 生成报告时，措辞应该反映数据质量。多源验证过的写"多方来源显示"，单源的写"据 X 来源称"——这些信息在 QualitySummary 里。
+
+```python
+class QualitySummary(BaseModel):
+    """数据质量总览"""
+    total_data_points: int
+    verified_count: int             # 通过所有检查的数据点数
+    multi_source_count: int         # 2+ 独立来源
+    single_source_count: int        # 仅单源，标注 "⚠ 单源"
+    fact_errors_count: int
+    unresolved_gaps: list[str]      # 仍未解决的 gap 描述
+    overall_quality_score: float    # 0.0-1.0
+    improvement_ratio: float | None # 反馈改善率
+
+
+class ReviewVerdict(BaseModel):
+    """Reviewer → Writer，写入 State.review_verdict"""
+    passed: bool
+    round: int
+    gaps: list[ReviewGap]
+    fact_errors: list[dict]         # {claim, evidence, correction}
+    quality_summary: QualitySummary
+    reviewer_notes: str             # 给 Writer 的一句话
+```
+
+#### 3.11.5 边 ④：Writer → HITL Gate
+
+驱动飞书审批卡片的内容渲染。卡片的 UI 就是 `ReviewPackage` 的可视化呈现。
+
+```python
+class DataStats(BaseModel):
+    total_data_points: int
+    products_covered: dict[str, int]    # {"cursor": 15, "copilot": 14}
+    categories_covered: dict[str, int]  # {"features": 12, "pricing": 10}
+    source_types: dict[str, int]        # {"official": 18, "review": 14}
+
+
+class ReviewPackage(BaseModel):
+    """Writer → HITL Gate，写入 State.review_package"""
+    executive_summary: str              # 500 字以内
+    key_findings: list[str]             # 3-5 条
+    data_stats: DataStats
+    quality_summary: QualitySummary     # 从 ReviewVerdict 透传
+    unresolved_issues: list[str]
+    recommendations: list[str]          # 给用户的建议（approve? / replan? / reanalyze? / rewrite?）
+    pm_report_preview: str              # PM 视角报告前 500 字
+    entrepreneur_report_preview: str    # 创业者视角报告前 500 字
+```
+
+#### 3.11.6 边 ⑤：Reviewer → Collector（打回）
+
+```python
 class ReviewGap(BaseModel):
     gap_id: str
     type: str                   # "missing_data" | "fact_error" | "source_conflict" | "outdated"
@@ -565,13 +926,40 @@ class ReviewGap(BaseModel):
     related_data_point_ids: list[str]
 ```
 
+#### 3.11.7 边 ⑥：HITL Gate → 目标节点
+
+用户说"重写 SWOT 部分"时，Writer 不应该全文重写。`target_focus` 让目标节点聚焦。
+
+```python
+class HitlDecision(BaseModel):
+    """HITL Gate → 目标节点，写入 State.hitl_decision"""
+    action: Literal["approve", "replan", "reanalyze", "rewrite"]
+    comment: str | None             # 用户自然语言反馈
+    target_focus: list[str] | None  # reanalyze: 关注的维度；rewrite: 修改的章节
+    timestamp: str                  # ISO 8601
+```
+
+#### 3.11.8 CompetitionState 对应更新
+
+新增 4 个强类型字段替代原有松散 dict：
+
+```python
+# §3.7 CompetitionState 中：
+# 旧：comparison_matrix: dict, swot: dict, trends: list[dict]
+# 新：
+analysis_result: AnalysisResult | None       # 替代 comparison_matrix + swot + trends
+review_verdict: ReviewVerdict | None         # 替代 review_passed + gaps 散落字段
+review_package: ReviewPackage | None         # Writer → HITL
+hitl_decision: HitlDecision | None           # HITL → 目标节点
+```
+
 ---
 
-### 3.10 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
+### 3.12 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
 
 > 判标 §4（25% 技术深度与工程完整度 + 10% 合规）明确要求：幻觉抑制策略、超时重试/降级、采集合规、数据脱敏、可量化业务指标。本节逐项落实。
 
-#### 3.10.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
+#### 3.12.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
 
 | 策略 | 实现 | 触发条件 |
 |------|------|---------|
@@ -581,7 +969,7 @@ class ReviewGap(BaseModel):
 
 **垃圾引用检测**（额外防御）：Reviewer 检查 source_url 域名是否在已知低质量源列表中（如内容农场、SEO 垃圾站），命中则自动降级 confidence。
 
-#### 3.10.2 采集合规 `**[竞赛要求 R17]**`
+#### 3.12.2 采集合规 `**[竞赛要求 R17]**`
 
 > 判标 §4 10% 明确要求"遵守目标站点 robots.txt 与服务条款，对外部数据来源有明确授权或公开声明"。
 
@@ -592,7 +980,7 @@ class ReviewGap(BaseModel):
 | **速率控制** | 同一域名请求间隔 ≥1s，避免对目标站点造成压力 |
 | **工具合规** | 所有采集工具（Tavily/Firecrawl/Jina/Brave）均在各自免费/商业授权范围内使用 |
 
-#### 3.10.3 数据脱敏 `**[竞赛要求 R18]**`
+#### 3.12.3 数据脱敏 `**[竞赛要求 R18]**`
 
 > 会议纪要明确："报告中涉及用户访谈等数据需做脱敏处理，避免个人敏感信息露出"。
 
@@ -605,7 +993,7 @@ class ReviewGap(BaseModel):
 
 实现：在 Writer 生成报告前，LLM prompt 中注入脱敏指令 + Python 正则后处理双重保障。
 
-#### 3.10.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
+#### 3.12.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
 
 > 判标 §4 20% 要求"相比传统人工，在效率/覆盖度/一致性上有可量化的提升。设计清晰的业务闭环关键指标（准确率、覆盖率、人工修正率）"。
 
@@ -613,7 +1001,7 @@ class ReviewGap(BaseModel):
 |------|------|---------|---------|
 | **信息覆盖率** | 采集到的数据点覆盖请求维度的比例 | `covered_dimensions / total_requested_dimensions` | 每次分析输出覆盖度仪表盘 |
 | **交叉验证率** | 经 ≥2 个独立来源验证的数据点比例 | `multi_source_points / total_data_points` | Reviewer 节点输出 |
-| **人工修正率** | HITL 中被人类修改/打回的数据点比例 | `(modify + replan) / total_hitl_decisions` | HITL Gate 统计 |
+| **人工修正率** | HITL 中被人类打回的比例 | `(replan + reanalyze + rewrite) / total_hitl_decisions` | HITL Gate 统计 |
 | **反馈改善率** | 打回后 gap 被填补的比例 | `resolved_gaps / total_gaps_identified` | 反馈回环边标注 |
 | **溯源完整率** | 报告中带有效来源链接的结论比例 | `traced_claims / total_claims` | 溯源地图统计 |
 | **效率倍数** | vs 传统人工同质量分析的耗时比 | 系统耗时 vs 估算人工耗时（2-3天） | 答辩话术："2分钟 vs 2天" |
@@ -631,7 +1019,7 @@ class ReviewGap(BaseModel):
 效率提升: ~1,000x | 成本: < 0.5 元人民币
 ```
 
-#### 3.10.5 超时重试与降级 `**[竞赛要求 R13]**`
+#### 3.12.5 超时重试与降级 `**[竞赛要求 R13]**`
 
 | 机制 | 实现 |
 |------|------|
@@ -640,6 +1028,201 @@ class ReviewGap(BaseModel):
 | **LLM 调用重试** | API 错误自动重试（同指数退避），非 4xx 错误才重试 |
 | **降级策略** | 某数据源不可用时 → 自动切换备选源（Tavily 不可用 → Brave Search）；某 Agent 超时 → 带上已有部分结果继续下一节点 |
 | **看门狗** | DF 已有的 `loop_detection_middleware`（3 次警告/5 次强制停止）防止 Reviewer 无限打回 |
+
+#### 3.12.6 错误处理决策树 `**[竞赛要求 R12, R13]**`
+
+> 判标 §4 25% 要求"错误恢复有明确策略"、"系统稳定性：异常处理、超时重试、降级机制完备"。
+> 分层原则：**DF 基座管"怎么重试"，我们管"重试失败后图往哪走"**。
+
+##### 3.12.6.1 错误分类
+
+| 类别 | 示例 | 严重级别 | 策略 | 谁处理 |
+|------|------|---------|------|-------|
+| **A. 瞬时故障** | API 超时、Rate Limit、网络抖动 | 可恢复 | DF 的 SubagentExecutor + Middleware 链自动指数退避重试（1s→2s→4s，最多 3 次）。**我们不需要写重试逻辑。** | **DF 基座** |
+| **B. 数据质量** | Schema 校验失败、空搜索结果、LLM 返回非 JSON | 可降级 | 节点内重试 1-2 次后标注降级，不阻塞流程。保留部分结果继续 | 节点内部 |
+| **C. 逻辑故障** | 反馈死循环（同一 gap 反复出现 3 次）、连续 2 轮改善率为 0 | 需干预 | 自动关闭回环（降级标注或强制进 Writer），不等待人工介入 | 节点 + 路由 |
+| **D. 基础设施故障** | Sandbox 崩溃、LLM API 返回 5xx 且重试耗尽、Out of Memory | 致命 | 设 `error` 字段 → 路由到 `error_handler` → 保存 checkpoint → 优雅停止 | Graph 层 |
+
+> **关键区分**：A 类不需要我们写代码——DF 的 SubagentExecutor 和 middleware 链已经处理了。我们的节点只需要判断 `result.status == "failed"` 并决定降级行为。
+
+##### 3.12.6.2 逐节点 Fallback 行为
+
+**Collector 节点**：
+
+```
+Collector 执行中
+  │
+  ├─ 单个搜索 API 超时/失败
+  │   → DF 基座已重试。重试耗尽后：
+  │   → 切换到 fallback 链下一级（火山引擎 → Tavily → Brave，见 §3.4.5）
+  │
+  ├─ 全部搜索 API 失败
+  │   → 已有部分数据 → 继续，标注 stopped_by = "all_sources_failed"
+  │   → 0 条数据 → 设 error = "COLLECTOR_NO_DATA"，路由到 error_handler
+  │
+  ├─ SubagentExecutor 返回 failed（600s 超时或重试耗尽）
+  │   → 保留已采集的部分数据（SubagentExecutor 的 thread 级 checkpoint）
+  │   → 补充一条 gap："采集超时，以下维度可能未覆盖"
+  │   → 不设 error，继续进 Analyst
+  │
+  └─ LLM 返回格式错误（非 JSON）
+      → 重试 1 次（prompt 附带解析错误提示）
+      → 仍失败 → 丢弃该条，记日志，不阻塞
+```
+
+**Analyst 节点**：
+
+```
+Analyst 执行中
+  │
+  ├─ 输入数据量 < 5 条
+  │   → 正常分析但标注 "⚠ 数据量不足，分析结论置信度较低"
+  │
+  ├─ Schema 校验失败（comparison_matrix 缺必要字段）
+  │   → 重试 2 次（附带 ValidationError 详情）
+  │   → 仍失败 → 保留 LLM 原始输出，标注 "⚠ Schema 校验失败，已保留原始输出"
+  │   → 不阻塞，继续进 Reviewer
+  │
+  ├─ 可视化生成失败（matplotlib 异常）
+  │   → 跳过该图表，报告中注明 "图表生成失败"
+  │   → 不阻塞文本分析
+  │
+  └─ SubagentExecutor 返回 failed（300s 超时）
+      → 保留已生成的部分（如 SWOT 已生成但趋势分析未完成）
+      → 标注缺失维度，继续进 Reviewer
+```
+
+**Reviewer 节点**：
+
+```
+Reviewer 执行中
+  │
+  ├─ 单条数据 HEAD 请求超时（网络不可达）
+  │   → 标记 "⚠ 无法验证（网络不可达）"，不生成 fact_error
+  │   → 与 HTTP 4xx 区分：4xx = fact_error，timeout = 不确定
+  │
+  ├─ 同一 gap 第三次出现（反馈死循环）
+  │   → 不再打回 Collector，该 gap 降级为 minor
+  │   → 写入 unresolved_issues，ReviewVerdict.passed = True
+  │
+  ├─ 连续 2 轮改善率 improvement_ratio = 0
+  │   → 停止打回，标注 "⚠ 无法通过重新采集改善"
+  │   → ReviewVerdict.passed = True，进 Writer（带不确定性）
+  │
+  ├─ scipy 计算异常（数据量不够做 zscore）
+  │   → 跳过该统计检查，标注 "因数据量不足未执行统计检验"
+  │   → 不阻塞其他检查
+  │
+  └─ review_round >= 2
+      → 强制进 Writer（已有路由逻辑 §3.10，不是错误处理）
+```
+
+**Writer 节点**：
+
+```
+Writer 执行中
+  │
+  ├─ traceability_map 有缺失（某条结论无 source_url）
+  │   → 该结论标注 "[来源缺失]"，不从报告中删除
+  │
+  ├─ 图表文件无法嵌入 Markdown
+  │   → 保留图片文件路径，报告中引用相对路径
+  │
+  └─ LLM 输出过长被截断
+      → 优先保留执行摘要 + 对比矩阵（核心章节）
+      → 附录/详细数据表可截断
+```
+
+**HITL Gate 节点**：
+
+```
+HITL Gate 执行中
+  │
+  ├─ 审批超时（30 分钟无响应）
+  │   → 默认 = approve（避免无限阻塞）
+  │   → 标注 "⚠ 用户未响应，自动批准"
+  │
+  ├─ 用户选择 replan/reanalyze/rewrite 但未提供具体意见
+  │   → 正常路由（replan → Collector, reanalyze → Analyst, rewrite → Writer）
+  │   → 目标节点的 system prompt 注入 "用户要求重做，但未指定具体修改方向，请重新生成"
+  │
+  └─ 审批卡片推送失败（飞书 API 异常）
+      → 降级为默认 approve，日志记 warning
+      → 不阻塞系统（HITL 是增强功能，不是必须条件）
+```
+
+##### 3.12.6.3 错误传播路径（Graph 层）
+
+```
+     ┌──────────┐
+     │  任意节点  │
+     └────┬─────┘
+          │
+     ┌────┴────┐
+     │ error 字段被设置? │
+     └────┬────┘
+          │
+     ┌────┴────┐
+     │ NO      │ YES
+     ▼         ▼
+  正常路由  ┌─────────────┐
+           │ error_handler │
+           │ 节点           │
+           └──────┬────────┘
+                  │
+           ┌──────┴──────┐
+           │ D 类（致命）  │ C 类（逻辑故障）
+           ▼              ▼
+     保存 checkpoint   自动设 HitlDecision
+     final_report =     (action = "replan")
+       "分析失败..."    路由回 Collector
+     HitlDecision
+       (action = "approve")
+     END
+```
+
+> **A/B 类错误不进入 error_handler**——各节点内部已降级处理。error_handler 只处理 D 类（致命）和 C 类（逻辑故障升级到致命）。
+
+##### 3.12.6.4 error_handler 节点实现
+
+```python
+def error_handler_node(state: CompetitionState) -> dict:
+    error = state.get("error", "")
+
+    # 有部分结果 → 降级标注后尝试继续
+    if state.get("collected_data") or state.get("synthesis_report"):
+        return {
+            "error": None,  # 清除错误，继续流程
+            "unresolved_issues": [{
+                "type": "system_error",
+                "description": f"系统在运行中遇到错误: {error}",
+                "severity": "minor",
+            }],
+        }
+
+    # 完全无结果 → 优雅停止
+    return {
+        "error": f"FATAL: {error}",
+        "final_report": (
+            "## 分析失败\n\n"
+            "系统在运行过程中遇到致命错误：\n\n"
+            f"> {error}\n\n"
+            "请检查输入或稍后重试。"
+        ),
+        "review_decision": "approve",  # 跳过 HITL，直接结束
+        "hitl_decision": HitlDecision(action="approve", comment="致命错误，自动批准", target_focus=None, timestamp=datetime.now().isoformat()),
+    }
+```
+
+##### 3.12.6.5 DF 层 vs Graph 层职责总结
+
+| 层 | 职责 | 我们需要写吗 |
+|---|------|------------|
+| **DF 工具调用层** | LLM API 重试（指数退避）、loop_detection（3 次警告/5 次停止）、高危命令拦截 | ❌ DF 自带 |
+| **节点内部** | 收到 DF 失败结果后的降级行为、Schema 校验失败的重试 | ✅ 每个节点内判断 |
+| **Graph 路由层** | 读到 error 字段 → 路由到 error_handler / 正常路由 | ✅ route_after_* 函数判断 |
+| **error_handler 节点** | 致命错误的最终决策（优雅停止 vs 降级继续） | ✅ 一个节点 |
+| **图级循环防护** | 防止反馈回环无限循环 | ❌ 不需要额外机制——review_round >= 2 硬上限 + Reviewer 同 gap 三次降级已足够 |
 
 ---
 

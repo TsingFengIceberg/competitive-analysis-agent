@@ -21,6 +21,7 @@
 
 - [ ] **质检 Agent**：事实校验
   → [PLAN §3.3 Reviewer](../COMPETITION_PLAN.md#33-4-个-agent-角色定义)
+  → [PLAN §3.5 Reviewer 审阅清单（8 种判定规则）](../COMPETITION_PLAN.md#35-reviewer-审阅清单与判定规则-竞赛要求-r5)
 
 - [ ] **职责边界明确无重叠**（判标 §4 35%）
   → [PLAN §3.3 角色定义表](../COMPETITION_PLAN.md#33-4-个-agent-角色定义)
@@ -28,40 +29,40 @@
 ### 1.2 知识结构化
 
 - [ ] **功能树 Schema 定义 + 强制校验**
-  → [PLAN §3.6 FeatureTree](../COMPETITION_PLAN.md#36-竞品知识-schemapydantic-强制校验)
-  → [PLAN §3.7 Schema 强制校验链](../COMPETITION_PLAN.md#37-schema-强制校验链竞赛要求-r3-r8)
+  → [PLAN §3.8 FeatureTree](../COMPETITION_PLAN.md#38-竞品知识-schemapydantic-强制校验)
+  → [PLAN §3.9 Schema 强制校验链](../COMPETITION_PLAN.md#39-schema-强制校验链竞赛要求-r3-r8)
 
 - [ ] **定价模型 Schema 定义 + 强制校验**
-  → [PLAN §3.6 PricingModel](../COMPETITION_PLAN.md#36-竞品知识-schemapydantic-强制校验)
+  → [PLAN §3.8 PricingModel](../COMPETITION_PLAN.md#38-竞品知识-schemapydantic-强制校验)
 
 - [ ] **用户画像 Schema 定义 + 强制校验**
-  → [PLAN §3.6 UserPersona](../COMPETITION_PLAN.md#36-竞品知识-schemapydantic-强制校验)
+  → [PLAN §3.8 UserPersona](../COMPETITION_PLAN.md#38-竞品知识-schemapydantic-强制校验)
 
 - [ ] **输出严格符合 Schema，字段完整格式一致**（判标 §4 35%）
-  → [PLAN §3.7 model_validate() + 重试 + 降级](../COMPETITION_PLAN.md#37-schema-强制校验链竞赛要求-r3-r8)
+  → [PLAN §3.9 model_validate() + 重试 + 降级](../COMPETITION_PLAN.md#39-schema-强制校验链竞赛要求-r3-r8)
 
 ### 1.3 协作与反馈闭环
 
 - [ ] **Agent 间结构化消息传递（function calling / Schema），非纯自然语言**（判标 §4 35%）
-  → [PLAN §3.9 CollectedDataPoint / ReviewGap](../COMPETITION_PLAN.md#39-agent-间结构化通信协议-竞赛要求-r4)
+  → [PLAN §3.11 CollectedDataPoint / ReviewGap](../COMPETITION_PLAN.md#311-agent-间结构化通信协议-竞赛要求-r4)
 
 - [ ] **质检 Agent 可将不足打回采集 Agent，DAG 式任务流转**
-  → [PLAN §3.4 DAG 工作流](../COMPETITION_PLAN.md#34-dag-工作流)
-  → [PLAN §3.8 route_after_reviewer](../COMPETITION_PLAN.md#38-路由逻辑普通模式--深度模式流水线)
+  → [PLAN §3.6 DAG 工作流](../COMPETITION_PLAN.md#36-dag-工作流)
+  → [PLAN §3.10 route_after_reviewer](../COMPETITION_PLAN.md#310-路由逻辑普通模式--深度模式流水线)
 
 - [ ] **反馈闭环真实可触发，重做后输出有改善（非伪闭环）**（判标 §4 35%）
-  → [PLAN §3.8.1 改善度量](../COMPETITION_PLAN.md#381-反馈闭环改善追踪竞赛要求-r5-r6)
+  → [PLAN §3.10.1 改善度量](../COMPETITION_PLAN.md#3101-反馈闭环改善追踪竞赛要求-r5-r6)
 
 - [ ] **DAG 任务流转可视化、可追溯**（判标 §4 35%）
   → [PLAN §7.2 DAG 执行图](../COMPETITION_PLAN.md#72-dag-执行图核心展示位)
 
 - [ ] **编排框架（LangGraph）使用合理**
-  → [PLAN §3.8 graph.py 构建](../COMPETITION_PLAN.md#38-路由逻辑普通模式--深度模式流水线)
+  → [PLAN §3.10 graph.py 构建](../COMPETITION_PLAN.md#310-路由逻辑普通模式--深度模式流水线)
 
 ### 1.4 信息溯源
 
 - [ ] **每条分析结论标注数据来源**
-  → [PLAN §3.5 traceability_map](../COMPETITION_PLAN.md#35-competitionstate-设计)
+  → [PLAN §3.6 traceability_map](../COMPETITION_PLAN.md#36-competitionstate-设计)
 
 - [ ] **报告正文内联溯源标注 `[n]`**
   → [PLAN §3.3 Writer 描述](../COMPETITION_PLAN.md#33-4-个-agent-角色定义)
@@ -88,29 +89,29 @@
 ## 二、判断标准 — 技术深度与工程完整度（25%）
 
 - [ ] **端到端链路完整：数据采集 → Agent 编排 → 后端接口 → 前端交互，可现场演示**
-  → [PLAN §3.4 全链路](../COMPETITION_PLAN.md#34-dag-工作流)
+  → [PLAN §3.5 全链路](../COMPETITION_PLAN.md#36-dag-工作流)
   → [PLAN §8 Week 1+2](../COMPETITION_PLAN.md#八3-周开发计划含答辩呈现)
 
 - [ ] **上下文管理有明确策略：超长上下文分片**
-  → [PLAN §3.10.1 幻觉抑制](../COMPETITION_PLAN.md#3101-幻觉抑制三策略竞赛要求-r12)
+  → [PLAN §3.12.1 幻觉抑制](../COMPETITION_PLAN.md#3121-幻觉抑制三策略竞赛要求-r12)
 
 - [ ] **错误恢复有明确策略**
-  → [PLAN §3.10.5 超时重试与降级](../COMPETITION_PLAN.md#3105-超时重试与降级-竞赛要求-r13)
+  → [PLAN §3.12.5 超时重试与降级](../COMPETITION_PLAN.md#3125-超时重试与降级-竞赛要求-r13)
 
 - [ ] **幻觉抑制有明确策略：自一致性校验**
-  → [PLAN §3.10.1 幻觉抑制](../COMPETITION_PLAN.md#3101-幻觉抑制三策略竞赛要求-r12)
+  → [PLAN §3.12.1 幻觉抑制](../COMPETITION_PLAN.md#3121-幻觉抑制三策略竞赛要求-r12)
 
 - [ ] **幻觉抑制有明确策略：引用强制（每条声明必须有活跃 URL）**
-  → [PLAN §3.10.1 引用强制](../COMPETITION_PLAN.md#3101-幻觉抑制三策略竞赛要求-r12)
+  → [PLAN §3.12.1 引用强制](../COMPETITION_PLAN.md#3121-幻觉抑制三策略竞赛要求-r12)
 
 - [ ] **系统稳定性：异常处理**
-  → [PLAN §3.8 error_handler 路由](../COMPETITION_PLAN.md#38-路由逻辑普通模式--深度模式流水线)
+  → [PLAN §3.10 error_handler 路由](../COMPETITION_PLAN.md#310-路由逻辑普通模式--深度模式流水线)
 
 - [ ] **系统稳定性：超时重试（指数退避，最多 3 次）**
-  → [PLAN §3.10.5 超时重试](../COMPETITION_PLAN.md#3105-超时重试与降级-竞赛要求-r13)
+  → [PLAN §3.12.5 超时重试](../COMPETITION_PLAN.md#3125-超时重试与降级-竞赛要求-r13)
 
 - [ ] **系统稳定性：降级机制（备选数据源、部分结果继续）**
-  → [PLAN §3.10.5 降级策略](../COMPETITION_PLAN.md#3105-超时重试与降级-竞赛要求-r13)
+  → [PLAN §3.12.5 降级策略](../COMPETITION_PLAN.md#3125-超时重试与降级-竞赛要求-r13)
 
 - [ ] **技术方案有独特或前瞻性思考**
   → [PLAN §6 差异化创新](../COMPETITION_PLAN.md#六核心差异化创新点总结-竞赛要求-r14)
@@ -123,13 +124,13 @@
 ## 三、判断标准 — 业务价值与产品体验（20%）
 
 - [ ] **相比传统人工，效率可量化提升（系统耗时 vs 2-3 天人工）**
-  → [PLAN §3.10.4 效率指标](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 效率指标](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 - [ ] **覆盖度可量化提升**
-  → [PLAN §3.10.4 覆盖率指标](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 覆盖率指标](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 - [ ] **一致性可量化提升（交叉验证率）**
-  → [PLAN §3.10.4 交叉验证率](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 交叉验证率](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 - [ ] **贴合企业竞品分析真实工作流**
   → [PLAN §5.7 交互式报告编辑](../COMPETITION_PLAN.md#57-人对报告的细粒度交互式编辑p0--答辩核心交互-竞赛要求-r16)
@@ -150,13 +151,13 @@
   → [PLAN §7.6 执行回放](../COMPETITION_PLAN.md#76-执行回放答辩亮点)
 
 - [ ] **业务闭环关键指标：准确率**
-  → [PLAN §3.10.4 指标表](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 指标表](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 - [ ] **业务闭环关键指标：覆盖率**
-  → [PLAN §3.10.4 信息覆盖率](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 信息覆盖率](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 - [ ] **业务闭环关键指标：人工修正率**
-  → [PLAN §3.10.4 人工修正率](../COMPETITION_PLAN.md#3104-业务指标可量化追踪竞赛要求-r15)
+  → [PLAN §3.12.4 人工修正率](../COMPETITION_PLAN.md#3124-业务指标可量化追踪竞赛要求-r15)
 
 ---
 
@@ -169,11 +170,11 @@
   → 根目录 README.md
 
 - [ ] **架构图**
-  → [PLAN §3.4 DAG 流程图](../COMPETITION_PLAN.md#34-dag-工作流)
+  → [PLAN §3.6 DAG 流程图](../COMPETITION_PLAN.md#36-dag-工作流)
 
 - [ ] **Agent 角色与协议文档**
   → [PLAN §3.3 角色定义](../COMPETITION_PLAN.md#33-4-个-agent-角色定义)
-  → [PLAN §3.9 通信协议](../COMPETITION_PLAN.md#39-agent-间结构化通信协议-竞赛要求-r4)
+  → [PLAN §3.11 通信协议](../COMPETITION_PLAN.md#311-agent-间结构化通信协议-竞赛要求-r4)
 
 - [ ] **部署说明**
   → README.md 快速开始（编码完成后补充）
@@ -189,13 +190,13 @@
 ## 五、判断标准 — 合规、材料与答辩（10%）
 
 - [ ] **采集合规：遵守 robots.txt**
-  → [PLAN §3.10.2 robots.txt 预检](../COMPETITION_PLAN.md#3102-采集合规竞赛要求-r17)
+  → [PLAN §3.12.2 robots.txt 预检](../COMPETITION_PLAN.md#3122-采集合规竞赛要求-r17)
 
 - [ ] **采集合规：遵守服务条款，有明确授权或公开声明**
-  → [PLAN §3.10.2 来源声明](../COMPETITION_PLAN.md#3102-采集合规竞赛要求-r17)
+  → [PLAN §3.12.2 来源声明](../COMPETITION_PLAN.md#3122-采集合规竞赛要求-r17)
 
 - [ ] **数据脱敏：问卷/访谈数据脱敏，无敏感信息泄露**
-  → [PLAN §3.10.3 数据脱敏](../COMPETITION_PLAN.md#3103-数据脱敏竞赛要求-r18)
+  → [PLAN §3.12.3 数据脱敏](../COMPETITION_PLAN.md#3123-数据脱敏竞赛要求-r18)
 
 - [ ] **工具/模型/数据使用符合比赛规范**
   → 开源库 MIT 协议
@@ -220,7 +221,7 @@
   → [PLAN §3.2 双模 + config.yaml workflows](../COMPETITION_PLAN.md#32-双模定位对比)
 
 - [ ] **并发处理**（能做到更好，非强制）
-  → [PLAN §3.4 Send API Fan-out](../COMPETITION_PLAN.md#34-dag-工作流)
+  → [PLAN §3.5 Send API Fan-out](../COMPETITION_PLAN.md#36-dag-工作流)
 
 - [ ] **推荐前端展示页面，本地机器演示**
   → [PLAN §7 答辩呈现](../COMPETITION_PLAN.md#七答辩呈现设计--内部工作流可视化-竞赛要求-r9-r10)
