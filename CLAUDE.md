@@ -1,0 +1,208 @@
+# CI-Agent 开发指令
+
+> 字节跳动 CIS「AI 全栈项目挑战赛」参赛项目 | 2026-05-20 ~ 2026-06-10
+> 架构设计详见 [COMPETITION_PLAN.md](./COMPETITION_PLAN.md)
+> 竞赛要求 TODO 详见 [COMPETITION_TODO.md](./COMPETITION_TODO.md)
+
+---
+
+## 0. 编码时必做：标注竞赛要求对应关系
+
+**每次编写或修改代码时，必须在回复中说明该代码对应竞赛的哪条要求。**
+
+格式示例：
+> `**[R1]**` 此处实现 Collector 角色，职责边界：多源采集 + 问卷生成
+> `**[R7]**` Writer 的 `_inject_source_annotations()` 为每条结论添加 `[n]` 上标来源标注
+
+完成后，更新 [COMPETITION_TODO.md](./COMPETITION_TODO.md) 将对应条目打 `[x]`。
+
+---
+
+## 1. 项目定位
+
+CI-Agent 是一个**竞品分析 Agent 协作系统**，4 个专职 Agent（Collector / Analyst / Reviewer / Writer）基于 LangGraph StateGraph 完成从数据采集到报告生成的全链路。
+
+- **基座**: ByteDance DeerFlow（Sandbox + SubagentExecutor + Tools + Skills + Middleware）
+- **编排**: LangGraph StateGraph 单图 + 条件路由反馈闭环
+- **前端**: 待定（Gradio 或 Next.js）
+- **协议**: MIT License
+
+---
+
+## 2. 核心架构约束
+
+### 2.1 单图 4 节点 + 反馈环
+
+```
+Collector → Analyst → Reviewer → Writer → HITL Gate
+    ↑          ↑          │
+    └──────────┴── gap ───┘ (最多 2 轮)
+```
+
+**不允许**引入 PA-Agent-DF 的旧架构模式：
+- ❌ 不建 Nested SubGraph、不建独立的 Research/Analysis 子图
+- ❌ 不引入 Critic/Meta-Judge 分离（合并为 Reviewer）
+- ❌ 不引入四权分立 permission 系统
+- ❌ 不在 Harness 层 import `app.*`
+
+### 2.2 DeerFlow-First 铁律
+
+```
+DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自建
+```
+
+| 需求 | 实现 |
+|------|------|
+| Agent 执行 | `SubagentExecutor(config, tools, ...).execute(task)` — 不直接调 LLM API |
+| 沙箱文件操作 | `ensure_sandbox_initialized(runtime)` — 不走裸文件系统 |
+| 工具加载 | `get_available_tools(groups=["community"])` — 不过滤掉 DF 内置工具 |
+| Skills | `SubagentConfig.skills` 白名单 — 不重复实现 DF 已有 Skill |
+| 中间件 | 复用 DF 18 个中间件链，不替换 |
+| Checkpointer | DF 已有 SqliteSaver/PostgresSaver |
+| Stream | DF 已有 `stream_mode=["values", "custom"]` + StreamBridge |
+| Config | 扩展 `config.yaml` 的 `competition` 段，走 `deerflow.config` 读取 |
+
+### 2.3 禁止修改的 DF 文件
+
+- `deerflow/sandbox/sandbox.py` / `sandbox_provider.py` / `tools.py`
+- `deerflow/subagents/executor.py`
+- `deerflow/tools/tools.py`
+- `deerflow/agents/lead_agent/agent.py`（仅可增加路由入口）
+
+---
+
+## 3. 竞赛要求速查
+
+> 完整追溯矩阵见 [COMPETITION_PLAN.md §1.4](./COMPETITION_PLAN.md#14-竞赛要求追溯矩阵)
+
+| 编码时必须确保 |
+|-------------|
+| `**[R1]**` 4 角色职责边界清晰，不交叉 |
+| `**[R2]**` Collector 双轨：VoC Aggregator（主）+ 问卷/访谈生成（辅） |
+| `**[R3]**` 输出必须符合 Pydantic Schema（FeatureTree/PricingModel/UserPersona） |
+| `**[R4]**` Agent 间走结构化 JSON（CollectedDataPoint/ReviewGap），不用自然语言 |
+| `**[R5]**` Reviewer 可将 gap 打回 Collector，最多 2 轮（真实闭环，重做后有改善） |
+| `**[R6]**` 反馈改善率量化（gaps_before → gaps_after → improvement_ratio） |
+| `**[R7]**` 每条结论标注来源，报告正文 `[n]` 上标 + traceability_map |
+| `**[R8]**` Schema 强制校验：model_validate() + 重试 2 次 + 降级 |
+| `**[R9]**` DAG 图实时高亮，节点状态可视化 |
+| `**[R10]**` 每个 Agent 的 Prompt/输入/输出/Token 可查 |
+| `**[R12]**` 幻觉抑制：引用强制 + 自一致性校验 + 超长上下文分片 |
+| `**[R13]**` per-Agent 超时 + 指数退避重试 + 降级 |
+| `**[R15]**` 输出指标：覆盖率/交叉验证率/改善率/溯源率 |
+| `**[R17]**` robots.txt 预检 + 来源声明 |
+| `**[R18]**` 数据脱敏（PII 检测 + 匿名化） |
+
+---
+
+## 4. 目录结构
+
+```
+backend/packages/harness/deerflow/
+└── competition/                     # 竞赛代码（与 collaboration/ 平级）
+    ├── __init__.py
+    ├── state.py                     # CompetitionState (单层 TypedDict)
+    ├── schema.py                    # Pydantic Schema + validate_agent_output()
+    ├── graph.py                     # build_competition_graph()
+    ├── router.py                    # route_after_* 条件路由
+    ├── config.py                    # Pydantic 配置模型
+    ├── visualization.py             # matplotlib/seaborn 图表
+    ├── nodes/
+    │   ├── __init__.py
+    │   ├── collector.py             # + VoC Aggregator 子模块
+    │   ├── analyst.py
+    │   ├── reviewer.py
+    │   ├── writer.py
+    │   ├── hitl_gate.py             # LangGraph interrupt() + 飞书审批
+    │   ├── error_handler.py
+    │   ├── deep_collector.py        # (P1)
+    │   ├── deep_analyst.py          # (P1)
+    │   ├── deep_reviewer.py         # (P1)
+    │   ├── deep_writer.py           # (P1)
+    │   └── feishu_delivery.py       # (P1)
+    ├── prompts/
+    │   ├── collector.md
+    │   ├── analyst.md
+    │   ├── reviewer.md
+    │   └── writer.md
+    ├── tools/
+    │   └── video_source.py          # YouTube/Bilibili 字幕提取
+    └── memory/
+        └── source_credibility.py    # (P2)
+
+backend/app/gateway/routers/
+└── competition.py                   # POST /analyze, GET /report/{id}, WS /stream
+
+backend/tests/
+└── test_competition_*.py
+
+config.yaml                          # 扩展 competition 段
+```
+
+---
+
+## 5. 编码规范
+
+### 5.1 节点函数签名
+
+```python
+# 所有节点函数统一签名
+def collector_node(state: CompetitionState) -> dict:
+    """返回部分 state 更新，LangGraph 自动 merge。"""
+    ...
+    return {"collected_data": new_data}  # Annotated[list, op_add] 自动累加
+```
+
+### 5.2 SubagentExecutor 使用模式
+
+```python
+from deerflow.subagents.executor import SubagentExecutor
+from deerflow.subagents.config import SubagentConfig
+from deerflow.tools import get_available_tools
+
+config = SubagentConfig(
+    name="collector",
+    model="doubao-seed-2-0-lite-260215",
+    system_prompt=load_prompt("collector"),
+    tools=["web_search", "web_fetch", "python", "write_file"],
+    skills=["data-normalizer", "deep-research"],
+    max_turns=30,
+    timeout_seconds=600,
+)
+executor = SubagentExecutor(config, tools, sandbox=sandbox)
+result = executor.execute(task_description)
+```
+
+### 5.3 类型注解
+
+- Python 3.12+，所有函数强制类型注解
+- State 字段用 `NotRequired` 标记可选
+- 累加字段用 `Annotated[list, op_add]`
+
+### 5.4 错误处理
+
+- 节点异常 → 设置 `error` 字段 → 路由到 `error_handler`
+- 不静默吞异常
+- LLM 调用异常 → 指数退避重试（1s → 2s → 4s，最多 3 次）
+- Schema 校验失败 → 自动重试（最多 2 次），仍失败则标注并降级
+
+### 5.5 Prompt 管理
+
+- Prompt 存为 Markdown 文件（`prompts/*.md`），不在代码中硬编码长文本
+- 加载方式：`pathlib.Path(__file__).parent.parent / "prompts" / "collector.md"`
+- Prompt 中的变量用 Python `str.format()` 或 f-string 注入
+
+---
+
+## 6. 提交规范
+
+- Commit message 格式：`competition: <简短描述> — <English>`
+- 中文在前，英文在后
+- 每 commit 附 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`
+- 不在 commit 中包含 `.env`、`config.yaml`（含密钥）、`.venv/`
+
+---
+
+## 7. 上游文档
+
+PA-Agent-DF 的原始架构和开发指令见 [PA-AGENT-DOCS/](./PA-AGENT-DOCS/)。
