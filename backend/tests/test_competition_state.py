@@ -9,10 +9,7 @@ Covers §1.1 of the coding plan:
 
 from __future__ import annotations
 
-from operator import add as op_add
-from typing import Annotated, NotRequired, get_type_hints
-
-import pytest
+from typing import get_type_hints
 
 from deerflow.competition.state import CompetitionState
 
@@ -85,8 +82,6 @@ class TestReducers:
         """collected_data must auto-merge multi-round results."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         assert "collected_data" in hints
-        # Annotated type carries metadata via __metadata__
-        origin = getattr(hints["collected_data"], "__origin__", None)
         metadata = getattr(hints["collected_data"], "__metadata__", None)
         assert metadata is not None, "collected_data must be Annotated[list, op_add]"
 
@@ -101,22 +96,15 @@ class TestOptionalFields:
     """Most fields should be NotRequired (graph nodes return partial updates)."""
 
     def test_fields_are_not_required(self):
+        """All custom fields should be NotRequired — LangGraph nodes return partial updates."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         required = {"messages"}  # AgentState requires messages
-        for name, hint in hints.items():
+        for name in hints:
             if name in required:
                 continue
-            # All custom fields should be NotRequired
-            is_not_required = hasattr(hint, "__args__") and any(
-                hasattr(a, "__name__") and a.__name__ == "NotRequired" for a in getattr(hint, "__args__", [])
-            )
-            # Also check direct NotRequired wrapper
-            origin = getattr(hint, "__origin__", None)
-            if origin in (NotRequired, type(None)):
-                continue
-            # Annotated types like list[dict] might not be NotRequired — that's ok
-            # as long as they have defaults in LangGraph's merge semantics
-            assert True  # non-required via LangGraph partial update semantics
+            # All custom fields should be accessible via .get() with None default
+            state = CompetitionState(messages=[])
+            assert state.get(name) is None, f"{name} should return None when unset"
 
     def test_can_construct_minimal(self):
         """Minimal state dict with only messages key (TypedDict, not class instance)."""

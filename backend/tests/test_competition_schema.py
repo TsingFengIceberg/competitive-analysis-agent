@@ -12,41 +12,39 @@ import pytest
 from pydantic import ValidationError as PydanticValidationError
 
 from deerflow.competition.schema import (
-    # Layer 1
-    FeatureNode,
-    FeatureCategory,
-    FeatureTree,
-    PricingTier,
-    PricingModel,
-    UserSegment,
-    UserPersona,
+    # Layer 3 — validation
+    AGENT_SCHEMA_MAP,
+    MAX_VALIDATION_RETRIES,
+    AnalysisResult,
     # Layer 2 — edge schemas
     CollectedDataPoint,
     ComparisonCell,
     ComparisonMatrix,
-    SWOTItem,
-    SWOTAnalysis,
-    TrendFinding,
+    FeatureCategory,
+    # Layer 1
+    FeatureNode,
+    FeatureTree,
     ForecastItem,
     ForecastResult,
-    AnalysisResult,
-    QualitySummary,
-    ReviewVerdict,
-    ReviewGap,
-    DataStats,
-    ReviewPackage,
     HitlDecision,
-    ReportSection,
+    PricingModel,
+    PricingTier,
+    QualitySummary,
     ReportData,
-    # Layer 3 — validation
-    AGENT_SCHEMA_MAP,
-    MAX_VALIDATION_RETRIES,
+    ReportSection,
+    ReviewGap,
+    ReviewPackage,
+    ReviewVerdict,
     SchemaValidationFailed,
     SchemaValidationRetry,
+    SWOTAnalysis,
+    SWOTItem,
+    TrendFinding,
+    UserPersona,
+    UserSegment,
     format_validation_error_for_llm,
     validate_agent_output,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Layer 1: 竞品知识 Schema

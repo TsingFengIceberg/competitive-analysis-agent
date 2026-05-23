@@ -8,8 +8,6 @@ Covers §1.5 of the coding plan:
 
 from __future__ import annotations
 
-import pytest
-
 from deerflow.competition.config import (
     AgentConfig,
     AnalystConfig,
