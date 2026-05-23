@@ -198,6 +198,23 @@ result = executor.execute(task_description)
 - 加载方式：`pathlib.Path(__file__).parent.parent / "prompts" / "collector.md"`
 - Prompt 中的变量用 Python `str.format()` 或 f-string 注入
 
+### 5.6 测试驱动开发（TDD — 强制）
+
+**每个新模块必须同步编写测试文件。编码完成 ≠ 测试通过才是完成。**
+
+- 测试目录：`backend/tests/test_competition_*.py`
+- 模块 → 测试文件映射：
+  - `competition/state.py` → `test_competition_state.py`
+  - `competition/schema.py` → `test_competition_schema.py`
+  - `competition/config.py` → `test_competition_config.py`
+  - `competition/graph.py` → `test_competition_graph.py`
+  - `competition/router.py` → `test_competition_router.py`
+  - `competition/nodes/*.py` → `test_competition_nodes.py`
+  - `competition/db.py` → `test_competition_db.py`
+- 运行方式：`cd backend && PYTHONPATH=packages/harness uv run pytest tests/test_competition_*.py -v`
+- 状态字段、Schema 校验、配置加载这类纯函数优先测试（无外部依赖）
+- 涉及 SubagentExecutor / LLM 调用的节点测试使用 mock
+
 ---
 
 ## 6. 提交规范
