@@ -2619,20 +2619,25 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 
 ### Week 2 (5/27 - 6/3): 前端 + 可观测 + 飞书集成
 
+> **前端选型已定**：嵌入 DF 现有 Next.js 前端（复用构建链、SSE client、shadcn/ui 组件、nginx 部署），新增 `/competition` 页面。后端数据提取层（`dag.py`、`observability.py`）已就绪，前端直接消费 JSON。
+
 | 任务 | 产出 | 优先级 |
 |------|------|--------|
-| 前端 UI 框架搭建 (Gradio 或 Next.js) | `frontend/` 或 `app/` | P0 |
-| 双面板布局 (左=用户视角, 右=系统内部) | 前端组件 | P0 |
-| DAG 执行图 (ReactFlow/D3.js, 节点高亮+边动画) | 前端组件 | P0 |
-| Agent 详情面板 (Prompt/Input/Output/Token 展示) | 前端组件 | P0 |
-| 结构化消息流日志 (JSON 时间线) | 前端组件 | P0 |
-| 溯源链视图 (点击报告结论 → 展示来源链) | 前端组件 | P0 |
-| 执行回放控件 (基于 Checkpoint 的时间轴滑块) | 前端组件 | P1 |
-| 报告查看页面（双视角切换 + Markdown 渲染） | 前端组件 | P0 |
-| SSE 实时流消费 (LangGraph stream → 前端状态更新) | Gateway + 前端 | P0 |
-| 飞书 Bot 配置 + 联通测试 (DF 已有通道) | `config.yaml` channels.feishu | P1 |
-| 飞书审批 HITL Gate (审批卡生成+回调resume) | `competition/nodes/hitl_gate.py` | P1 |
-| Gateway API (POST /analyze, WS /stream, GET /report) | `app/gateway/routers/competition.py` | P0 |
+| 前端 UI 框架搭建 | DF Next.js 新增 `/competition` 路由 | P0 |
+| 双面板布局（左=交互报告, 右=系统内部） | `frontend/src/app/competition/page.tsx` | P0 |
+| DAG 执行图（ReactFlow 节点高亮 + 边动画） | 消费 `get_dag_state()` JSON（`dag.py` 已就绪） | P0 |
+| Agent 详情面板（点击节点 → Prompt/Input/Output） | 消费 `get_agent_detail()` JSON（`observability.py` 已就绪） | P0 |
+| 结构化消息流日志（6 边 JSON 时间线） | 消费 `get_message_flow()` JSON（`observability.py` 已就绪） | P0 |
+| 溯源链视图（hover `[n]` → source card） | 消费 `get_traceability_chain()` JSON（`observability.py` 已就绪） | P0 |
+| ReportData 交互报告渲染（What-if 输入框内嵌） | `competition/report-renderer.tsx` | P0 |
+| HITL 审批卡片（4 按钮 + 自由文本输入） | `competition/hitl-card.tsx` | P0 |
+| 双视角切换（PM / 创业者 一键切换） | 前端重调 Writer 生成新 `ReportData` | P0 |
+| SSE 实时流消费（LangGraph stream → 前端状态更新） | 复用 DF 已有 SSE client | P0 |
+| 执行回放控件（基于 Checkpoint 的时间轴滑块） | `competition/replay-slider.tsx` | P1 |
+| Token 消耗面板 | `competition/token-panel.tsx` | P2 |
+| 报告导出（Markdown/PDF/PPTX 下载按钮） | 前端调用导出 API | P2 |
+| 飞书 Bot 配置 + 联通测试（DF 已有通道） | `config.yaml` channels.feishu | P1 |
+| Gateway API（POST /analyze, SS /stream, GET /report） | `app/gateway/routers/competition.py`（✅ 已就绪） | P0 |
 | 集成测试 | `tests/test_competition_e2e.py` | P0 |
 
 ### Week 3 (6/3 - 6/10): 打磨 + 答辩准备
@@ -2655,7 +2660,7 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 
 2. **数据源优先级**：编码时按实际速度和质量决定哪些源进普通模式、哪些源进深度模式。不提前定死。原则是"普通模式不阉割，深度模式不加限制"。
 
-3. **前端选型**：Gradio（快速出活）vs Next.js（复用项目现有前端经验）。倾向哪个？
+3. **前端选型**：Gradio（快速出活）vs Next.js（复用 DF 已有前端）→ **已决定：嵌入 DF 现有 Next.js 前端**。复用 DF 的构建链、SSE client、shadcn/ui 组件、nginx 部署。新增 `/competition` 路由，后端数据提取层（`dag.py`、`observability.py`）已就绪，前端只做 JSON→UI 渲染。
 
 4. **Agent 实现方式**：复用 DeerFlow 的 `SubagentExecutor`（每个 Agent 作为独立子代理运行，可观测性+错误隔离更好），还是直接在节点函数内用 LangChain `create_agent`（更简单）？
 

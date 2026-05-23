@@ -373,6 +373,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Collaboration HITL Resume API (interrupt status + resume endpoints)
     app.include_router(collaboration.router)
 
+    # Competition Analysis API (CI-Agent)
+    from app.gateway.routers.competition import router as competition_router
+    app.include_router(competition_router)
+
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:
         """Health check endpoint.
