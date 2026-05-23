@@ -37,8 +37,11 @@ CI-Agent 是一个**竞品分析 Agent 协作系统**，4 个专职 Agent（Coll
 
 ```
 Collector → Analyst → Reviewer → Writer → HITL Gate
-    ↑          ↑          │
-    └──────────┴── gap ───┘ (最多 2 轮)
+    ↑          ↑          │            │
+    │          │          │            ├─ approve → END
+    └──────────┴── gap ───┘            ├─ replan → Collector
+            (最多 2 轮)                ├─ reanalyze → Analyst
+                                       └─ rewrite → Writer
 ```
 
 **不允许**引入 PA-Agent-DF 的旧架构模式：
@@ -79,21 +82,21 @@ DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自�
 
 | 编码时必须确保 |
 |-------------|
-| `**[R1]**` 4 角色职责边界清晰，不交叉 |
+| `**[R1]**` 4 角色职责边界清晰：Collector/Analyst/Reviewer/Writer，各有规范章节 |
 | `**[R2]**` Collector 双轨：VoC Aggregator（主）+ 问卷/访谈生成（辅） |
-| `**[R3]**` 输出必须符合 Pydantic Schema（FeatureTree/PricingModel/UserPersona） |
-| `**[R4]**` Agent 间走结构化 JSON（CollectedDataPoint/ReviewGap），不用自然语言 |
-| `**[R5]**` Reviewer 可将 gap 打回 Collector，最多 2 轮（真实闭环，重做后有改善） |
-| `**[R6]**` 反馈改善率量化（gaps_before → gaps_after → improvement_ratio） |
-| `**[R7]**` 每条结论标注来源，报告正文 `[n]` 上标 + traceability_map |
+| `**[R3]**` 输出符合 Pydantic Schema（FeatureTree/PricingModel/UserPersona） |
+| `**[R4]**` Agent 间走 6 边结构化 JSON（AnalysisResult/ReviewVerdict/ReviewPackage/HitlDecision） |
+| `**[R5]**` Reviewer 8 项 gap 判定 → 打回 Collector，最多 2 轮 |
+| `**[R6]**` 反馈改善率量化（improvement_ratio） |
+| `**[R7]**` 每条结论 ReportData 内联 `[n]` 上标 + traceability_map |
 | `**[R8]**` Schema 强制校验：model_validate() + 重试 2 次 + 降级 |
 | `**[R9]**` DAG 图实时高亮，节点状态可视化 |
-| `**[R10]**` 每个 Agent 的 Prompt/输入/输出/Token 可查 |
-| `**[R12]**` 幻觉抑制：引用强制 + 自一致性校验 + 超长上下文分片 |
-| `**[R13]**` per-Agent 超时 + 指数退避重试 + 降级 |
-| `**[R15]**` 输出指标：覆盖率/交叉验证率/改善率/溯源率 |
-| `**[R17]**` robots.txt 预检 + 来源声明 |
-| `**[R18]**` 数据脱敏（PII 检测 + 匿名化） |
+| `**[R10]**` 每个 Agent Prompt/输入/输出/Token 可查（§7 可观测面板） |
+| `**[R12]**` 幻觉抑制：引用强制 + 自一致性 + 超长分片（§3.15.1） |
+| `**[R13]**` per-Agent 超时 + 指数退避 + 降级（§3.15.5-3.15.6） |
+| `**[R15]**` 输出指标：覆盖率/交叉验证率/改善率/溯源率（§3.15.4） |
+| `**[R17]**` robots.txt 预检 + 来源声明（§3.15.2） |
+| `**[R18]**` 数据脱敏：PII 检测 + 匿名化（§3.15.3） |
 
 ---
 
@@ -109,6 +112,7 @@ backend/packages/harness/deerflow/
     ├── router.py                    # route_after_* 条件路由
     ├── config.py                    # Pydantic 配置模型
     ├── visualization.py             # matplotlib/seaborn 图表
+    ├── db.py                        # SQLite 业务表（source_credibility/product_baseline/analysis_history）
     ├── nodes/
     │   ├── __init__.py
     │   ├── collector.py             # + VoC Aggregator 子模块
@@ -183,10 +187,10 @@ result = executor.execute(task_description)
 
 ### 5.4 错误处理
 
-- 节点异常 → 设置 `error` 字段 → 路由到 `error_handler`
-- 不静默吞异常
-- LLM 调用异常 → 指数退避重试（1s → 2s → 4s，最多 3 次）
-- Schema 校验失败 → 自动重试（最多 2 次），仍失败则标注并降级
+- **DF 基座层**：LLM API 重试（指数退避）、循环检测、高危命令拦截 — 不需要我们写
+- **节点内部**：收到 DF 失败结果后的降级行为、Schema 校验失败重试
+- **Graph 路由层**：`error` 字段 → `route_after_*` → `error_handler` 节点
+- 不静默吞异常；完整决策树见 [COMPETITION_PLAN.md §3.15.6](./COMPETITION_PLAN.md#3156-错误处理决策树)
 
 ### 5.5 Prompt 管理
 

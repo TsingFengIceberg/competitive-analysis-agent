@@ -40,24 +40,24 @@
 
 | # | 竞赛要求（原文关键词） | 来源 | 实现章节 | 实现方式 |
 |---|---------------------|------|---------|---------|
-| R1 | 角色 Agent：采集/分析/撰写/质检，职责边界明确 | 开题 §2 | [§3.3 角色定义](#33-4-个-agent-角色定义) + [§3.4 Collector采集规范](#34-collector-采集规范-竞赛要求-r1-r2) | 4 Agent 角色定义 + Collector 6 项采集规则 |
+| R1 | 角色 Agent：采集/分析/撰写/质检，职责边界明确 | 开题 §2 | [§3.3 角色定义](#33-4-个-agent-角色定义) + [§3.4 Collector规范](#34-collector-采集规范-竞赛要求-r1-r2) + [§3.5 Analyst规范](#35-analyst-分析规范) | 4 Agent 角色定义 + Collector 6 项采集规则 + Analyst 5 项分析规则 |
 | R2 | 采集 Agent 含问卷设计/问卷调研/用户访谈 | 开题 §2 | [§4.4 VoC Aggregator](#44-用户声音聚合器-voice-of-customer-aggregator-竞赛要求-r2) + [§3.3 Collector双轨](#33-4-个-agent-角色定义) | VoC Aggregator（主）+ 问卷生成（辅）双轨 |
-| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.8 竞品知识 Schema](#38-竞品知识-schemapydantic-强制校验) + [§3.9 Schema强制校验链](#39-schema-强制校验链竞赛要求-r3-r8) | 3 个 Pydantic BaseModel + model_validate() 强制校验 |
-| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.11 结构化通信协议](#311-agent-间结构化通信协议-竞赛要求-r4) | CollectedDataPoint / ReviewGap JSON Schema |
-| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.5 Reviewer审阅清单](#35-reviewer-审阅清单与判定规则-竞赛要求-r5) + [§3.6 DAG工作流](#36-dag-工作流) + [§3.10 路由逻辑](#310-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮，8 种 gap 判定规则 |
-| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.10.1 改善追踪](#3101-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
-| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.7 CompetitionState](#37-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
-| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.9 Schema强制校验链](#39-schema-强制校验链竞赛要求-r3-r8) | model_validate() + 自动重试 + 降级 |
+| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.9 竞品知识 Schema](#39-竞品知识-schemapydantic-强制校验) + [§3.10 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | 3 个 Pydantic BaseModel + model_validate() 强制校验 |
+| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.12 结构化通信协议](#312-agent-间结构化通信协议-竞赛要求-r4) | 6 边完整 Schema（AnalysisResult/ReviewVerdict/ReviewPackage/HitlDecision） |
+| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.6 Reviewer审阅清单](#36-reviewer-审阅清单与判定规则-竞赛要求-r5) + [§3.7 DAG工作流](#37-dag-工作流) + [§3.12 路由逻辑](#311-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮，8 种 gap 判定规则 |
+| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.11.1 改善追踪](#3111-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
+| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.8 CompetitionState](#38-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
+| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.10 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | model_validate() + 自动重试 + 降级 |
 | R9 | DAG 任务流转可视化、可追溯 | 判标 §4 | [§7.2](#72-dag-执行图核心展示位) | ReactFlow 节点高亮 + 边动画 |
 | R10 | 可观测性：Prompt/输入/输出/决策过程/Token 可查 | 开题 §2 + 判标 §4 | [§7.1-7.7](#七答辩呈现设计--内部工作流可视化) | 双面板 + Agent 详情 + 消息流日志 |
-| R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.6 DAG工作流](#36-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
-| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.12.1 幻觉抑制](#3121-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
-| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.12.5 超时重试](#3125-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
+| R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.7 DAG工作流](#37-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
+| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.15.1 幻觉抑制](#3141-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
+| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.15.5 超时重试](#3145-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
 | R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) | 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
-| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.12.4 业务指标](#3124-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
+| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.15.4 业务指标](#3144-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
 | R16 | 交互设计流畅：报告查看、溯源跳转、人工介入修正 | 判标 §4 | [§5.7](#57-人对报告的细粒度交互式编辑p0--答辩核心交互) + [§7.5](#75-溯源链视图traceability-viewer) | 飞书文档交互 + 溯源链视图 |
-| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.12.2 采集合规](#3122-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
-| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.12.3 数据脱敏](#3123-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
+| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.15.2 采集合规](#3142-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
+| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.15.3 数据脱敏](#3143-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
 | R19 | TRAE 等 AI 编程工具使用痕迹清晰 | 判标 §4 | [§8](#八3-周开发计划含答辩呈现) | Git 提交记录 + TRAE IDE 工作流 |
 | R20 | 项目文档齐全：README/架构图/角色协议/部署说明 | 判标 §4 | [§10](#十参考信息) + README + PA-AGENT-DOCS/ | 文档体系 |
 | R21 | 前段展示页面，可现场演示 | 开题 + 会议纪要 | [§7](#七答辩呈现设计--内部工作流可视化) + [§8 Week 2](#week-2-527--63-前端--可观测--飞书集成) | Gradio/Next.js + DAG 可视化 |
@@ -151,7 +151,7 @@
 │                                         (前端展示)         │
 └──────────────────────┬─────────────────────────────────────┘
                        │
-                       │  普通报告 (validated_brief + synthesis_report)
+                       │  普通报告 (report_data → 前端交互展示)
                        │
                        ▼
                deep_mode == true ?
@@ -166,7 +166,7 @@
                    │  • 更多数据源 (视频/抖音/飞书文档)          │
                    │  • 更多轮验证 (无上限，直到收敛)             │
                    │  • 更精细分析 (细分市场/用户分群/财务预测)   │
-                   │  • 更完整报告 (双视角+HTML+可视化全量)      │
+                   │  • 更完整报告 (ReportData + 导出 + 飞书推送)      │
                    │  • 飞书文档自动创建 + Bot 通知              │
                    │                                          │
                    │  Deep Collector → Deep Analyst            │
@@ -189,13 +189,13 @@
 |------|-----------|-----------|
 | **定位** | **比赛主体 (80-100 分)**，完整竞品分析系统 | **锦上添花**，以普通模式输出为起点的增强 |
 | **触发** | 始终执行 | 用户显式开启 `deep_mode: true` |
-| **输入** | 用户原始请求 | 普通模式的完整输出 (validated_brief + synthesis_report) |
-| **Collector** | 多源搜索（具体数据源由实际性能决定，开发中动态调整） | 增量采集：基于普通模式发现的知识缺口 + 视频/抖音等更深层源 |
-| **Analyst** | 对比矩阵 + SWOT + 趋势 + 可视化 | 细分分析 + 用户分群 + 财务/市场预测 + 全量可视化 |
-| **Reviewer** | ✅ 完整交叉验证 + scipy.stats + 2 轮反馈 | ✅ 更深验证，轮数放宽（直到收敛或用户中止） |
-| **HITL** | ✅ 飞书审批 | ✅ 可选二次审批（仅对新增/修改内容） |
-| **Writer** | 双视角 Markdown 报告 | 双视角 Markdown + 自包含 HTML + 飞书文档 |
-| **交付** | 前端展示 + 溯源查看 | 飞书文档 `docs +create` + Bot 通知 |
+| **输入** | 用户原始请求 | 普通模式的完整输出 (report_data + analysis_result) |
+| **Collector** | 多源搜索 + 意图路由 + 中英文分流（§3.4） | 增量采集：基于知识缺口补充视频/抖音等深层源 |
+| **Analyst** | 对比矩阵 + SWOT + 趋势 + 预测推演（§3.5） | 细分分析 + 用户分群 + 财务/市场预测 |
+| **Reviewer** | ✅ 8 项计算验证 + 2 轮反馈（§3.6） | ✅ 更深验证，轮数放宽 |
+| **HITL** | ✅ 前端审批 + 自由文本交互（§5.2） | ✅ 可选二次审批 + 飞书推送 |
+| **Writer** | 双视角 ReportData 交互报告（§3.7） | ReportData + Markdown/PDF/PPTX 导出 + 飞书 Doc |
+| **交付** | 前端交互报告 + 溯源查看 + What-if 推演 | 飞书文档 `docs +create` + Bot 通知 |
 | **数据源** | **不定死** — 编码时实测后决定。如果全模态抓取速度可接受，普通模式也会加入 | 覆盖普通模式未使用的更深层源 |
 | **目标耗时** | 不做硬性时间目标，编码实测后定 | 无时间上限 |
 
@@ -208,7 +208,7 @@
 | **Collector** | 多源并行采集、用户声音聚合、**问卷生成与访谈支持**、定向补采 | 增量采集：基于知识缺口补充视频/抖音/深层源 |
 | **Analyst** | 多维对比、SWOT、趋势、可视化 | 细分分析（按用户群/地域/场景）、预测建模 |
 | **Reviewer** | 交叉验证、Python 统计检验、gap 打回采集（≤2轮）、飞书审批推送 | 更多轮验证（无硬上限）、对深度新增内容专项验证 |
-| **Writer** | 双视角 Markdown 报告 + 内联溯源标注 `[n]` + 溯源地图 | 飞书文档创建 + HTML 导出 + 全量可视化嵌入 |
+| **Writer** | 双视角 ReportData 交互报告 + 内联溯源 + 一键导出 | Markdown/PDF/PPTX 导出 + 飞书 Doc 推送 |
 
 #### Collector 的双轨采集能力 `**[竞赛要求 R2]**`
 
@@ -408,11 +408,186 @@ Collector 产出不仅是 `list[CollectedDataPoint]`，附带摘要供可观测�
 
 答辩时直接展示在 Collector 详情面板——"42 条数据、3 产品全覆盖、18 轮后软停止"。
 
-### 3.5 Reviewer 审阅清单与判定规则 `**[竞赛要求 R5]**`
+#### 3.4.7 数据源路由策略
+
+> §3.4.5 定义了按意图的 Fallback 链，本节定义**如何判定意图**和**中英文路由**——Collector 不能靠"感觉"选源。
+
+**意图判定规则**（一次轻量 LLM 调用，不是完整 SubagentExecutor）：
+
+| 查询特征 | 判定为 | 首选用源 |
+|---------|--------|---------|
+| 含 "定价"/"价格"/"pricing"/"$/月" | 官方信息 | Firecrawl → Jina → web_search |
+| 含 "评测"/"review"/"对比"/"vs" | 用户评价 | G2/Product Hunt → Reddit → 知乎 |
+| 含 "github"/"star"/"commit" | 技术深度 | GitHub API → web_search |
+| 含 "融资"/"funding"/"估值" | 商业信息 | Crunchbase → web_search → Brave |
+| 含 "市场份额"/"market share" | 市场数据 | Tavily → Brave → web_search |
+| 纯中文查询 | 中文内容 | 火山引擎联网搜索 → 知乎/微博 → Tavily |
+| 纯英文查询 | 英文内容 | Tavily → Brave → 火山引擎 |
+| 无明确特征 | 通用 | Tavily → Brave → 火山引擎 |
+
+**中英文自动路由**：
+
+每条搜索词独立判定语言 → 各自走对应的 API 链：
+
+```
+搜索词生成（§3.4.4）:
+
+  "Cursor pricing 2026"          → 英文 → Tavily → Brave
+  "Cursor 定价 2026"              → 中文 → 火山引擎联网搜索
+  "Copilot user review reddit"   → 英文 → Reddit API → Tavily
+  "Cursor 评测 2026"              → 中文 → 火山引擎 → 知乎
+```
+
+中文词走火山引擎（原生优势、中文内容覆盖好），英文词走 Tavily/Brave（英文搜索质量高）。两者不冲突——同一个产品的中文和英文信息互补。
+
+**web_search vs web_fetch 的选择**：
+
+| 场景 | 工具 | 理由 |
+|------|------|------|
+| 探索性搜索（"Cursor 有什么功能"） | web_search | 需要概览，不是精确页面 |
+| 精确提取（"Cursor 定价页面具体价格"） | web_fetch | 需要页面原始内容，转 Markdown |
+| 整站爬取（"Cursor 所有文档"） | Firecrawl | 结构化批量抓 |
+| URL 已知（"查 cursor.com/pricing"） | Jina AI Reader | 单页 Markdown 转换，比 web_fetch 更干净 |
+
+### 3.5 Analyst 分析规范
+
+> Analyst 从 `collected_data` 生成 `AnalysisResult`。不是"LLM 想到什么分析什么"——按以下固定规则执行。
+
+#### 3.5.1 强制对比维度
+
+| 维度 | 子维度 | 必选？ | 需要的数据 |
+|------|--------|-------|-----------|
+| **功能** | 核心功能、差异化功能、缺失功能 | ✅ 必选 | category=features 的 DataPoint |
+| **定价** | 各 tier 价格、免费版、计费方式 | ✅ 必选 | category=pricing 的 DataPoint |
+| **用户** | 目标用户群、满意度、NPS/评分 | ✅ 必选 | category=users 的 DataPoint |
+| **市场** | 市场份额、增长趋势、融资/估值 | ⚠ 有数据才做 | category=market 的 DataPoint |
+| **技术** | 技术栈、架构、开源/闭源 | ⚠ 有数据才做 | GitHub API 等技术源 |
+| **团队** | 创始人、团队规模、招聘动态 | ⚠ 有数据才做 | LinkedIn/Crunchbase 等 |
+
+某必选维度数据量为 0 → 不生成该维度对比（不造假），标注 "⚠ 该维度未采集到足够数据"。
+
+#### 3.5.2 评分规则
+
+`comparison_matrix` 中的 `rating`（1-5）不是 LLM 自由裁量：
+
+| 数据情况 | 评分依据 |
+|---------|---------|
+| 有定量数据（价格、评分、star 数） | 分位数映射到 1-5。价格低的得高分，延迟低的得高分 |
+| 有定性数据（"功能完整"、"用户抱怨延迟"） | LLM 综合判断，必须引用 ≥1 条 `source_data_point_ids` |
+| 该维度无数据 | `rating = None`，标注 "无数据" |
+
+```python
+def quantile_to_rating(value: float, all_values: list[float],
+                       lower_is_better: bool = True) -> int:
+    """定量数据 → 1-5 分，有计算依据，非 LLM 幻觉数字"""
+    percentile = stats.percentileofscore(all_values, value)
+    if lower_is_better:
+        percentile = 100 - percentile
+    return min(5, max(1, round(percentile / 20)))
+```
+
+Reviewer 可回查原始数据和分位数计算是否正确（G6 统计异常检查）。
+
+#### 3.5.3 SWOT 生成约束
+
+每条 SWOT 条目必须满足：
+
+```python
+class SWOTItem(BaseModel):
+    category: Literal["strength", "weakness", "opportunity", "threat"]
+    statement: str          # 一句话陈述
+    evidence: str           # 支撑这个陈述的具体数据
+    source_data_point_ids: list[str]  # 必须 ≥ 1 条
+```
+
+**证据强制规则**：
+
+| SWOT 类型 | 必须引用什么数据 |
+|----------|----------------|
+| **S**trength | ≥1 条正面评分的 DataPoint |
+| **W**eakness | ≥1 条负面评分/用户抱怨的 DataPoint |
+| **O**pportunity | ≥1 条外部趋势/市场的 DataPoint |
+| **T**hreat | ≥1 条竞品动态/市场变化的 DataPoint |
+
+LLM 不能自由发挥"我觉得他们团队强"——必须说"GitHub star 32K（dp-xxx），社区活跃度 4.2/5（dp-yyy），因此团队对开源社区有强吸引力"。
+
+#### 3.5.4 可视化触发规则
+
+不是每次分析都画所有图。根据数据条件自动选择：
+
+| 数据条件 | 触发的图表 | 用途 |
+|---------|-----------|------|
+| 所有产品 × 所有维度均有 rating | 雷达图 | 多产品多维对比 |
+| 3+ 产品 × 5+ 功能的数据 | 功能热力图 | 功能覆盖矩阵 |
+| 有定价 tiers 数据 | 分组柱状图 | 定价层级对比 |
+| 有时间序列数据（GitHub star 历史等） | 折线图 | 增长趋势 |
+| 有用户评价 + sentiment 字段 | 情感饼图 + 词云 | 用户口碑概览 |
+| 有市场份额数据 | 堆叠柱状图 | 市场格局 |
+| 有 ≥2 次分析的同一产品数据 | 变更对比图 | 产品演进（P2） |
+
+没有对应数据 → 跳过该图表，不强行画。
+
+#### 3.5.5 Analyst 自检清单
+
+Analyst 完成后内部校验（与 Reviewer 职责不同——Analyst 自检保证"输出结构完整"，Reviewer 审阅保证"数据正确"）：
+
+| # | 检查项 | 不通过时 |
+|---|-------|---------|
+| A1 | 每个 target_product 在 comparison_matrix 中有 ≥1 个 rating | 标注 "⚠ 某产品数据不足" |
+| A2 | 每个 SWOT 条目都有 `source_data_point_ids` | 补引用；补不上 → 删除该条目 |
+| A3 | 所有引用 DataPoint 的 source_url 非空 | 回查 DataPoint，写 "⚠ 来源缺失" |
+| A4 | 定量评分标注了计算方式（分位数/直接值） | 在 evidence 字段补充 |
+| A5 | comparison_matrix.summary 包含数据覆盖率说明 | 补充覆盖率百分比 |
+
+#### 3.5.6 Analyst 与 Reviewer 的职责边界
+
+| 检查 | 谁做 | 目的 | 发现问题的处理 |
+|------|------|------|-------------|
+| A1-A5 自检 | Analyst | 保证输出结构完整 | 内部修正后产出 |
+| G1-G8 审阅（§3.6） | Reviewer | 验证数据正确性 | 生成 ReviewGap 打回 Collector |
+
+#### 3.5.7 竞品分析的三个时间维度
+
+竞品分析天然是"过去→现在→未来"的完整视角。Analyst 的 `AnalysisResult` 已经覆盖了过去（trends）和现在（comparison_matrix + SWOT），唯一缺的是**未来（预测推演）**。
+
+| 时间维 | 做什么 | 数据来源 | Analyst 产出 |
+|--------|-------|---------|------------|
+| **过去** | 版本演进、历史定价、趋势变化 | Collector（历史数据） | `TrendFinding[]` |
+| **现在** | 对比矩阵、SWOT、用户声音 | Collector（当前数据） | `ComparisonMatrix` + `SWOTAnalysis` |
+| **未来** | 预测推演、What-if 假设分析 | **不需要 Collector**——在现有数据上做推理 | `ForecastResult`（新增） |
+
+**ForecastResult Schema**：
+
+```python
+class ForecastItem(BaseModel):
+    dimension: str              # "定价" | "市场份额" | "用户增长" | "功能演进"
+    product: str
+    current_state: str          # "Cursor Pro = $20/月，免费版有 200K 用户"
+    trend_direction: Literal["up", "down", "stable", "uncertain"]
+    trend_strength: float       # 0.0-1.0，趋势的确定程度
+    forecast_6m: str            # 6 个月预测
+    forecast_12m: str           # 12 个月预测
+    rationale: str              # 为什么这样预测（基于什么数据）
+    confidence: float           # 预测置信度
+    source_data_point_ids: list[str]
+
+
+class ForecastResult(BaseModel):
+    """Analyst → Writer，写入 AnalysisResult.forecast"""
+    items: list[ForecastItem]
+    summary: str                # 预测总结
+    disclaimer: str             # "以下预测基于公开数据趋势外推，不构成投资建议"
+```
+
+**Why 不走 Collector**：What-if 是"在现有数据上做推理"——数据不动，推理在动。用户说"如果 Cursor 降价到 $10，竞争格局怎么变？"时，系统不需要重新搜索任何东西，直接在已有 `comparison_matrix` 上做假设推演，30 秒出结论。
+
+**What-if 的实际触发路径**：用户在报告交互界面的 What-if 输入框输入假设 → 轻量 LLM 调用生成假设条件 → Writer 将假设条件注入重新生成报告的相关章节。不需要新节点，不需要新 Graph 边。
+
+### 3.6 Reviewer 审阅清单与判定规则 `**[竞赛要求 R5]**`
 
 > 判标 §4 要求"质检 Agent 能识别问题并打回采集/分析 Agent 重做"。审阅不是 LLM 自由发挥——Reviewer 按以下固定清单逐项检查，每条判定必须附带计算依据或来源证据。
 
-#### 3.4.1 四类 Gap 判定规则
+#### 3.6.1 四类 Gap 判定规则
 
 | # | 检查项 | 判定方法 | 判定依据 | 触发条件 | Gap 类型 | Gap 生成内容 |
 |---|-------|---------|---------|---------|---------|------------|
@@ -425,7 +600,7 @@ Collector 产出不仅是 `list[CollectedDataPoint]`，附带摘要供可观测�
 | G7 | **语义矛盾** | LLM 推理 | 同一产品/维度的两条文字描述语义相反 | LLM 判定语义冲突 | `source_conflict` | `{conflicting_claims: [text_a, text_b, source_a, source_b], suggested_remedy: "搜索更多来源判决"}` |
 | G8 | **置信度偏低** | 计算验证 | `confidence < 0.5` 的数据点 | LLM 或 API 返回的低置信度标记 | `missing_data` | `{low_confidence_points, target_collect: "重新搜索高置信度来源"}` |
 
-#### 3.4.2 判定优先级
+#### 3.6.2 判定优先级
 
 Gap 不是平级的——`fact_error` 最严重，需要立即修正：
 
@@ -436,7 +611,7 @@ Gap 不是平级的——`fact_error` 最严重，需要立即修正：
 | P1 | `outdated` | 保留旧数据但标注 "⚠ 数据可能过时（X天前）"，打回补采最新数据 |
 | P2 | `missing_data` | 不阻塞，标注缺失维度，打回补采。≥2 轮仍缺失则写入 `unresolved_issues` |
 
-#### 3.4.3 审阅输出结构
+#### 3.6.3 审阅输出结构
 
 Reviewer 完成后输出到 State：
 
@@ -468,7 +643,7 @@ Reviewer 完成后输出到 State：
 }
 ```
 
-#### 3.4.4 为什么不需要 Critic+Judge 分离
+#### 3.6.4 为什么不需要 Critic+Judge 分离
 
 PA-Agent-DF 用 Critic（提出质疑）+ Meta-Judge（裁决）是因为当时依靠 LLM 辩论做验证，存在"自己质疑自己裁决"的结构问题。
 
@@ -476,7 +651,123 @@ PA-Agent-DF 用 Critic（提出质疑）+ Meta-Judge（裁决）是因为当时�
 
 这与判标 §4 25% 的"上下文管理、错误恢复、幻觉抑制有明确策略（自一致性校验、引用强制）"**直接对应**——我们的"自一致性"不是 LLM 自我审查，而是 Python 计算工具的硬验证。
 
-### 3.6 DAG 工作流
+### 3.7 Writer 报告规范
+
+> Writer 输出不再是 `.md` 文件字符串——而是 `ReportData` 结构化 JSON，前端原生渲染交互报告。Markdown/PDF/PPTX 只是导出格式。
+
+#### 3.7.1 报告从静态文件 → 前端原生交互
+
+```
+Writer 产出 ReportData (结构化 JSON)
+    │
+    ├─→ 前端交互报告（P0 基准）
+    │     • hover 来源 [n] → 弹出 source card
+    │     • 选中段落 → 输入指令 → 局部重做
+    │     • 切换 PM/创业者视角（同一份 ReportData，前端重渲染）
+    │     • 内嵌 What-if 输入框 → 实时推演
+    │     • DAG 面板旁边即为报告面板（§7.1 双面板布局）
+    │
+    ├─→ 导出 Markdown    （本地保存）
+    ├─→ 导出 PDF         （打印/分享）
+    ├─→ 导出 PPTX        （DF 已有 ppt-generation Skill）
+    └─→ 飞书 Doc 推送    （P1，lark-cli docs +create）
+```
+
+#### 3.7.2 ReportData Schema
+
+```python
+class ReportSection(BaseModel):
+    id: str                          # "sec-executive-summary" / "sec-comparison" / ...
+    title: str
+    content: str                     # Markdown 文本（前端渲染引擎解析）
+    content_type: str                # "text" | "table" | "chart" | "what-if-form"
+    source_ids: list[str]            # 本章节引用的 DataPoint ID
+    chart_path: str | None           # content_type="chart" 时
+    subsections: list["ReportSection"] | None
+
+
+class ReportData(BaseModel):
+    """Writer → State.report_data，替代原来的 final_report + pm_report + entrepreneur_report"""
+    persona: str                     # "pm" | "entrepreneur"
+    title: str
+    generated_at: str
+    products: list[str]
+    sections: list[ReportSection]
+    traceability_map: dict           # source_id → {url, timestamp, confidence_level}
+    quality_summary: QualitySummary  # 来自 ReviewVerdict（§3.13.4）
+    forecast: ForecastResult | None  # 来自 AnalysisResult（§3.5.7）
+    metrics: dict                    # coverage / improvement_ratio / trace_completeness
+```
+
+#### 3.7.3 报告固定章节结构
+
+| 章节 (section id) | 必选？ | content_type | 条件 |
+|-------------------|-------|-------------|------|
+| `sec-executive-summary` | ✅ | text | — |
+| `sec-comparison-matrix` | ✅ | table | — |
+| `sec-swot` | ✅ | text | — |
+| `sec-trends` | ⚠ | text + chart | 有 TrendFinding |
+| `sec-user-voice` | ⚠ | text + chart | 有 sentiment 数据 |
+| `sec-forecast` | ⚠ | text + what-if-form | 有 ForecastResult |
+| `sec-recommendations` | ✅ | text | — |
+| `sec-sources` | ✅ | table | — |
+| `appendix-quality` | ✅ | text | — |
+| `appendix-charts` | ⚠ | chart | 有图表生成 |
+
+#### 3.7.4 PM 视角 vs 创业者视角
+
+同一份数据，两版报告的差异在**措辞、侧重点、建议类型**。Writer 的 system prompt 注入 `PERSONA_PROFILE`——不是两套 prompt，而是一套 prompt + 一个 persona 参数：
+
+```
+PERSONA = "pm":
+  执行摘要第一句: "从产品功能角度看..."
+  建议: 功能优先级排序、差异化方向
+  对比矩阵侧重: 功能维度 > 定价维度
+
+PERSONA = "entrepreneur":
+  执行摘要第一句: "从市场机会角度看..."
+  建议: 细分市场选择、商业模式、进入时机
+  对比矩阵侧重: 定价维度 > 功能维度
+```
+
+| 维度 | PM 视角 | 创业者视角 |
+|------|---------|-----------|
+| **核心问题** | "该做什么功能？差异化在哪？" | "市场有机会吗？能活下去吗？" |
+| **对比矩阵侧重** | 功能维度为主，体验/UX 细粒度对比 | 定价维度为主，商业模式/市场格局 |
+| **SWOT 层级** | 产品级（功能/UX/定价/用户） | 战略级（市场/团队/资本/壁垒） |
+| **建议类型** | 功能优先级排序、差异化方向 | 细分市场选择、商业模式建议、进入时机 |
+| **What-if 侧重** | "如果竞品加了 X 功能，我们要跟进吗？" | "如果我选 Y 细分市场，竞争压力多大？" |
+| **来源强调** | 用户评价、功能对比测评 | 市场份额、融资数据、财务信息 |
+
+#### 3.7.5 来源标注格式
+
+每条事实性结论后跟 `[n]` 上标，前端 hover 弹出 source card（URL、抓取时间、置信度、交叉验证状态）：
+
+```markdown
+Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1][3]，
+但在多文件重构场景下 Copilot 的上下文理解更完整[2]。
+```
+
+**质量信号 → 标注文案映射**：
+
+| QualitySummary 字段 | 前端渲染 |
+|-------------------|---------|
+| multi_source ≥ 2 | ✅ 多源交叉验证 |
+| single_source = 1 | ⚠ 单源，未经交叉验证 |
+| fact_errors > 0 | ❌ 发现数据错误 |
+| reviewer_round ≥ 2 | ⚠ 反馈 2 轮后仍未完全解决 |
+
+#### 3.7.6 Writer 自检清单
+
+| # | 检查项 | 不通过时 |
+|---|-------|---------|
+| W1 | 每个 target_product 在报告中至少出现一次 | 补充 |
+| W2 | 每条事实性结论后都有 `[n]` 来源标号 | 补引用 |
+| W3 | traceability_map 的 key 和报告中的 `[n]` 一一对应 | 对齐 |
+| W4 | 来源表中每条标注对应正确的 quality 标签 | 修正标签 |
+| W5 | 所选 persona 的侧重点正确 | 调整措辞 |
+
+### 3.8 DAG 工作流
 
 ```
 普通模式 (始终执行):
@@ -498,7 +789,7 @@ PA-Agent-DF 用 Critic（提出质疑）+ Meta-Judge（裁决）是因为当时�
                                                                    Feishu 交付
 ```
 
-### 3.7 CompetitionState 设计
+### 3.9 CompetitionState 设计
 
 ```python
 class CompetitionState(AgentState):
@@ -521,10 +812,8 @@ class CompetitionState(AgentState):
     gap_coverage_improvement: float | None  # 反馈闭环改善度量：本轮填补的 gap 比例
 
     # ── Writer 输出（普通模式）── `**[竞赛要求 R7]**`
-    final_report: str                       # Markdown (普通模式最终报告)，事实性结论以 [n] 上标标注来源
+    report_data: ReportData | None          # 前端原生交互报告（替代 final_report/pm_report/entrepreneur_report）
     traceability_map: dict                  # claim_id → {url, fetch_timestamp, confidence}
-    pm_report: str                          # PM 视角报告
-    entrepreneur_report: str                # 创业者视角报告
     review_package: ReviewPackage | None    # Writer → HITL 审批简报
 
     # ── 深度模式专用 ──
@@ -541,7 +830,7 @@ class CompetitionState(AgentState):
     error: str | None
 ```
 
-### 3.8 竞品知识 Schema（Pydantic 强制校验）
+### 3.10 竞品知识 Schema（Pydantic 强制校验）
 
 **Schema 1 — 功能树**:
 ```python
@@ -592,7 +881,7 @@ class UserPersona(BaseModel):
     primary_segments: list[UserSegment]
 ```
 
-### 3.9 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
+### 3.11 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
 
 > 评审明确要求"输出严格符合预定义 Schema，字段完整、格式一致"。我们不仅定义 Schema，更在每个 Agent 输出边界做强制校验。
 
@@ -621,7 +910,7 @@ Agent LLM 输出 (JSON string)
 - 每次校验失败时记录日志（时间、Agent、Schema 类型、原始输出、校验错误）
 - Schema 校验日志作为可观测面板的一部分展示
 
-### 3.10 路由逻辑（普通模式 + 深度模式流水线）
+### 3.12 路由逻辑（普通模式 + 深度模式流水线）
 
 ```python
 # competition/router.py
@@ -754,7 +1043,7 @@ def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     return builder.compile(checkpointer=checkpointer)
 ```
 
-#### 3.10.1 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
+#### 3.12.PLACEHOLDER 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
 
 > 判标 §4 明确要求"反馈闭环真实可触发，重做后输出有改善（非伪闭环）"。我们不仅实现打回，更量化改善。
 
@@ -779,12 +1068,12 @@ def measure_improvement(gaps_before: list, gaps_after: list) -> dict:
 
 **答辩展示**：在 DAG 图上，反馈回环边标注改善数据，如 "🔁 Round 1 → 2 gaps → Round 2 → 0 gaps (改善率 100%)"。如果改善率为 0（伪闭环），可从日志看出 LLM 没有真正生成新搜索词。
 
-### 3.11 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
+### 3.13 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
 
 > 判标 §4 35% 明确要求"Agent 间采用结构化消息传递（function calling / 标准 Schema），非纯自然语言对话"。
 > 以下 6 条边全部定义为 Pydantic 模型，每条消息可被日志捕获、可被前端渲染。
 
-#### 3.11.1 通信契约总览
+#### 3.13.1 通信契约总览
 
 ```
 Collector ──①──→ Analyst ──②──→ Reviewer ──③──→ Writer ──④──→ HITL
@@ -801,7 +1090,7 @@ Collector ──①──→ Analyst ──②──→ Reviewer ──③──
 | ⑤ | Reviewer | Collector | `ReviewGap` | `gaps` | 定向补采指令 |
 | ⑥ | HITL Gate | 目标节点 | `HitlDecision` | `hitl_decision` | 精准回退指令 |
 
-#### 3.11.2 边 ①：Collector → Analyst
+#### 3.13.2 边 ①：Collector → Analyst
 
 ```python
 class CollectedDataPoint(BaseModel):
@@ -816,7 +1105,7 @@ class CollectedDataPoint(BaseModel):
     collected_at: str           # ISO 8601
 ```
 
-#### 3.11.3 边 ②：Analyst → Reviewer
+#### 3.13.3 边 ②：Analyst → Reviewer
 
 每条分析结论必须带 `source_data_point_ids`，让 Reviewer 能从结论反向追溯到原始数据点。没有这个字段，Reviewer 无法做计算验证。
 
@@ -861,10 +1150,11 @@ class AnalysisResult(BaseModel):
     comparison_matrix: ComparisonMatrix
     swot: dict[str, SWOTAnalysis]       # key = product name
     trends: list[TrendFinding]
+    forecast: ForecastResult | None     # §3.5.7 预测推演（有趋势数据才生成）
     visualization_paths: list[str]       # Sandbox 中图表文件路径
 ```
 
-#### 3.11.4 边 ③：Reviewer → Writer
+#### 3.13.4 边 ③：Reviewer → Writer
 
 Writer 生成报告时，措辞应该反映数据质量。多源验证过的写"多方来源显示"，单源的写"据 X 来源称"——这些信息在 QualitySummary 里。
 
@@ -891,7 +1181,7 @@ class ReviewVerdict(BaseModel):
     reviewer_notes: str             # 给 Writer 的一句话
 ```
 
-#### 3.11.5 边 ④：Writer → HITL Gate
+#### 3.13.5 边 ④：Writer → HITL Gate
 
 驱动飞书审批卡片的内容渲染。卡片的 UI 就是 `ReviewPackage` 的可视化呈现。
 
@@ -915,7 +1205,7 @@ class ReviewPackage(BaseModel):
     entrepreneur_report_preview: str    # 创业者视角报告前 500 字
 ```
 
-#### 3.11.6 边 ⑤：Reviewer → Collector（打回）
+#### 3.13.6 边 ⑤：Reviewer → Collector（打回）
 
 ```python
 class ReviewGap(BaseModel):
@@ -926,7 +1216,7 @@ class ReviewGap(BaseModel):
     related_data_point_ids: list[str]
 ```
 
-#### 3.11.7 边 ⑥：HITL Gate → 目标节点
+#### 3.13.7 边 ⑥：HITL Gate → 目标节点
 
 用户说"重写 SWOT 部分"时，Writer 不应该全文重写。`target_focus` 让目标节点聚焦。
 
@@ -939,7 +1229,7 @@ class HitlDecision(BaseModel):
     timestamp: str                  # ISO 8601
 ```
 
-#### 3.11.8 CompetitionState 对应更新
+#### 3.13.8 CompetitionState 对应更新
 
 新增 4 个强类型字段替代原有松散 dict：
 
@@ -955,11 +1245,169 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 ---
 
-### 3.12 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
+### 3.14 数据持久化架构
+
+> 以下分析"整个系统用了哪些存储层"以及每层的职责边界。核心原则：**DF 基座层处理 Agent 基础设施的持久化（零工作量），业务层只在跨 run 有增量价值的点建表（三张）。**
+
+#### 3.14.1 全项目存储总览
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ DF 基座层（零工作量，import 即用）                         │
+├─────────────────────────────────────────────────────────┤
+│ SqliteSaver                                             │
+│   ├─ checkpoints 表     LangGraph 每次节点执行后自动写入   │
+│   │                     用途：崩溃恢复 / 中断续跑 / 执行回放│
+│   └─ checkpoint_writes  用途：pending writes 追踪         │
+│                                                         │
+│ Sandbox 文件系统（per-thread 隔离目录）                    │
+│   用途：图表 PNG / 报告 MD & HTML / 临时下载文件           │
+│   生命周期：thread 结束后保留，通过路径引用                  │
+│                                                         │
+│ AgentState.messages（内存，SubagentExecutor 管理）         │
+│   用途：每个 Agent 内部的 LLM 对话历史，上下文窗口内          │
+│                                                         │
+│ config.yaml + deerflow.config                            │
+│   用途：模型配置 / workflow 定义 / 飞书 App ID / Token     │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ 业务层（三张表，扩展在 SqliteSaver 同一个 SQLite 文件中）    │
+├─────────────────────────────────────────────────────────┤
+│ source_credibility      跨 run 动态演化的来源可信度        │
+│   读：Collector 启动时   写：Reviewer 验证后                │
+│   SELECT score WHERE source_domain = ?                   │
+│                                                         │
+│ product_baseline        竞品数据基线（变更检测用）          │
+│   读：Collector 启动时   写：Writer 完成后                  │
+│   ⚠ 是"上次是 X，这次验证是否变了"，不是缓存在不搜索         │
+│                                                         │
+│ analysis_history        分析历史索引                      │
+│   读：用户查历史时        写：HITL approve 后               │
+│   一条 SQL 找到"我上个月分析 Cursor 的报告"                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+> **关键认知**：这三张表不是系统运行的必需品——去掉它们，Collector → Analyst → Reviewer → Writer → HITL 照样跑通，因为 State 在内存中流转，Checkpointer 在图画完后已持久化。三张表的价值是**跨 run 的增量智能**——越用越准的来源可信度、自动感知的变更检测、可回溯的分析历史。
+
+#### 3.14.2 source_credibility 表 — 来源可信度动态演化
+
+```sql
+CREATE TABLE IF NOT EXISTS source_credibility (
+    source_domain TEXT PRIMARY KEY,     -- "g2.com" / "cursor.com" / "reddit.com"
+    score REAL NOT NULL DEFAULT 0.50,   -- 0.0-1.0，新来源默认 0.50（中性）
+    verification_count INTEGER DEFAULT 0,
+    last_verified_at TEXT,
+    last_verdict TEXT                   -- "verified" | "conflict" | "error" | "outdated"
+);
+```
+
+**演化算法**（Reviewer 每次验证后调用）：
+
+```python
+def update_credibility(domain: str, verdict: str) -> float:
+    adjustments = {
+        "verified": +0.05,    # 准确 → 涨
+        "conflict": -0.05,    # 与其他源矛盾 → 扣
+        "error":    -0.15,    # 数据错误 → 重扣
+        "outdated": -0.02,    # 过时 → 轻扣
+    }
+    current = get_score(domain)  # 默认 0.50
+    delta = adjustments.get(verdict, 0)
+    return clamp(current + delta, 0.0, 1.0)
+```
+
+**Collector 如何使用**：在 §3.4.5 来源优先级之上加权——高可信源（>0.80）优先，低可信源（<0.30）降级或跳过。
+
+**答辩价值**：演示中展示 `g2.com` 的分数从 0.50→0.70→0.92 的演化曲线——"系统不是每次从零开始判断来源，而是越用越准"。
+
+#### 3.14.3 product_baseline 表 — 竞品变更检测基线
+
+> ⚠ **不是缓存**。不是"上次搜过了这次跳过"——那会导致漏掉竞品的真实变更。而是"上次是 X，这次定向验证是否变成 Y"。
+
+```sql
+CREATE TABLE IF NOT EXISTS product_baseline (
+    product_name TEXT,
+    attribute TEXT,            -- "pricing_pro" / "latest_version" / "key_feature_xxx"
+    value TEXT,                -- "$20" / "0.48" / "AI code completion"
+    source_url TEXT,
+    confidence REAL,
+    recorded_at TEXT,          -- 首次记录时间
+    updated_at TEXT,           -- 最后确认时间
+    PRIMARY KEY (product_name, attribute)
+);
+```
+
+**Collector 如何使用**：
+
+```
+第一次分析 Cursor（无 baseline）:
+  → 8 轮搜索 → Cursor Pro = $20 → 入库 product_baseline
+
+第二次分析 Cursor（3 天后，有 baseline）:
+  → 读 baseline: "上次 Cursor Pro = $20 (3 天前，source: cursor.com/pricing)"
+  → 不是跳过，而是定向 HEAD cursor.com/pricing → 发现文案变成了 "$30/月"
+  → CollectedDataPoint 标注:
+      "⚠ Cursor Pro: was $20 (May 23), now $30 (May 26) — 提价 50%，source: cursor.com/pricing"
+  → Reviewer 看到 was/now → 触发变更标记
+```
+
+**答辩价值**："系统不仅知道 Cursor 卖 $30，还知道它上次分析时卖 $20，变化发生在过去 3 天内"——这是 §5.3 竞品变更检测的技术底座。
+
+#### 3.14.4 analysis_history 表 — 分析历史索引
+
+```sql
+CREATE TABLE IF NOT EXISTS analysis_history (
+    thread_id TEXT PRIMARY KEY,
+    user_id TEXT DEFAULT "default",
+    query TEXT,
+    products TEXT,             -- JSON array: ["cursor", "copilot", "windsurf"]
+    persona TEXT,
+    deep_mode INTEGER DEFAULT 0,
+    created_at TEXT,
+    key_findings TEXT,         -- JSON: 3-5 条关键发现
+    report_path TEXT,          -- Sandbox 中报告文件路径
+    metrics TEXT               -- JSON: {coverage, cross_validation_rate, improvement_ratio, ...}
+);
+```
+
+**使用场景**：
+- 用户问"对比我 5 月 15 日的分析"→ `SELECT * FROM analysis_history WHERE created_at < ?` → 读 history report → diff
+- §5.6 竞品分析历史对比功能的数据基础
+- 答辩面板展示"历史分析时间线"
+
+#### 3.14.5 不需要建表的部分（及原因）
+
+| 候选 | 判断 | 原因 |
+|------|------|------|
+| user_preferences | ❌ | Demo 是单用户，config.yaml competition 段即可 |
+| 竞品数据库 | ❌ | 产品名是用户输入的参数，不预置 |
+| 报告全文存储 | ❌ | Sandbox 文件系统存文件，表里只存路径 |
+| Agent 执行日志 | ❌ | DF Checkpointer + §7 可观测面板从 State 实时读 |
+| 搜索缓存 | ❌ | 危险——缓存会漏掉真实变更，product_baseline 是基线不是缓存 |
+
+#### 3.14.6 三张表的关系定位
+
+```
+source_credibility ──→ quality（质量维度）
+    越用越准
+
+product_baseline   ──→ freshness（时效维度）
+    自动感知变更
+
+analysis_history   ──→ reference（回溯维度）
+    可比较可复盘
+```
+
+> **共同价值**：使系统从"每次独立的分析工具"升级为"越用越聪明的分析助手"。
+
+---
+
+### 3.15 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
 
 > 判标 §4（25% 技术深度与工程完整度 + 10% 合规）明确要求：幻觉抑制策略、超时重试/降级、采集合规、数据脱敏、可量化业务指标。本节逐项落实。
 
-#### 3.12.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
+#### 3.15.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
 
 | 策略 | 实现 | 触发条件 |
 |------|------|---------|
@@ -969,7 +1417,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 **垃圾引用检测**（额外防御）：Reviewer 检查 source_url 域名是否在已知低质量源列表中（如内容农场、SEO 垃圾站），命中则自动降级 confidence。
 
-#### 3.12.2 采集合规 `**[竞赛要求 R17]**`
+#### 3.15.2 采集合规 `**[竞赛要求 R17]**`
 
 > 判标 §4 10% 明确要求"遵守目标站点 robots.txt 与服务条款，对外部数据来源有明确授权或公开声明"。
 
@@ -980,7 +1428,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 | **速率控制** | 同一域名请求间隔 ≥1s，避免对目标站点造成压力 |
 | **工具合规** | 所有采集工具（Tavily/Firecrawl/Jina/Brave）均在各自免费/商业授权范围内使用 |
 
-#### 3.12.3 数据脱敏 `**[竞赛要求 R18]**`
+#### 3.15.3 数据脱敏 `**[竞赛要求 R18]**`
 
 > 会议纪要明确："报告中涉及用户访谈等数据需做脱敏处理，避免个人敏感信息露出"。
 
@@ -993,7 +1441,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 实现：在 Writer 生成报告前，LLM prompt 中注入脱敏指令 + Python 正则后处理双重保障。
 
-#### 3.12.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
+#### 3.15.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
 
 > 判标 §4 20% 要求"相比传统人工，在效率/覆盖度/一致性上有可量化的提升。设计清晰的业务闭环关键指标（准确率、覆盖率、人工修正率）"。
 
@@ -1019,7 +1467,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 效率提升: ~1,000x | 成本: < 0.5 元人民币
 ```
 
-#### 3.12.5 超时重试与降级 `**[竞赛要求 R13]**`
+#### 3.15.5 超时重试与降级 `**[竞赛要求 R13]**`
 
 | 机制 | 实现 |
 |------|------|
@@ -1029,12 +1477,12 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 | **降级策略** | 某数据源不可用时 → 自动切换备选源（Tavily 不可用 → Brave Search）；某 Agent 超时 → 带上已有部分结果继续下一节点 |
 | **看门狗** | DF 已有的 `loop_detection_middleware`（3 次警告/5 次强制停止）防止 Reviewer 无限打回 |
 
-#### 3.12.6 错误处理决策树 `**[竞赛要求 R12, R13]**`
+#### 3.15.6 错误处理决策树 `**[竞赛要求 R12, R13]**`
 
 > 判标 §4 25% 要求"错误恢复有明确策略"、"系统稳定性：异常处理、超时重试、降级机制完备"。
 > 分层原则：**DF 基座管"怎么重试"，我们管"重试失败后图往哪走"**。
 
-##### 3.12.6.1 错误分类
+##### 3.15.6.1 错误分类
 
 | 类别 | 示例 | 严重级别 | 策略 | 谁处理 |
 |------|------|---------|------|-------|
@@ -1045,7 +1493,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 > **关键区分**：A 类不需要我们写代码——DF 的 SubagentExecutor 和 middleware 链已经处理了。我们的节点只需要判断 `result.status == "failed"` 并决定降级行为。
 
-##### 3.12.6.2 逐节点 Fallback 行为
+##### 3.15.6.2 逐节点 Fallback 行为
 
 **Collector 节点**：
 
@@ -1151,7 +1599,7 @@ HITL Gate 执行中
       → 不阻塞系统（HITL 是增强功能，不是必须条件）
 ```
 
-##### 3.12.6.3 错误传播路径（Graph 层）
+##### 3.15.6.3 错误传播路径（Graph 层）
 
 ```
      ┌──────────┐
@@ -1174,8 +1622,10 @@ HITL Gate 执行中
            │ D 类（致命）  │ C 类（逻辑故障）
            ▼              ▼
      保存 checkpoint   自动设 HitlDecision
-     final_report =     (action = "replan")
-       "分析失败..."    路由回 Collector
+     report_data =       (action = "replan")
+       ReportData(       路由回 Collector
+         title="分析失败",
+         ...)
      HitlDecision
        (action = "approve")
      END
@@ -1183,14 +1633,14 @@ HITL Gate 执行中
 
 > **A/B 类错误不进入 error_handler**——各节点内部已降级处理。error_handler 只处理 D 类（致命）和 C 类（逻辑故障升级到致命）。
 
-##### 3.12.6.4 error_handler 节点实现
+##### 3.15.6.4 error_handler 节点实现
 
 ```python
 def error_handler_node(state: CompetitionState) -> dict:
     error = state.get("error", "")
 
     # 有部分结果 → 降级标注后尝试继续
-    if state.get("collected_data") or state.get("synthesis_report"):
+    if state.get("collected_data") or state.get("analysis_result"):
         return {
             "error": None,  # 清除错误，继续流程
             "unresolved_issues": [{
@@ -1203,18 +1653,28 @@ def error_handler_node(state: CompetitionState) -> dict:
     # 完全无结果 → 优雅停止
     return {
         "error": f"FATAL: {error}",
-        "final_report": (
-            "## 分析失败\n\n"
-            "系统在运行过程中遇到致命错误：\n\n"
-            f"> {error}\n\n"
-            "请检查输入或稍后重试。"
+        "report_data": ReportData(
+            title="分析失败",
+            persona="pm",
+            generated_at=datetime.now().isoformat(),
+            products=[],
+            sections=[ReportSection(
+                id="sec-error",
+                title="错误",
+                content=f"系统在运行过程中遇到致命错误：\n\n> {error}\n\n请检查输入或稍后重试。",
+                content_type="text",
+                source_ids=[],
+            )],
+            traceability_map={},
+            quality_summary=QualitySummary(...),
+            metrics={},
         ),
         "review_decision": "approve",  # 跳过 HITL，直接结束
         "hitl_decision": HitlDecision(action="approve", comment="致命错误，自动批准", target_focus=None, timestamp=datetime.now().isoformat()),
     }
 ```
 
-##### 3.12.6.5 DF 层 vs Graph 层职责总结
+##### 3.15.6.5 DF 层 vs Graph 层职责总结
 
 | 层 | 职责 | 我们需要写吗 |
 |---|------|------------|
@@ -1443,34 +1903,124 @@ DF 的 `app/channels/feishu.py`（699 行）已实现完整飞书 Bot：
 
 **配置**：只需在 `config.yaml` 中添加飞书 App ID + Secret。
 
-### 5.2 飞书审批 HITL Gate（P1 — 新增，比赛亮点） `**[竞赛要求 R5]**`
+### 5.2 飞书审批 HITL Gate（P1 — 新增，比赛亮点） `**[竞赛要求 R5, R16]**`
 
-> 判标 §4 要求"反馈闭环真实可触发"。飞书审批是字节生态内最自然的 HITL 实现方式。
+> 判标 §4 35% 要求"反馈闭环真实可触发"，20% 要求"交互设计流畅：人工介入修正"。审批不仅是 4 个按钮，更支持自由文本交互——用户用自然语言描述修改意图，系统自动解析并路由。
+
+#### 5.2.1 审批卡片信息结构
+
+卡片内容由 `ReviewPackage`（§3.13.5）驱动，分三个区域设计。信息原则：**摘要让用户 10 秒判断"结果对不对"，关键发现让用户定位"哪里不对"，数据质量让用户评估"要不要信"**。
 
 ```
-Reviewer 发现冲突 → 生成审批卡片（结构化数据对比） → 推送到用户飞书
-  → 用户在飞书审批中点 "采纳来源A" / "采纳来源B" / "都需要补充"
-  → 系统收到审批回调 → resume 图执行 → 继续后续分析
+┌──────────────────────────────────────────┐
+│ 📊 竞品分析报告 — 待审批                    │
+│                                          │
+│ 【执行摘要】                              │
+│ Cursor 在功能完整度和社区活跃度上领先，      │
+│ Copilot 在生态集成和企业定价上有优势，       │
+│ Windsurf 在创新速度上突出但市场份额最小。     │
+│                                          │
+│ 【关键发现】                              │
+│ • Cursor Pro $20/月 vs Copilot $19/月     │
+│   → 价格接近，Cursor 免费版能力更强         │
+│ • 用户满意度：Cursor 4.2 > Copilot 3.8    │
+│   → 差距在"代码补全准确性"维度最明显         │
+│ • ⚠ Windsurf 企业版定价数据缺失             │
+│                                          │
+│ 【数据质量】                              │
+│ 总数据点: 42 | 交叉验证: 72% | 溯源: 100%  │
+│ 反馈改善率: 100% (2 gaps → 0)              │
+│                                          │
+│ 【未解决问题】                            │
+│ • Windsurf 企业版定价未找到                 │
+│                                          │
+│ 【建议操作】                              │
+│ 建议批准发布 | 或要求重写为投资人视角         │
+│                                          │
+│ 💬 输入修改意见：                          │
+│ ┌──────────────────────────────────────┐ │
+│ │ "SWOT 太笼统，需要具体的 Tab 补全      │ │
+│ │  准确率数据，最好有定量对比"            │ │
+│ └──────────────────────────────────────┘ │
+│                                          │
+│ [✅ 批准] [🔄 重新搜索] [📊 重新分析] [✏️ 重写] │
+└──────────────────────────────────────────┘
 ```
 
-**审批卡片内容**：
+#### 5.2.2 四个按钮的场景与语义
+
+| 按钮 | 何时选 | 系统行为 |
+|------|--------|---------|
+| **approve** ✅ | 结果没问题，可以直接用 | `HitlDecision(action="approve")` → END 或深度模式 |
+| **replan** 🔄 | 关键维度缺数据、来源太少、数据过时 | `HitlDecision(action="replan")` → Collector 定向补采 |
+| **reanalyze** 📊 | 数据没问题但结论偏了、SWOT 不准 | `HitlDecision(action="reanalyze")` → Analyst 重做分析 |
+| **rewrite** ✏️ | 数据和结论都对，但表达风格/视角不合适 | `HitlDecision(action="rewrite")` → Writer 重写报告 |
+
+`target_focus` 让目标节点只重做指定部分，不全文重跑：
+
 ```
-📋 数据冲突需要你的判断
-
-冲突: Cursor Pro 定价
-  来源A (官网): $20/month
-  来源B (G2评测): $30/month  
-  来源C (Reddit): $20/month，但用户反映实际是 $30
-
-建议: 以官网为准，标注 G2 信息可能过时
-
-[采纳A] [采纳B] [都需要补充]
+replan    + target_focus = ["定价"]       → Collector 定向搜索定价
+reanalyze + target_focus = ["SWOT"]       → Analyst 只重做 SWOT
+rewrite   + target_focus = ["创业者视角"]  → Writer 只重写创业者视角报告
 ```
 
-**为什么是亮点**：
-- 直接对应评分标准 "HITL 反馈闭环"（35% 权重）
-- 用飞书审批实现了"企业真实工作流"
-- 字节内部评审看到飞书审批集成会有天然的体感共鸣
+#### 5.2.3 自由文本交互与意图解析
+
+> 按钮是快捷操作，但不是好的交互的全部。用户应该能用自然语言精确描述修改意图。
+
+**交互规则**：
+
+| 用户操作 | 系统行为 |
+|---------|---------|
+| 只输入文本，不点按钮 | LLM 解析意图 → 自动判断 action + target_focus → 执行 |
+| 只点按钮，不输入文本 | 当前逻辑，`comment` 为空，`target_focus` 取按钮默认 |
+| 输入文本 + 点按钮 | 按钮决定 action，文本解析为 target_focus + 补充上下文 |
+| 什么都不做 | 30 分钟超时 → auto-approve |
+
+**意图解析 Prompt**（一次轻量 LLM 调用，HITL Gate 节点内部）：
+
+```
+你是一个意图解析器。用户在审阅竞品分析报告后给出了反馈。
+请判断用户的意图，输出 JSON。
+
+用户反馈: "{user_comment}"
+
+可选动作:
+- "approve": 用户满意，可以发布
+- "replan": 用户认为数据不够，需要重新搜索
+- "reanalyze": 用户认为分析不对，需要重新分析
+- "rewrite": 用户认为报告表达需要修改
+
+输出格式:
+{
+    "action": "replan" | "reanalyze" | "rewrite" | "approve",
+    "target_focus": ["维度1", "维度2"],
+    "reasoning": "一句话"
+}
+```
+
+**为什么架构不用变**：意图解析只是 HITL Gate 节点内部多了一步 LLM 调用，输出还是 `HitlDecision` → 路由到已有 4 条边。回环不变，Graph 不变。
+
+#### 5.2.4 飞书审批卡片 vs 前端审批（双路径）
+
+两种实现路径，共享同一个 `ReviewPackage` Schema，只是渲染层不同：
+
+| 维度 | 前端审批界面 | 飞书审批推送 |
+|------|------------|------------|
+| 优先级 | **P0**（比赛基准） | P1（增强亮点） |
+| 实现方式 | 在 Gradio/Next.js 中嵌入审批卡片组件 | `lark-cli approval` API 推送 |
+| 优势 | 不依赖外部服务、和 DAG 面板同界面 | 字节生态共鸣、飞书 App 内体验 |
+| 劣势 | 需要开发审批 UI | 依赖飞书 API、需处理回调 resume |
+
+**比赛策略**：P0 做前端审批（和 §7 可观测面板同一界面），P1 加飞书审批推送。答辩时前端展示审批交互，提到"已预留飞书审批对接"。
+
+#### 5.2.5 审批超时与默认行为
+
+| 场景 | 默认行为 | 理由 |
+|------|---------|------|
+| 30 分钟无操作 | auto-approve，标注 "⚠ 用户未响应，自动批准" | 不阻塞流程 |
+| 飞书审批推送失败 | auto-approve + warning 日志 | HITL 是增强，不是必须阻塞点 |
+| 用户选 replan/reanalyze/rewrite 但未填 comment | 正常路由，目标节点 prompt 追加 "用户未指定具体修改方向，请重新生成" | 降低使用门槛 |
 
 ### 5.3 竞品变更检测 + 飞书通知（P1 — 新增）
 
@@ -1489,7 +2039,7 @@ Reviewer 发现冲突 → 生成审批卡片（结构化数据对比） → 推�
 
 ### 5.4 可视化增强（P0 — 报告差异化关键）
 
-在 Sandbox 中用 matplotlib/seaborn 生成，嵌入 Markdown 报告：
+在 Sandbox 中用 matplotlib/seaborn 生成，嵌入 ReportData 报告的 chart section：
 
 | 图表类型 | 用途 | 示例 |
 |---------|------|------|
@@ -1781,6 +2331,56 @@ DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中�
 | Reviewer | 1 项 | ~200 行 Python（动态评分 + HITL 联动） | 中 |
 | Writer | 5 项 | ~400 行 Python + ~300 行前端 | 🔥 高 |
 | **总计** | **16 项增强** | **~2000 行 Python + 前端** | **显著** |
+
+### 6.9 竞品分析的本质是图问题（P2 扩展展望）
+
+> 当前 comparison_matrix 已经用结构化表格编码了图的关系。如果时间充裕，以下图算法方向可以作为长期扩展。
+
+**竞品分析中天然存在的图关系**：
+
+```
+Cursor ──[competes_with]──→ Copilot ──[competes_with]──→ Windsurf
+  │                            │                            │
+  │                            │                            │
+[has_feature]              [has_feature]              [has_feature]
+  │                            │                            │
+  ▼                            ▼                            ▼
+Tab补全(4.5)              Tab补全(3.8)              Tab补全(4.1)
+  │                            │                            │
+  │                            │                            │
+[sourced_from]             [sourced_from]             [sourced_from]
+  │                            │                            │
+  ▼                            ▼                            ▼
+cursor.com                 github.com                 windsuf.com
+```
+
+我们的 `ComparisonCell`（product → dimension，带 rating）就是图的邻接矩阵表示，`CollectedDataPoint` 就是叶节点（带 source），`ReviewVerdict` 就是边的置信度权重。
+
+**值得加入的真图算法**：
+
+| 图算法 | 竞品分析场景 | 时机 |
+|--------|------------|------|
+| **中心度** (Centrality) | 在 AI 编程工具生态中，OpenAI 的 GPT 模型是所有竞品的共同依赖 → 中心节点即"行业关键瓶颈" | P2 |
+| **社区检测** (Community Detection) | 市场上自然形成"开源派 vs 闭源派"、"云原生 vs 本地"的阵营 | P2 |
+| **路径分析** (Path Analysis) | 从产品 A 到产品 B 的功能迁移路径 → "如果你从 Cursor 迁移到 Copilot，需要适应的 5 个功能差异" | P2 |
+| **PageRank 变体** | 哪家竞品在技术生态中被引用最多 → "行业影响力排名" | P2 |
+
+**为什么当前阶段不着急**：comparison_matrix + SWOT + trends 已经覆盖比赛所需的对比分析。以上图算法在准确性上依赖大量数据，在可解释性上不如结构化对比表直观。
+
+**答辩话术**："竞品分析本质上是异构图问题。当前我们用结构化 Schema（comparison_matrix）编码了图的节点和边，Reviewer 通过交叉验证给每条边赋置信度权重。如果未来升级到图数据库（Neo4j）+ GraphRAG，就可以用中心度算法自动发现行业关键节点，用社区检测自动识别市场阵营。"
+
+### 6.10 交互性报告扩展（P2 展望）
+
+> §3.7 Writer 已将报告从静态文件升级为前端交互式 ReportData。以下是时间充裕时可进一步扩展的交互能力。
+
+| 功能 | 交互方式 | 体验价值 | 时机 |
+|------|---------|---------|------|
+| **Hover-to-source** | 鼠标悬停 `[3]` → 弹出小卡片：URL、抓取时间、置信度、交叉验证状态 | 不用跳转到报告末尾看来源 | P2 |
+| **What-if 推演** | 报告内嵌输入框，用户输入假设 → 不走 Collector，直接在现有数据上推理 → 30 秒更新报告 | 从"过去发生了什么"升级为"如果我做 X，市场会怎么反应" | **已纳入 §3.5.7 P0** |
+| **版本 Diff** | 对比两次分析报告 → 高亮变化行 → 结合 `product_baseline` 表自动标注"这 8 天发生了什么" | 持续监控场景的核心交互 | P2 |
+| **一键导出幻灯片** | ReportData → PPTX（DF 已有 `ppt-generation` Skill），每章节一页，图表自动嵌入 | PM 拿着报告去汇报，PPT 是硬通货 | P2 |
+| **语音批注** | 飞书 App 长按段落 → 语音输入 → 自动转文字 → 解析为 HITL 指令 | 移动端场景 | P2 |
+| **协作评论线程** | 多人对同一段报告评论、讨论、决议 | 企业真实协作场景 | P2 |
 
 ---
 
