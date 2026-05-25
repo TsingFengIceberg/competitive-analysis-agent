@@ -56,6 +56,27 @@ cd frontend && PORT=2026 nohup pnpm start > /tmp/frontend.log 2>&1 &
 - 查看日志：`tail -f /tmp/gateway.log` / `tail -f /tmp/frontend.log`
 - 页面地址：`http://121.43.235.19:2026/competition`
 
+### 2.1 密钥管理（强制）
+
+**除 `.env` 和 `config.yaml` 外，任何文件不得包含明文 API Key。**
+
+- `.env` 已在 `.gitignore`，不会提交到仓库
+- `config.yaml` 已在 `.gitignore`，不会提交到仓库
+- 所有其他文件（Python、TypeScript、Markdown 等）必须通过环境变量读取密钥
+- 禁止 `os.environ.get("KEY", "hardcoded-fallback")` 的默认值模式
+- Doubao 配置已统一迁移到 `.env`：`DOUBAO_MODEL`、`DOUBAO_API_BASE`、`DOUBAO_API_KEY`
+
+**每次提交前必须执行密钥检查：**
+```bash
+grep -rn "ark-f\|sk-[a-zA-Z0-9]\{20,\}\|api_key.*[a-zA-Z0-9]\{30,\}" \
+  --include="*.py" --include="*.ts" --include="*.tsx" \
+  --include="*.md" --include="*.yaml" --include="*.yml" \
+  --include="*.json" \
+  .gitignore config.yaml .env \
+  2>/dev/null | grep -v node_modules | grep -v .venv | grep -v ".next" | grep -v pnpm-lock
+```
+输出为空才算通过。
+
 ---
 
 ## 3. 核心架构约束

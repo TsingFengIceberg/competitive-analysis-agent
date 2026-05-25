@@ -12,10 +12,11 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Default model config for competition agents
-DOUBAO_MODEL = "ep-20260514111325-xjmj7"
-DOUBAO_API_BASE = "https://ark.cn-beijing.volces.com/api/v3"
-DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "ark-f26df94a-6b3a-4535-bd66-465266a7e1af-dd663")
+# Competition agent model config — all values come from environment variables.
+# Set DOUBAO_MODEL, DOUBAO_API_BASE, and DOUBAO_API_KEY before starting the gateway.
+DOUBAO_MODEL = os.environ.get("DOUBAO_MODEL", "")
+DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", "")
+DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 
 
 def execute_agent(
