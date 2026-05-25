@@ -220,17 +220,36 @@ def build_collection_summary(points: list[CollectedDataPoint], target_products: 
 
 
 def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
-    """Parse raw Collector output into CollectedDataPoint list."""
+    """Parse raw Collector output into CollectedDataPoint list.
+
+    Handles: markdown code fences, truncated JSON, plain text with embedded JSON.
+    """
     if raw is None:
         return []
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, str):
+        text = raw.strip()
+        # Strip markdown code fences (```json or ```)
+        text = re.sub(r"^```(?:json|jsonc)?\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
         try:
-            items = json.loads(raw)
+            items = json.loads(text)
         except json.JSONDecodeError:
-            logger.warning("Collector output is not valid JSON")
-            return []
+            # Try to find a JSON array in the text
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            if match:
+                try:
+                    items = json.loads(match.group())
+                except json.JSONDecodeError:
+                    # Try to salvage: extract individual JSON objects from truncated output
+                    items = _salvage_json_objects(text)
+                    if not items:
+                        logger.warning("Collector output is not valid JSON (%d chars)", len(raw))
+                        return []
+            else:
+                logger.warning("Collector output is not valid JSON (%d chars)", len(raw))
+                return []
     else:
         return []
 
@@ -248,15 +267,33 @@ def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
 
 
 def _execute_collector(task: str, state: dict) -> str | None:
-    """Placeholder: execute Collector via SubagentExecutor.
+    """Execute Collector via lightweight LLM executor (production: SubagentExecutor)."""
+    from deerflow.competition.executor import execute_agent
+    from deerflow.competition.prompts import load_prompt
 
-    In production, this calls:
-        executor = SubagentExecutor(config, tools, sandbox=sandbox)
-        result = executor.execute(task)
-        return result.output
-
-    For now, returns None (empty results) — real executor wired in integration phase.
-    """
     logger.info("Collector executing task (%d chars)", len(task))
-    # Placeholder — real SubagentExecutor call goes here
-    return None
+    prompt = load_prompt("collector").replace("{task_description}", task)
+    return execute_agent(prompt, task, max_tokens=8192)
+
+
+def _salvage_json_objects(text: str) -> list[dict]:
+    """Attempt to extract individual JSON objects from truncated/partial output."""
+    # Find all {...} objects in the text
+    objects = []
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(text[start : i + 1])
+                    objects.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+    return objects

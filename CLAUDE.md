@@ -31,9 +31,36 @@ CI-Agent 是一个**竞品分析 Agent 协作系统**，4 个专职 Agent（Coll
 
 ---
 
-## 2. 核心架构约束
+## 2. 启动方式（服务器内存仅 7.1GB，必须用生产模式）
 
-### 2.1 单图 4 节点 + 反馈环
+**前端必须用 `pnpm build && pnpm start`，严禁 `pnpm dev`。** Turbopack dev 模式吃 1.5-2.5GB 内存，会导致 SSH 断开。
+
+```bash
+# 1. 启动后端 Gateway（端口 8001）
+cd backend && PYTHONPATH=packages/harness nohup uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 > /tmp/gateway.log 2>&1 &
+
+# 2. 构建前端（仅前端代码变更时需要重新 build）
+cd frontend && pnpm build
+
+# 3. 启动前端生产模式（端口 2026）
+cd frontend && PORT=2026 nohup pnpm start > /tmp/frontend.log 2>&1 &
+```
+
+| 模式 | 内存 | 说明 |
+|------|------|------|
+| `pnpm dev` (Turbopack) | 1.5-2.5 GB | 实时编译 + HMR，**禁止在服务器使用** |
+| `pnpm build` + `pnpm start` | ~100 MB | 预编译静态文件，**必须用这个** |
+
+- 仅改后端代码 → 重启 gateway 即可，无需 rebuild 前端
+- 改前端代码 → 重新 `pnpm build && pnpm start`
+- 查看日志：`tail -f /tmp/gateway.log` / `tail -f /tmp/frontend.log`
+- 页面地址：`http://121.43.235.19:2026/competition`
+
+---
+
+## 3. 核心架构约束
+
+### 3.1 单图 4 节点 + 反馈环
 
 ```
 Collector → Analyst → Reviewer → Writer → HITL Gate
@@ -50,7 +77,7 @@ Collector → Analyst → Reviewer → Writer → HITL Gate
 - ❌ 不引入四权分立 permission 系统
 - ❌ 不在 Harness 层 import `app.*`
 
-### 2.2 DeerFlow-First 铁律
+### 3.2 DeerFlow-First 铁律
 
 ```
 DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自建
@@ -67,7 +94,7 @@ DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自�
 | Stream | DF 已有 `stream_mode=["values", "custom"]` + StreamBridge |
 | Config | 扩展 `config.yaml` 的 `competition` 段，走 `deerflow.config` 读取 |
 
-### 2.3 禁止修改的 DF 文件
+### 3.3 禁止修改的 DF 文件
 
 - `deerflow/sandbox/sandbox.py` / `sandbox_provider.py` / `tools.py`
 - `deerflow/subagents/executor.py`
@@ -76,7 +103,7 @@ DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自�
 
 ---
 
-## 3. 竞赛要求速查
+## 4. 竞赛要求速查
 
 > 完整追溯矩阵见 [COMPETITION_PLAN.md §1.4](./COMPETITION_PLAN.md#14-竞赛要求追溯矩阵)
 
@@ -100,7 +127,7 @@ DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自�
 
 ---
 
-## 4. 目录结构
+## 5. 目录结构
 
 ```
 backend/packages/harness/deerflow/
@@ -147,9 +174,9 @@ config.yaml                          # 扩展 competition 段
 
 ---
 
-## 5. 编码规范
+## 6. 编码规范
 
-### 5.1 节点函数签名
+### 6.1 节点函数签名
 
 ```python
 # 所有节点函数统一签名
@@ -159,7 +186,7 @@ def collector_node(state: CompetitionState) -> dict:
     return {"collected_data": new_data}  # Annotated[list, op_add] 自动累加
 ```
 
-### 5.2 SubagentExecutor 使用模式
+### 6.2 SubagentExecutor 使用模式
 
 ```python
 from deerflow.subagents.executor import SubagentExecutor
@@ -179,26 +206,26 @@ executor = SubagentExecutor(config, tools, sandbox=sandbox)
 result = executor.execute(task_description)
 ```
 
-### 5.3 类型注解
+### 6.3 类型注解
 
 - Python 3.12+，所有函数强制类型注解
 - State 字段用 `NotRequired` 标记可选
 - 累加字段用 `Annotated[list, op_add]`
 
-### 5.4 错误处理
+### 6.4 错误处理
 
 - **DF 基座层**：LLM API 重试（指数退避）、循环检测、高危命令拦截 — 不需要我们写
 - **节点内部**：收到 DF 失败结果后的降级行为、Schema 校验失败重试
 - **Graph 路由层**：`error` 字段 → `route_after_*` → `error_handler` 节点
 - 不静默吞异常；完整决策树见 [COMPETITION_PLAN.md §3.15.6](./COMPETITION_PLAN.md#3156-错误处理决策树)
 
-### 5.5 Prompt 管理
+### 6.5 Prompt 管理
 
 - Prompt 存为 Markdown 文件（`prompts/*.md`），不在代码中硬编码长文本
 - 加载方式：`pathlib.Path(__file__).parent.parent / "prompts" / "collector.md"`
 - Prompt 中的变量用 Python `str.format()` 或 f-string 注入
 
-### 5.6 测试驱动开发（TDD — 强制）
+### 6.6 测试驱动开发（TDD — 强制）
 
 **每个新模块必须同步编写测试文件。编码完成 ≠ 测试通过才是完成。**
 
@@ -215,9 +242,20 @@ result = executor.execute(task_description)
 - 状态字段、Schema 校验、配置加载这类纯函数优先测试（无外部依赖）
 - 涉及 SubagentExecutor / LLM 调用的节点测试使用 mock
 
+### 6.7 提交前 Lint 检查（强制）
+
+**每次 `git commit` 前必须跑 lint，CI 报红 = 提交不合格。**
+
+| 端 | 命令 | 说明 |
+|---|------|------|
+| 后端 | `cd backend && PYTHONPATH=packages/harness uv run ruff check packages/harness/deerflow/competition/ tests/` | Python 代码规范（ruff） |
+| 前端 | `cd frontend && npx eslint src/app/competition/ src/components/competition/` | TS/React 代码规范（eslint） |
+
+CI（GitHub Actions）每次 push 自动跑这两条，失败会发邮件通知。本地跑过就不用等 CI 报错再修。
+
 ---
 
-## 6. 提交规范
+## 7. 提交规范
 
 - Commit message 格式：`competition: <简短描述> — <English>`
 - 中文在前，英文在后
@@ -226,6 +264,6 @@ result = executor.execute(task_description)
 
 ---
 
-## 7. 上游文档
+## 8. 上游文档
 
 PA-Agent-DF 的原始架构和开发指令见 [PA-AGENT-DOCS/](./PA-AGENT-DOCS/)。

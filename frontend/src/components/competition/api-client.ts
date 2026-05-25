@@ -2,6 +2,23 @@
 
 import { useState, useCallback } from "react";
 
+// ── CSRF Helper ──
+
+function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  for (const pair of document.cookie.split("; ")) {
+    if (pair.startsWith("csrf_token=")) {
+      return decodeURIComponent(pair.slice("csrf_token=".length));
+    }
+  }
+  return null;
+}
+
+function csrfHeaders(): Record<string, string> {
+  const token = getCsrfToken();
+  return token ? { "X-CSRF-Token": token } : {};
+}
+
 // ── API Types ──
 
 export type Persona = "pm" | "entrepreneur";
@@ -133,8 +150,9 @@ export function useCompetitionAPI() {
     setLoading(true);
     const res = await fetch(`${API_BASE}/analyze`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
       body: JSON.stringify(req),
+      credentials: "include",
     });
     setLoading(false);
     if (!res.ok) throw new Error(`Analysis failed: ${res.status}`);

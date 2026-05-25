@@ -20,6 +20,7 @@ const config = {
     locales: ["en", "zh"],
     defaultLocale: "en",
   },
+  allowedDevOrigins: ["121.43.235.19"],
   devIndicators: false,
   async rewrites() {
     const rewrites = [];

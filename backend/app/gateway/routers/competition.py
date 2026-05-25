@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -94,8 +94,8 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         "products": request.target_products,
     }
 
-    # Launch graph in background (in production: via RunManager)
-    asyncio.create_task(_run_graph_async(thread_id))
+    # Launch graph in background thread (sync LLM calls would block asyncio event loop)
+    asyncio.get_event_loop().run_in_executor(None, _run_graph_sync, thread_id)
 
     return AnalyzeResponse(thread_id=thread_id, status="running")
 
@@ -157,8 +157,13 @@ async def list_history(limit: int = Query(default=10, le=50)):
 # ── Internal ──
 
 
-async def _run_graph_async(thread_id: str) -> None:
-    """Run the competition graph in background, updating _store as it progresses."""
+def _run_graph_sync(thread_id: str) -> None:
+    """Run the competition graph synchronously (called from thread executor).
+
+    LLM calls (langchain) are synchronous and would block the asyncio event loop
+    for ~2 minutes. This function runs in a separate thread so the event loop
+    stays free to handle other requests.
+    """
     try:
         from deerflow.competition.graph import build_competition_graph
         from deerflow.competition.state import CompetitionState
@@ -167,17 +172,52 @@ async def _run_graph_async(thread_id: str) -> None:
         if not entry:
             return
 
+        from deerflow.competition.graph import register_nodes
+        from deerflow.competition.nodes.analyst import analyst_node
+        from deerflow.competition.nodes.collector import collector_node
+        from deerflow.competition.nodes.error_handler import error_handler_node
+        from deerflow.competition.nodes.hitl_gate import hitl_gate_node
+        from deerflow.competition.nodes.reviewer import reviewer_node
+        from deerflow.competition.nodes.writer import writer_node
+
+        register_nodes({
+            "collector": collector_node,
+            "analyst": analyst_node,
+            "reviewer": reviewer_node,
+            "writer": writer_node,
+            "hitl_gate": hitl_gate_node,
+            "error_handler": error_handler_node,
+        })
+
         graph = build_competition_graph()
         initial_state = CompetitionState(**entry["state"])
 
         # Stream execution — updates store on each node completion
-        for event in graph.stream(initial_state, stream_mode=["values", "updates"]):
-            # event is {node_name: state_update_dict}
-            for node_name, update in event.items():
-                if isinstance(update, dict):
-                    current = _store[thread_id].get("state", {})
-                    current.update(update)  # noqa: PD020 ambiguous-variable-name
-                    _store[thread_id]["state"] = current
+        event_num = 0
+        for event in graph.stream(initial_state, stream_mode=["values"]):
+            event_num += 1
+            # LangGraph stream returns (mode, data) tuple or dict
+            if isinstance(event, tuple):
+                update = event[-1]  # last element is always the data
+            else:
+                update = event
+            if isinstance(update, dict):
+                _store[thread_id]["state"] = update
+                # Log key fields present in this event to trace pipeline
+                flags = []
+                if update.get("collection_summary"):
+                    flags.append("collected")
+                if update.get("analysis_result"):
+                    flags.append("analyzed")
+                if update.get("review_verdict"):
+                    flags.append("reviewed")
+                if update.get("report_data"):
+                    flags.append("written")
+                if update.get("hitl_decision"):
+                    flags.append("hitl_decided")
+                if update.get("error"):
+                    flags.append(f"error={update['error'][:50]}")
+                logger.info("Analysis %s event#%d: %s", thread_id[:12], event_num, " → ".join(flags) if flags else "init")
 
         _store[thread_id]["status"] = "completed"
         logger.info("Analysis %s completed", thread_id)

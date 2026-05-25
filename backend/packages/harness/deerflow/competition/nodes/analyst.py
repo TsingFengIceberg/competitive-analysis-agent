@@ -212,6 +212,15 @@ def recommend_charts(result: dict) -> list[str]:
 
 
 def _execute_analyst(task: str, state: dict) -> dict | None:
-    """Placeholder: execute Analyst via SubagentExecutor."""
+    """Execute Analyst via lightweight LLM executor."""
+    from deerflow.competition.executor import execute_structured_agent
+    from deerflow.competition.prompts import load_prompt_with_vars
+
+    persona = state.get("persona", "pm")
+    profile = {"pm": "PM 视角：从产品功能角度看，侧重功能维度比较", "entrepreneur": "创业者视角：从市场机会角度看，侧重定价和商业模式比较"}
+    persona_str = profile.get(persona, profile["pm"])
+
     logger.info("Analyst executing task (%d chars)", len(task))
-    return None
+    prompt = load_prompt_with_vars("analyst", persona_profile=persona_str)
+    result = execute_structured_agent(prompt, task)
+    return result if isinstance(result, dict) else None

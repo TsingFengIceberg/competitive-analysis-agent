@@ -1,10 +1,11 @@
 "use client";
 
+import { Check, RotateCcw, BarChart3, Pencil, Send } from "lucide-react";
 import { useState, useCallback } from "react";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Check, RotateCcw, BarChart3, Pencil, Send } from "lucide-react";
 
 interface ApprovalCardProps {
   executive_summary?: string;
@@ -58,10 +59,10 @@ export default function ApprovalCard({
   }, [comment, onSubmit]);
 
   const qualityScore = typeof quality_summary === "object" && quality_summary
-    ? (quality_summary as Record<string, unknown>).overall_quality_score as number ?? 0
+    ? (quality_summary).overall_quality_score as number ?? 0
     : 0;
   const totalPoints = typeof data_stats === "object" && data_stats
-    ? (data_stats as Record<string, unknown>).total_data_points as number ?? 0
+    ? (data_stats).total_data_points as number ?? 0
     : 0;
 
   return (

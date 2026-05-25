@@ -40,6 +40,14 @@
 - 同一 product + category + label 的数据点 → 值差异 <5% 则合并，差异 ≥5% 则保留两条
 - 同一 source_url 的重复 → 丢弃
 
+## 输出格式
+
+**必须只输出 JSON 数组，不要加任何解释、markdown 标记或代码块。**
+
+```json
+[{"id": "dp-1", "product": "产品名", "category": "pricing", "label": "具体描述", "value": "数值或字符串", "confidence": 0.9, "source_url": "https://...", "source_type": "official", "collected_at": "2026-05-25T00:00:00Z"}]
+```
+
 ## 当前任务
 
 {task_description}

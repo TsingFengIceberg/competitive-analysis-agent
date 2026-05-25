@@ -1,10 +1,19 @@
 "use client";
 
+import { Send, Loader2, User, Building2 } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+import AgentDetailPanel from "@/components/competition/agent-detail-panel";
+import type { Persona, ReportData, ReportSection, DagState } from "@/components/competition/api-client";
+import { useCompetitionAPI } from "@/components/competition/api-client";
+import DagGraph from "@/components/competition/dag-graph";
+import ApprovalCard from "@/components/competition/hitl-card";
+import MessageFlowPanel from "@/components/competition/message-flow-timeline";
+import ReplaySlider from "@/components/competition/replay-slider";
+import TokenPanel from "@/components/competition/token-panel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -13,13 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Send, Loader2, User, Building2 } from "lucide-react";
-import DagGraph from "@/components/competition/dag-graph";
-import AgentDetailPanel from "@/components/competition/agent-detail-panel";
-import MessageFlowPanel from "@/components/competition/message-flow-timeline";
-import ApprovalCard from "@/components/competition/hitl-card";
-import type { Persona, ReportData, ReportSection, DagState } from "@/components/competition/api-client";
-import { useCompetitionAPI } from "@/components/competition/api-client";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -34,7 +37,7 @@ export default function CompetitionPage() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
   const [reportData, setReportData] = useState<ReportData | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+   
   const [dagState, setDagState] = useState<DagState | null>(null);
   const [activePanel, setActivePanel] = useState<string>("dag");
   const [hitlVisible, setHitlVisible] = useState(false);
@@ -79,8 +82,8 @@ export default function CompetitionPage() {
         }
       } catch { /* retry on transient errors */ }
     };
-    poll();
-    pollRef.current = setInterval(poll, POLL_INTERVAL_MS);
+    void poll();
+    pollRef.current = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [threadId, status, api]);
 
@@ -100,7 +103,7 @@ export default function CompetitionPage() {
     }
   }, [threadId, reportData, query, deepMode, api]);
 
-  const renderSection = (section: ReportSection, depth: number = 0) => (
+  const renderSection = (section: ReportSection, depth = 0) => (
     <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
       <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
       {section.content_type === "what-if-form" ? (
@@ -109,12 +112,12 @@ export default function CompetitionPage() {
           <WhatIfInput onAnalyze={(hypothesis) => {
             if (threadId) {
               setStatus("running");
-              api.startAnalysis({
+              void api.startAnalysis({
                 query: `What-if: ${hypothesis}`,
-                target_products: reportData?.products || [],
+                target_products: reportData?.products ?? [],
                 persona,
                 deep_mode: false,
-              }).then((res) => setThreadId(res.thread_id));
+              }).then((res) => { setThreadId(res.thread_id); }, (err) => { console.error("What-if failed:", err); });
             }
           }} />
         </div>
@@ -126,7 +129,7 @@ export default function CompetitionPage() {
               /\[(\d+)\]/g,
               (_, id) => {
                 const trace = reportData?.traceability_map?.[id];
-                const url = typeof trace === "object" ? trace.url : String(trace || "");
+                const url = typeof trace === "object" ? trace.url : String(trace ?? "");
                 return `<sup class="cursor-pointer text-blue-600 hover:underline" title="${url}">[${id}]</sup>`;
               },
             ),
@@ -149,7 +152,9 @@ export default function CompetitionPage() {
         <h1 className="text-lg font-bold">CI-Agent 竞品分析</h1>
         {statusBadge}
         {reportData && (
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-2">
+            <TokenPanel threadId={threadId} />
+            <div className="mx-2 h-6 w-px bg-border" />
             <Button variant="ghost" size="sm" onClick={() => handlePersonaSwitch("pm")}>
               <User className="mr-1 h-4 w-4" /> PM
             </Button>
@@ -228,7 +233,7 @@ export default function CompetitionPage() {
                       onSubmit={(action, comment) => {
                         console.log("HITL decision:", action, comment);
                         if (threadId) {
-                          api.submitDecision(threadId, { action, comment, target_focus: null });
+                          void api.submitDecision(threadId, { action, comment, target_focus: null });
                         }
                         setHitlVisible(false);
                       }}
@@ -256,6 +261,7 @@ export default function CompetitionPage() {
                   <TabsTrigger value="detail" className="text-xs">Agent 详情</TabsTrigger>
                   <TabsTrigger value="flow" className="text-xs">消息流</TabsTrigger>
                   <TabsTrigger value="trace" className="text-xs">溯源</TabsTrigger>
+                  <TabsTrigger value="replay" className="text-xs">回放</TabsTrigger>
                 </TabsList>
                 <TabsContent value="dag" className="flex-1 p-0">
                   <DagGraph dagState={dagState} />
@@ -282,6 +288,12 @@ export default function CompetitionPage() {
                   ) : (
                     <p className="text-xs text-muted-foreground">暂无溯源数据</p>
                   )}
+                </TabsContent>
+                <TabsContent value="replay" className="flex-1 overflow-auto p-3">
+                  <ReplaySlider
+                    reviewRound={Number(reportData?.metrics?.review_rounds) ?? 0}
+                    onStepChange={(step, nodeId) => console.log("Replay step:", step, "node:", nodeId)}
+                  />
                 </TabsContent>
               </Tabs>
             </div>

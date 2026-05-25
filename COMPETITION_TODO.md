@@ -245,31 +245,31 @@
 
 ### 核心（P0，7 项）
 
-- [ ] **DAG 执行图**（ReactFlow 节点 5 状态高亮 + 边动画 + 反馈回环虚线）
+- [x] **DAG 执行图**（ReactFlow 节点 5 状态高亮 + 边动画 + 反馈回环虚线）
   → 后端：`dag.py::get_dag_state()`（✅ 已就绪，25 tests）
   → 前端：`competition/dag-graph.tsx`
 
-- [ ] **Agent 详情面板**（点击 DAG 节点 → 展开 Prompt/Input/Output/Tools）
+- [x] **Agent 详情面板**（点击 DAG 节点 → 展开 Prompt/Input/Output/Tools）
   → 后端：`observability.py::get_agent_detail()`（✅ 已就绪，13 tests）
   → 前端：`competition/agent-detail-panel.tsx`
 
-- [ ] **结构化消息流日志**（6 边 JSON 时间线，反馈回环红色高亮）
+- [x] **结构化消息流日志**（6 边 JSON 时间线，反馈回环红色高亮）
   → 后端：`observability.py::get_message_flow()`（✅ 已就绪）
   → 前端：`competition/message-flow-timeline.tsx`
 
-- [ ] **溯源链视图**（hover 报告 `[n]` → 弹出 source card：URL/时间/置信度/验证状态）
+- [x] **溯源链视图**（hover 报告 `[n]` → 弹出 source card：URL/时间/置信度/验证状态）
   → 后端：`observability.py::get_traceability_chain()`（✅ 已就绪）
   → 前端：`competition/source-card.tsx`
 
-- [ ] **ReportData 交互报告渲染**（章节折叠 + What-if 输入框内嵌）
+- [x] **ReportData 交互报告渲染**（章节折叠 + What-if 输入框内嵌）
   → 后端：Writer 输出 `ReportData` JSON（✅ 已就绪）
   → 前端：`competition/report-renderer.tsx`
 
-- [ ] **HITL 审批卡片**（4 按钮 + 自由文本输入 + 超时倒计时）
+- [x] **HITL 审批卡片**（4 按钮 + 自由文本输入 + 超时倒计时）
   → 后端：`hitl_gate.py::build_approval_card()`（✅ 已就绪）
   → 前端：`competition/hitl-card.tsx`
 
-- [ ] **双视角切换**（PM / 创业者 一键切换，重调 Writer）
+- [x] **双视角切换**（PM / 创业者 一键切换，重调 Writer）
   → 前端：`competition/persona-switcher.tsx`
 
 ### 外围（P1/P2，3 项）

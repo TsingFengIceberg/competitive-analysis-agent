@@ -1,6 +1,6 @@
 "use client";
 
-import type { MessageFlow, MessageEvent } from "./api-client";
+import type { MessageEvent } from "./api-client";
 
 // Edge labels and colors
 const EDGE_META: Record<string, { label: string; color: string }> = {
@@ -36,7 +36,7 @@ export default function MessageFlowPanel({ threadId: _threadId }: MessageFlowPan
       <p className="mb-3 font-semibold">Agent 间结构化消息流（6 边通信协议）</p>
       <div className="space-y-2">
         {flow.map((event, i) => {
-          const meta = EDGE_META[event.edge] || { label: event.schema, color: "#9E9E9E" };
+          const meta = EDGE_META[event.edge] ?? { label: event.schema, color: "#9E9E9E" };
           return (
             <div
               key={i}

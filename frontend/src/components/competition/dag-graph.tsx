@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import {
   ReactFlow,
   Background,
@@ -9,6 +8,8 @@ import {
   type Node,
   type Edge,
 } from "@xyflow/react";
+import { useMemo } from "react";
+
 import "@xyflow/react/dist/style.css";
 import type { DagState } from "./api-client";
 
@@ -55,7 +56,7 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
     if (!dagState) return { nodes: [], edges: [] };
 
     const rfNodes: Node[] = dagState.nodes.map((dn) => {
-      const pos = NORMAL_LAYERS[dn.id] || { x: 0, y: 0 };
+      const pos = NORMAL_LAYERS[dn.id] ?? { x: 0, y: 0 };
       const style = STATUS_STYLES[dn.status] ?? STATUS_STYLES.waiting!;
       const icon = dn.style?.icon ?? "⚪";
       const isDeep = dn.id.startsWith("deep_") || dn.id === "feishu_delivery";
@@ -104,7 +105,7 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
           strokeWidth: e.active ? 2.5 : 1,
           strokeDasharray: e.style === "dashed" ? "6 3" : undefined,
         },
-        label: e.annotation || "",
+        label: e.annotation ?? "",
         labelStyle: { fontSize: 9, fill: "#757575" },
         type: "smoothstep",
       }));
@@ -137,7 +138,7 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
           nodeColor={(n) => {
             const dn = dagState.nodes.find((x) => x.id === n.id);
             if (!dn) return "#9E9E9E";
-            return STATUS_STYLES[dn.status]?.border || "#9E9E9E";
+            return STATUS_STYLES[dn.status]?.border ?? "#9E9E9E";
           }}
         />
       </ReactFlow>

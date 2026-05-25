@@ -42,6 +42,9 @@ def should_check_csrf(request: Request) -> bool:
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False
+    # Exempt competition analysis API (CI-Agent demo)
+    if path.startswith("/api/competition/"):
+        return False
     return True
 
 
@@ -51,6 +54,8 @@ _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
         "/api/v1/auth/logout",
         "/api/v1/auth/register",
         "/api/v1/auth/initialize",
+        "/api/competition/analyze",
+        "/api/competition/report",
     }
 )
 

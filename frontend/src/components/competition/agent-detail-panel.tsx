@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@radix-ui/react-collapsible";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useState, useEffect } from "react";
+
 import type { AgentDetail } from "./api-client";
 
 // Agent node labels
@@ -47,7 +48,7 @@ export default function AgentDetailPanel({ threadId: _threadId }: AgentDetailPan
                 : "bg-muted hover:bg-muted/80"
             }`}
           >
-            {(NODE_LABELS[nid]?.split("—")[0]?.trim()) || nid}
+            {(NODE_LABELS[nid]?.split("—")[0]?.trim()) ?? nid}
           </button>
         ))}
       </div>
@@ -61,7 +62,9 @@ export default function AgentDetailPanel({ threadId: _threadId }: AgentDetailPan
                 <div key={key} className="flex gap-2">
                   <span className="font-mono text-muted-foreground">{key}</span>
                   <span className="text-muted-foreground">
-                    {typeof value === "object" ? JSON.stringify(value).slice(0, 80) : String(value).slice(0, 80)}
+                    {typeof value === "object" && value !== null
+                      ? String(JSON.stringify(value)).slice(0, 80)
+                      : String(value).slice(0, 80)}
                   </span>
                 </div>
               ))
@@ -78,7 +81,9 @@ export default function AgentDetailPanel({ threadId: _threadId }: AgentDetailPan
                 <div key={key} className="flex gap-2">
                   <span className="font-mono text-muted-foreground">{key}</span>
                   <span className="text-muted-foreground">
-                    {typeof value === "object" ? JSON.stringify(value).slice(0, 80) : String(value).slice(0, 80)}
+                    {typeof value === "object" && value !== null
+                      ? String(JSON.stringify(value)).slice(0, 80)
+                      : String(value).slice(0, 80)}
                   </span>
                 </div>
               ))
@@ -90,7 +95,7 @@ export default function AgentDetailPanel({ threadId: _threadId }: AgentDetailPan
 
         <Section title="使用的工具 (Tools)" defaultOpen>
           <div className="flex flex-wrap gap-1">
-            {(detail?.tools_used || ["等待执行…"]).map((tool) => (
+            {(detail?.tools_used ?? ["等待执行…"]).map((tool) => (
               <span key={tool} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
                 {tool}
               </span>
