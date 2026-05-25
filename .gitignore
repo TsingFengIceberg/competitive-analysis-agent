@@ -57,6 +57,7 @@ web/
 # Deployment artifacts
 backend/Dockerfile.langgraph
 config.yaml.bak
+.pre-commit-config.yaml
 .playwright-mcp
 /frontend/test-results/
 /frontend/playwright-report/
@@ -64,3 +65,4 @@ config.yaml.bak
 .worktrees
 
 /#DEMO
+TEMP_IMG/
