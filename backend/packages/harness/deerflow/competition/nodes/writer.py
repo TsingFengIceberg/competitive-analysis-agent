@@ -56,11 +56,11 @@ def writer_node(state: dict) -> dict:
     collected = state.get("collected_data") or []
     persona = state.get("persona", "pm")
     target_products = state.get("target_products", [])
-    hitl_focus = _get_hitl_focus(state)
+    hitl_focus, whatif_comment, hitl_action = _get_hitl_focus(state)
 
     # Build report sections
     quality = verdict.get("quality_summary", {})
-    sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, collected, quality)
+    sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality)
     traceability = _build_traceability_map(collected)
     forecast = analysis.get("forecast")
     metrics = _compute_report_metrics(collected, verdict, traceability)
@@ -100,10 +100,10 @@ def _build_title(products: list[str], persona: str) -> str:
 
 def _get_hitl_focus(state: dict) -> list[str] | None:
     decision = state.get("hitl_decision") or {}
-    return decision.get("target_focus")
+    return decision.get("target_focus"), decision.get("comment", ""), decision.get("action", "")
 
 
-def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[str], focus: list[str] | None, collected: list[dict], quality: dict) -> list[dict]:
+def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict) -> list[dict]:
     """Build all report sections, respecting persona and optional conditions."""
     profile = PERSONA_PROFILES.get(persona, PERSONA_PROFILES["pm"])
     sections: list[dict] = []
@@ -192,12 +192,20 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
             "content": fc_text, "content_type": "text",
             "source_ids": [], "chart_path": None, "subsections": None,
         })
-        # Add What-if form section
-        sections.append({
-            "id": "sec-whatif", "title": "What-if 推演",
-            "content": "输入假设条件，系统将在现有数据上做推演（不走 Collector，30 秒出结论）",
-            "content_type": "what-if-form", "source_ids": [], "chart_path": None, "subsections": None,
-        })
+        # Add What-if section — LLM-generated if user submitted a what-if comment
+        whatif_content = _generate_whatif(whatif_comment, analysis, products, persona) if whatif_comment else ""
+        if whatif_content:
+            sections.append({
+                "id": "sec-whatif", "title": "What-if 推演",
+                "content": whatif_content, "content_type": "text",
+                "source_ids": [], "chart_path": None, "subsections": None,
+            })
+        else:
+            sections.append({
+                "id": "sec-whatif", "title": "What-if 推演",
+                "content": "输入假设条件，系统将在现有数据上做推演（不走 Collector，30 秒出结论）",
+                "content_type": "what-if-form", "source_ids": [], "chart_path": None, "subsections": None,
+            })
 
     # 6. Recommendations (required)
     sections.append({
@@ -357,3 +365,38 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
         issues.append(f"W5: Persona '{persona}' focus not reflected in report")
 
     return issues
+
+
+def _generate_whatif(comment: str, analysis: dict, products: list[str], persona: str) -> str:
+    """Generate what-if analysis via LLM based on user's assumption + existing data.
+
+    Only runs when the user submits a what-if via HITL rewrite. Does NOT re-run
+    Collector or Analyst — works from existing analysis_result.
+    """
+    from deerflow.competition.executor import execute_agent
+
+    matrix = analysis.get("comparison_matrix", {})
+    swot = analysis.get("swot", {})
+    trends = analysis.get("trends", [])
+    forecast = analysis.get("forecast")
+
+    context = f"""现有竞品分析数据:
+
+对比矩阵: {matrix.get('summary', '')}
+产品: {', '.join(products)}
+SWOT: {str(swot)[:800]}
+趋势: {str(trends)[:400]}
+预测: {str(forecast)[:400]}"""
+
+    prompt = f"""你是竞品分析推演专家。基于现有竞品分析数据，对用户的假设条件进行推演。
+
+现有数据摘要:
+{context}
+
+请基于以上数据，对以下假设做出 150-300 字的推演分析，直接输出推演文本：
+假设: {comment}"""
+
+    result = execute_agent(prompt, comment, temperature=0.7, max_tokens=600)
+    if result:
+        return result.strip()
+    return f"基于现有数据，无法对「{comment}」做出可靠推演。请尝试更具体的假设条件。"

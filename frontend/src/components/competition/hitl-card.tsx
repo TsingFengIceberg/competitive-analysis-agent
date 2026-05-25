@@ -49,11 +49,10 @@ export default function ApprovalCard({
   const handleCustomSubmit = useCallback(() => {
     if (comment.trim()) {
       // Auto-detect action from comment keywords (client-side fallback)
-      let action = "approve";
-      const lower = comment.toLowerCase();
-      if (lower.includes("数据不够") || lower.includes("缺数据") || lower.includes("重新搜索")) action = "replan";
-      else if (lower.includes("分析不对") || lower.includes("重新分析") || lower.includes("swot")) action = "reanalyze";
-      else if (lower.includes("重写") || lower.includes("改写") || lower.includes("视角")) action = "rewrite";
+      // Any user comment means they want changes — default to reanalyze.
+      // Buttons above already provide explicit intent; comment-only submit is always "reanalyze".
+      const action = "reanalyze";
+      // Default is now "rewrite" — any user comment is feedback, assume they want changes
       onSubmit(action, comment);
     }
   }, [comment, onSubmit]);

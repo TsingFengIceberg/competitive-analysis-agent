@@ -121,6 +121,119 @@ async def get_report(thread_id: str) -> ReportResponse:
     )
 
 
+class HitlDecisionRequest(BaseModel):
+    """HITL decision or what-if input from frontend."""
+
+    action: str = "rewrite"  # "approve" | "rewrite" | "reanalyze" | "replan"
+    comment: str = ""
+    target_focus: list[str] | None = None
+
+
+@router.put("/report/{thread_id}", response_model=ReportResponse)
+async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> ReportResponse:
+    """Handle HITL decision or what-if rewrite request.
+
+    For "rewrite" (what-if): runs Writer with the existing analysis + user's
+    what-if assumption, generates updated report without re-running Collector/Analyst.
+    """
+    import asyncio
+
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    state = entry.get("state", {})
+
+    # Always record the decision and trigger action (with or without comment)
+    state["hitl_decision"] = {
+        "action": decision.action,
+        "comment": decision.comment,
+        "target_focus": decision.target_focus,
+        "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+    }
+    _store[thread_id]["state"] = state
+
+    if decision.action in ("rewrite", "reanalyze", "replan"):
+        # Fire background thread, return immediately
+        _store[thread_id]["status"] = "running"
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _reanalyze_sync, thread_id, decision.action)
+
+    report_data = state.get("report_data")
+    metrics = report_data.get("metrics") if report_data else None
+    error = state.get("error")
+
+    return ReportResponse(
+        thread_id=thread_id,
+        status=_store[thread_id]["status"],
+        report_data=report_data,
+        metrics=metrics,
+        error=error,
+    )
+
+
+def _reanalyze_sync(thread_id: str, action: str) -> None:
+    """Run reanalysis in background thread: Analyst → Reviewer → Writer."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        entry = _store.get(thread_id)
+        if not entry:
+            return
+        state = entry["state"]
+
+        # Inject user feedback into the request so Analyst sees it
+        comment = state.get("hitl_decision", {}).get("comment", "")
+        if comment:
+            state["user_request"] = f"{state.get('user_request', '')}\n\n用户反馈意见: {comment}"
+            logger.info("Reanalysis with feedback: %s", comment[:100])
+
+        from deerflow.competition.nodes.writer import writer_node
+
+        if action == "rewrite":
+            # What-if: Writer only
+            result = writer_node(state)
+            state.update(result)
+        elif action == "reanalyze":
+            # Full reanalysis: Analyst → Reviewer → Writer
+            from deerflow.competition.nodes.analyst import analyst_node
+            from deerflow.competition.nodes.reviewer import reviewer_node
+
+            logger.info("Reanalysis starting for %s", thread_id[:12])
+            result = analyst_node(state)
+            state.update(result)
+            result = reviewer_node(state)
+            state.update(result)
+            result = writer_node(state)
+            state.update(result)
+            logger.info("Reanalysis completed for %s", thread_id[:12])
+        elif action == "replan":
+            # Full replan: Collector → Analyst → Reviewer → Writer
+            from deerflow.competition.nodes.analyst import analyst_node
+            from deerflow.competition.nodes.collector import collector_node
+            from deerflow.competition.nodes.reviewer import reviewer_node
+
+            logger.info("Replan starting for %s", thread_id[:12])
+            result = collector_node(state)
+            state.update(result)
+            result = analyst_node(state)
+            state.update(result)
+            result = reviewer_node(state)
+            state.update(result)
+            result = writer_node(state)
+            state.update(result)
+            logger.info("Replan completed for %s", thread_id[:12])
+
+        _store[thread_id]["state"] = state
+        _store[thread_id]["status"] = "completed"
+    except Exception as e:
+        logger.exception("Reanalysis %s failed: %s", thread_id, e)
+        if thread_id in _store:
+            _store[thread_id]["status"] = "failed"
+            _store[thread_id]["state"]["error"] = str(e)
+
+
 @router.get("/stream/{thread_id}")
 async def stream(thread_id: str):
     """SSE stream of graph execution events."""

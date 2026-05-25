@@ -41,11 +41,15 @@ export default function CompetitionPage() {
   const [dagState, setDagState] = useState<DagState | null>(null);
   const [activePanel, setActivePanel] = useState<string>("dag");
   const [hitlVisible, setHitlVisible] = useState(false);
+  const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Show HITL card when analysis completes
+  // Show HITL card when analysis completes or fails, reset submitting flag
   useEffect(() => {
-    if (status === "completed") setHitlVisible(true);
+    if (status === "completed" || status === "failed") {
+      setHitlVisible(true);
+      setHitlSubmitting(false);
+    }
   }, [status]);
 
   const handleStart = useCallback(async () => {
@@ -56,6 +60,8 @@ export default function CompetitionPage() {
     setStatus("running");
     setReportData(null);
     setDagState(null);
+    setHitlVisible(false);
+    setHitlSubmitting(false);
     try {
       const res = await api.startAnalysis({
         query: query.trim(),
@@ -219,11 +225,14 @@ export default function CompetitionPage() {
                 {hitlVisible && (
                   <div className="mt-6 rounded-lg border-2 border-orange-300 bg-orange-50/30 p-4">
                     <div className="mb-2 flex items-center justify-between">
-                      <h3 className="font-semibold text-sm">📋 审批（HITL Gate）</h3>
+                      <h3 className="font-semibold text-sm">
+                        {hitlSubmitting ? "⏳ 处理中..." : "📋 审批（HITL Gate）"}
+                      </h3>
                       <button onClick={() => setHitlVisible(false)}
                         className="text-xs text-muted-foreground hover:text-foreground">收起</button>
                     </div>
                     <ApprovalCard
+                      disabled={hitlSubmitting}
                       executive_summary={reportData.sections?.[0]?.content}
                       key_findings={reportData.sections
                         ?.filter((s) => s.id === "sec-swot")
@@ -233,9 +242,19 @@ export default function CompetitionPage() {
                       onSubmit={(action, comment) => {
                         console.log("HITL decision:", action, comment);
                         if (threadId) {
-                          void api.submitDecision(threadId, { action, comment, target_focus: null });
+                          if (action === "approve") {
+                            setHitlVisible(false);
+                          } else {
+                            setHitlSubmitting(true);
+                            setStatus("running");
+                          }
+                          api.submitDecision(threadId, { action, comment, target_focus: null })
+                            .catch((err) => {
+                              console.error("HITL submit failed:", err);
+                              setHitlSubmitting(false);
+                              setStatus("completed");
+                            });
                         }
-                        setHitlVisible(false);
                       }}
                     />
                   </div>
