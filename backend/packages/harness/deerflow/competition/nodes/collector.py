@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from deerflow.competition.config import CollectorConfig
 from deerflow.competition.schema import CollectedDataPoint
 
 logger = logging.getLogger(__name__)
@@ -241,7 +240,7 @@ def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
             continue
         try:
             if "collected_at" not in item:
-                item["collected_at"] = datetime.now(timezone.utc).isoformat()
+                item["collected_at"] = datetime.now(UTC).isoformat()
             points.append(CollectedDataPoint.model_validate(item))
         except Exception as e:
             logger.warning("Failed to parse data point: %s — %s", item.get("id", "?"), e)

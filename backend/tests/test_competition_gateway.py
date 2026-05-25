@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 def client():
     """Create a TestClient for the competition router."""
     from fastapi import FastAPI
+
     from app.gateway.routers.competition import router
 
     app = FastAPI()
