@@ -36,6 +36,8 @@ extensions_config.json
 coverage.xml
 coverage/
 .deer-flow/
+/.next/
+.next/
 .claude/
 skills/custom/*
 logs/
