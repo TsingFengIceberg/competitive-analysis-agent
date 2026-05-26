@@ -28,8 +28,11 @@ def analyst_node(state: dict) -> dict:
     Returns partial state update with analysis_result.
     """
     task = _build_analyst_task(state)
-    raw_output = _execute_analyst(task, state)
+    raw_output, _tokens = _execute_analyst(task, state)
     result = _build_analysis_result(raw_output, state)
+    if not result.get("comparison_matrix", {}).get("cells"):
+        logger.warning("Analyst produced empty comparison_matrix — raw output type=%s, sample=%s",
+                       type(raw_output).__name__, str(raw_output)[:200] if raw_output else "None")
     errors = self_check(result, state.get("target_products", []))
 
     if errors:
@@ -104,11 +107,32 @@ def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
 
     if isinstance(raw, str):
         import json
+        import re
+        text = raw.strip()
+        # Strip markdown code fences
+        text = re.sub(r"^```(?:json|jsonc)?\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+        # Repair common LLM JSON errors:
+        # 1. Empty values like "rating":, → "rating": null,
+        text = re.sub(r':\s*,', ': null,', text)
+        # 2. Missing closing braces comma like "key": value\n  → "key": value,\n
+        text = re.sub(r'(["\d])\s*\n\s*"', r'\1,\n"', text)
+        logger.warning("Analyst JSON parse attempt: first 200 chars=%s, last 100 chars=%s",
+                       text[:200], text[-100:])
         try:
-            raw = json.loads(raw)
+            raw = json.loads(text)
         except json.JSONDecodeError:
-            logger.warning("Analyst output is not valid JSON")
-            return _empty_analysis_result(state)
+            # Try to find a JSON object in the text
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                try:
+                    raw = json.loads(match.group())
+                except json.JSONDecodeError:
+                    logger.warning("Analyst output is not valid JSON (%d chars)", len(raw))
+                    return _empty_analysis_result(state)
+            else:
+                logger.warning("Analyst output is not valid JSON (%d chars)", len(raw))
+                return _empty_analysis_result(state)
 
     if not isinstance(raw, dict):
         return _empty_analysis_result(state)
@@ -211,8 +235,8 @@ def recommend_charts(result: dict) -> list[str]:
     return charts
 
 
-def _execute_analyst(task: str, state: dict) -> dict | None:
-    """Execute Analyst via lightweight LLM executor."""
+def _execute_analyst(task: str, state: dict) -> tuple[dict | str | None, int]:
+    """Execute Analyst via lightweight LLM executor, return (raw dict/str for fallback, token_count)."""
     from deerflow.competition.executor import execute_structured_agent
     from deerflow.competition.prompts import load_prompt_with_vars
 
@@ -222,5 +246,6 @@ def _execute_analyst(task: str, state: dict) -> dict | None:
 
     logger.info("Analyst executing task (%d chars)", len(task))
     prompt = load_prompt_with_vars("analyst", persona_profile=persona_str)
-    result = execute_structured_agent(prompt, task)
-    return result if isinstance(result, dict) else None
+    result, tokens = execute_structured_agent(prompt, task, agent_name="Analyst")
+    # Pass raw string through for fallback parsing in _build_analysis_result
+    return (result if isinstance(result, (dict, str)) else None, tokens)

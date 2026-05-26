@@ -54,7 +54,7 @@ cd frontend && PORT=2026 nohup pnpm start > /tmp/frontend.log 2>&1 &
 - 仅改后端代码 → 重启 gateway 即可，无需 rebuild 前端
 - 改前端代码 → 重新 `pnpm build && pnpm start`
 - 查看日志：`tail -f /tmp/gateway.log` / `tail -f /tmp/frontend.log`
-- 页面地址：`http://121.43.235.19:2026/competition`
+- 页面地址：`http://<服务器公网IP>:2026/competition`
 
 ### 2.1 密钥管理（强制）
 

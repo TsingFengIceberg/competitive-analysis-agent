@@ -42,18 +42,16 @@ export default function ApprovalCard({
     (action: string) => {
       setSelectedAction(action);
       onSubmit(action, comment);
+      setComment("");
     },
     [comment, onSubmit],
   );
 
   const handleCustomSubmit = useCallback(() => {
     if (comment.trim()) {
-      // Auto-detect action from comment keywords (client-side fallback)
-      // Any user comment means they want changes — default to reanalyze.
-      // Buttons above already provide explicit intent; comment-only submit is always "reanalyze".
       const action = "reanalyze";
-      // Default is now "rewrite" — any user comment is feedback, assume they want changes
       onSubmit(action, comment);
+      setComment("");
     }
   }, [comment, onSubmit]);
 

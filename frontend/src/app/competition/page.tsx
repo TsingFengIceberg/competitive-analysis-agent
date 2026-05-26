@@ -4,7 +4,7 @@ import { Send, Loader2, User, Building2 } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
 
 import AgentDetailPanel from "@/components/competition/agent-detail-panel";
-import type { Persona, ReportData, ReportSection, DagState } from "@/components/competition/api-client";
+import type { Persona, ReportData, ReportSection, DagState, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
 import { useCompetitionAPI } from "@/components/competition/api-client";
 import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
@@ -37,20 +37,47 @@ export default function CompetitionPage() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
   const [reportData, setReportData] = useState<ReportData | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<TokenEntry[]>([]);
    
   const [dagState, setDagState] = useState<DagState | null>(null);
   const [activePanel, setActivePanel] = useState<string>("dag");
   const [hitlVisible, setHitlVisible] = useState(false);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
+  const [historyCount, setHistoryCount] = useState(0);
+  const [viewingHistory, setViewingHistory] = useState<ReportHistoryItem | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Show HITL card when analysis completes or fails, reset submitting flag
+  // Show HITL card when analysis completes or fails
   useEffect(() => {
     if (status === "completed" || status === "failed") {
       setHitlVisible(true);
-      setHitlSubmitting(false);
+      // Only reset submitting flag if this was the INITIAL analysis (not HITL feedback)
+      // For HITL, hitlSubmitting is reset when new report data arrives in poll
+      if (!hitlSubmitting) {
+        // initial analysis – no action needed
+      }
+      // Page title flash + toast-style notification (no HTTPS required)
+      if (status === "completed" || status === "failed") {
+        const prefix = status === "completed" ? "✅" : "❌";
+        const label = status === "completed"
+          ? (hitlSubmitting ? "修改意见已处理" : "竞品分析完成")
+          : "分析失败";
+        document.title = `${prefix} ${label} - CI-Agent`;
+        // Restore title after 5 seconds
+        setTimeout(() => {
+          document.title = "CI-Agent 竞品分析";
+        }, 5000);
+      }
+      // Also try native notification if available (HTTPS/localhost)
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        const title = status === "completed" ? "✅ 竞品分析完成" : "❌ 竞品分析失败";
+        const body = status === "completed"
+          ? (hitlSubmitting ? "修改意见已处理，报告已更新" : "报告已生成，点击查看")
+          : "分析过程中出现错误";
+        new Notification(title, { body, icon: "/favicon.ico" });
+      }
     }
-  }, [status]);
+  }, [status, hitlSubmitting]);
 
   const handleStart = useCallback(async () => {
     if (!query.trim() || !products.trim()) return;
@@ -59,6 +86,7 @@ export default function CompetitionPage() {
 
     setStatus("running");
     setReportData(null);
+    setTokenUsage([]);
     setDagState(null);
     setHitlVisible(false);
     setHitlSubmitting(false);
@@ -81,7 +109,13 @@ export default function CompetitionPage() {
     const poll = async () => {
       try {
         const report = await api.pollReport(threadId);
-        if (report.report_data) setReportData(report.report_data);
+        if (report.report_data) {
+          setReportData(report.report_data);
+          setViewingHistory(null);  // back to current version
+          setHitlSubmitting(false);  // HITL reanalysis produced new report
+        }
+        if (report.token_usage) setTokenUsage(report.token_usage);
+        if (report.history_count !== undefined) setHistoryCount(report.history_count);
         if (report.status === "completed" || report.status === "failed") {
           setStatus(report.status);
           if (pollRef.current) clearInterval(pollRef.current);
@@ -92,6 +126,22 @@ export default function CompetitionPage() {
     pollRef.current = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [threadId, status, api]);
+
+  const handleViewHistory = useCallback(async (version: number | null) => {
+    if (!threadId) return;
+    if (version === null) {
+      // Back to current
+      setViewingHistory(null);
+      return;
+    }
+    try {
+      const history = await api.pollReportHistory(threadId);
+      const item = history.find((h) => h.version === version);
+      if (item) setViewingHistory(item);
+    } catch { /* ignore */ }
+  }, [threadId, api]);
+
+  const displayReport = viewingHistory?.report_data ?? reportData;
 
   const handlePersonaSwitch = useCallback(async (newPersona: Persona) => {
     setPersona(newPersona);
@@ -118,12 +168,7 @@ export default function CompetitionPage() {
           <WhatIfInput onAnalyze={(hypothesis) => {
             if (threadId) {
               setStatus("running");
-              void api.startAnalysis({
-                query: `What-if: ${hypothesis}`,
-                target_products: reportData?.products ?? [],
-                persona,
-                deep_mode: false,
-              }).then((res) => { setThreadId(res.thread_id); }, (err) => { console.error("What-if failed:", err); });
+              void api.submitDecision(threadId, { action: "rewrite", comment: hypothesis, target_focus: null });
             }
           }} />
         </div>
@@ -131,14 +176,16 @@ export default function CompetitionPage() {
         <div
           className="prose prose-sm max-w-none text-xs leading-relaxed"
           dangerouslySetInnerHTML={{
-            __html: section.content.replace(
-              /\[(\d+)\]/g,
-              (_, id) => {
-                const trace = reportData?.traceability_map?.[id];
-                const url = typeof trace === "object" ? trace.url : String(trace ?? "");
-                return `<sup class="cursor-pointer text-blue-600 hover:underline" title="${url}">[${id}]</sup>`;
-              },
-            ),
+            __html: section.content
+              .replace(/\n/g, "<br/>")
+              .replace(
+                /\[(\d+)\]/g,
+                (_, id) => {
+                  const trace = reportData?.traceability_map?.[id];
+                  const url = typeof trace === "object" ? trace.url : String(trace ?? "");
+                  return `<sup class="cursor-pointer text-blue-600 hover:underline" title="${url}">[${id}]</sup>`;
+                },
+              ),
           }}
         />
       )}
@@ -159,7 +206,7 @@ export default function CompetitionPage() {
         {statusBadge}
         {reportData && (
           <div className="ml-auto flex items-center gap-2">
-            <TokenPanel threadId={threadId} />
+            <TokenPanel tokenUsage={tokenUsage} />
             <div className="mx-2 h-6 w-px bg-border" />
             <Button variant="ghost" size="sm" onClick={() => handlePersonaSwitch("pm")}>
               <User className="mr-1 h-4 w-4" /> PM
@@ -217,10 +264,37 @@ export default function CompetitionPage() {
         <div className="flex flex-1 overflow-hidden">
           {/* Left: Report */}
           <div className="w-7/12 overflow-y-auto border-r p-6">
-            {reportData ? (
+            {displayReport ? (
               <div>
-                <h2 className="mb-6 text-xl font-bold">{reportData.title}</h2>
-                {reportData.sections.map((s) => renderSection(s))}
+                {/* Version selector */}
+                {historyCount > 0 && (
+                  <div className="mb-2 flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">版本:</span>
+                    <button
+                      onClick={() => handleViewHistory(null)}
+                      className={`rounded px-2 py-0.5 ${!viewingHistory ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+                    >
+                      最新
+                    </button>
+                    {Array.from({ length: historyCount }, (_, i) => i + 1).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => handleViewHistory(v)}
+                        className={`rounded px-2 py-0.5 ${viewingHistory?.version === v ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+                      >
+                        v{v}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {viewingHistory && (
+                  <div className="mb-3 rounded border border-amber-300 bg-amber-50/50 p-2 text-xs text-amber-800">
+                    查看历史版本 v{viewingHistory.version}（{new Date(viewingHistory.timestamp).toLocaleString("zh-CN")}）—
+                    因「{viewingHistory.hitl_decision?.comment?.slice(0, 30) || "无评论"}」生成
+                  </div>
+                )}
+                <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
+                {displayReport.sections.map((s) => renderSection(s))}
                 {/* HITL Approval Card */}
                 {hitlVisible && (
                   <div className="mt-6 rounded-lg border-2 border-orange-300 bg-orange-50/30 p-4">
@@ -233,12 +307,12 @@ export default function CompetitionPage() {
                     </div>
                     <ApprovalCard
                       disabled={hitlSubmitting}
-                      executive_summary={reportData.sections?.[0]?.content}
-                      key_findings={reportData.sections
+                      executive_summary={displayReport.sections?.[0]?.content}
+                      key_findings={displayReport.sections
                         ?.filter((s) => s.id === "sec-swot")
                         .flatMap((s) => s.content.split("\n").filter((l) => l.startsWith("-")).slice(0, 3)) || []}
-                      data_stats={{ total_data_points: Object.keys(reportData.traceability_map || {}).length }}
-                      quality_summary={reportData.quality_summary}
+                      data_stats={{ total_data_points: Object.keys(displayReport.traceability_map || {}).length }}
+                      quality_summary={displayReport.quality_summary}
                       onSubmit={(action, comment) => {
                         console.log("HITL decision:", action, comment);
                         if (threadId) {
@@ -292,10 +366,10 @@ export default function CompetitionPage() {
                   <MessageFlowPanel threadId={threadId} />
                 </TabsContent>
                 <TabsContent value="trace" className="flex-1 overflow-auto p-3">
-                  {reportData?.traceability_map ? (
+                  {displayReport?.traceability_map ? (
                     <div className="space-y-2 text-xs">
-                      <p className="font-semibold">溯源链 ({Object.keys(reportData.traceability_map).length} 条)</p>
-                      {Object.entries(reportData.traceability_map).slice(0, 10).map(([id, info]) => (
+                      <p className="font-semibold">溯源链 ({Object.keys(displayReport.traceability_map).length} 条)</p>
+                      {Object.entries(displayReport.traceability_map).slice(0, 10).map(([id, info]) => (
                         <div key={id} className="rounded border p-2">
                           <span className="font-mono text-blue-600">[{id}]</span>{" "}
                           <span className="text-muted-foreground">

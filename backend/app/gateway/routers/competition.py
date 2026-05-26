@@ -50,6 +50,8 @@ class ReportResponse(BaseModel):
     report_data: dict | None = None
     metrics: dict | None = None
     error: str | None = None
+    history_count: int = 0
+    token_usage: list[dict] = []
 
 
 class StreamEvent(BaseModel):
@@ -111,6 +113,8 @@ async def get_report(thread_id: str) -> ReportResponse:
     report_data = entry.get("state", {}).get("report_data")
     metrics = entry.get("state", {}).get("report_data", {}).get("metrics") if report_data else None
     error = entry.get("state", {}).get("error")
+    history = entry.get("report_history", [])
+    token_usage_list = entry.get("token_usage", [])
 
     return ReportResponse(
         thread_id=thread_id,
@@ -118,7 +122,19 @@ async def get_report(thread_id: str) -> ReportResponse:
         report_data=report_data,
         metrics=metrics,
         error=error,
+        history_count=len(history),
+        token_usage=token_usage_list,
     )
+
+
+@router.get("/report/{thread_id}/history")
+async def get_report_history(thread_id: str):
+    """Get report revision history."""
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+    history = entry.get("report_history", [])
+    return {"history": history, "count": len(history)}
 
 
 class HitlDecisionRequest(BaseModel):
@@ -174,6 +190,7 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
 def _reanalyze_sync(thread_id: str, action: str) -> None:
     """Run reanalysis in background thread: Analyst → Reviewer → Writer."""
+    import copy
     import logging
     logger = logging.getLogger(__name__)
 
@@ -183,9 +200,22 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             return
         state = entry["state"]
 
-        # Inject user feedback into the request so Analyst sees it
+        # Save current report to history before overwriting
+        old_report = state.get("report_data")
+        if old_report:
+            history = entry.setdefault("report_history", [])
+            history.append({
+                "version": len(history) + 1,
+                "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+                "hitl_decision": copy.deepcopy(state.get("hitl_decision", {})),
+                "report_data": copy.deepcopy(old_report),
+            })
+            logger.info("Saved report v%d to history for %s", len(history), thread_id[:12])
+
+        # Inject user feedback into user_request for reanalyze/replan (Analyst sees it)
+        # For rewrite, the comment is used as what-if scenario by Writer directly
         comment = state.get("hitl_decision", {}).get("comment", "")
-        if comment:
+        if comment and action in ("reanalyze", "replan"):
             state["user_request"] = f"{state.get('user_request', '')}\n\n用户反馈意见: {comment}"
             logger.info("Reanalysis with feedback: %s", comment[:100])
 
@@ -225,7 +255,11 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             state.update(result)
             logger.info("Replan completed for %s", thread_id[:12])
 
+        action_labels = {"rewrite": "重写报告", "reanalyze": "重新分析", "replan": "重新搜索"}
+        version = len(entry.get("report_history", [])) + 1
+        label = f"{action_labels.get(action, action)} v{version}"
         _store[thread_id]["state"] = state
+        _add_token_entry(thread_id, label)
         _store[thread_id]["status"] = "completed"
     except Exception as e:
         logger.exception("Reanalysis %s failed: %s", thread_id, e)
@@ -268,6 +302,29 @@ async def list_history(limit: int = Query(default=10, le=50)):
 
 
 # ── Internal ──
+
+
+def _add_token_entry(thread_id: str, label: str) -> None:
+    """Snapshot current cumulative tokens and record a labelled entry.
+
+    Called after each graph run or HITL action so the frontend can render a
+    segmented token bar coloured by version.
+    """
+    from deerflow.competition.executor import get_agent_tokens, get_total_tokens
+
+    total = get_total_tokens()
+    agents = get_agent_tokens()
+    entries: list[dict] = _store[thread_id].setdefault("token_usage", [])
+    prev_total = entries[-1]["cumulative"] if entries else 0
+    delta = total - prev_total
+    entries.append({
+        "label": label,
+        "tokens": max(delta, 0),
+        "cumulative": total,
+        "agents": agents,
+        "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+    })
+    logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
 
 
 def _run_graph_sync(thread_id: str) -> None:
@@ -332,6 +389,7 @@ def _run_graph_sync(thread_id: str) -> None:
                     flags.append(f"error={update['error'][:50]}")
                 logger.info("Analysis %s event#%d: %s", thread_id[:12], event_num, " → ".join(flags) if flags else "init")
 
+        _add_token_entry(thread_id, "初始分析")
         _store[thread_id]["status"] = "completed"
         logger.info("Analysis %s completed", thread_id)
 

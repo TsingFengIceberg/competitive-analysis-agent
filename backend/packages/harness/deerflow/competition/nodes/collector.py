@@ -26,7 +26,7 @@ def collector_node(state: dict) -> dict:
     task = _build_collector_task(state)
     # In production, this calls SubagentExecutor(config, tools, sandbox).execute(task).
     # For now, placeholder — real executor wired in after SubagentExecutor integration.
-    raw_output = _execute_collector(task, state)
+    raw_output, _tokens = _execute_collector(task, state)
 
     # Post-processing (§3.4.2-3.4.6)
     data_points = _parse_datapoints(raw_output)
@@ -266,14 +266,14 @@ def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
     return points
 
 
-def _execute_collector(task: str, state: dict) -> str | None:
-    """Execute Collector via lightweight LLM executor (production: SubagentExecutor)."""
+def _execute_collector(task: str, state: dict) -> tuple[str | None, int]:
+    """Execute Collector via lightweight LLM executor (production: SubagentExecutor). Returns (content, tokens)."""
     from deerflow.competition.executor import execute_agent
     from deerflow.competition.prompts import load_prompt
 
     logger.info("Collector executing task (%d chars)", len(task))
     prompt = load_prompt("collector").replace("{task_description}", task)
-    return execute_agent(prompt, task, max_tokens=8192)
+    return execute_agent(prompt, task, max_tokens=8192, agent_name="Collector")
 
 
 def _salvage_json_objects(text: str) -> list[dict]:

@@ -56,7 +56,9 @@ def writer_node(state: dict) -> dict:
     collected = state.get("collected_data") or []
     persona = state.get("persona", "pm")
     target_products = state.get("target_products", [])
-    hitl_focus, whatif_comment, hitl_action = _get_hitl_focus(state)
+    hitl_focus, whatif_comment_raw, hitl_action = _get_hitl_focus(state)
+    # Only use comment as what-if scenario when action is explicitly "rewrite"
+    whatif_comment = whatif_comment_raw if hitl_action == "rewrite" else ""
 
     # Build report sections
     quality = verdict.get("quality_summary", {})
@@ -119,9 +121,14 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
     # 1. Executive Summary (required)
     matrix = analysis.get("comparison_matrix", {})
     summary_text = matrix.get("summary", f"{' vs '.join(products)} 竞品分析")
+    exec_content: str
+    if hitl_action == "rewrite":
+        exec_content = _llm_rewrite_section("executive_summary", analysis, products, persona)
+    else:
+        exec_content = f"{profile['opening']}，{summary_text}"
     sections.append({
         "id": "sec-executive-summary", "title": "执行摘要",
-        "content": f"{profile['opening']}，{summary_text}", "content_type": "text",
+        "content": exec_content, "content_type": "text",
         "source_ids": [], "chart_path": None, "subsections": None,
     })
 
@@ -192,25 +199,31 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
             "content": fc_text, "content_type": "text",
             "source_ids": [], "chart_path": None, "subsections": None,
         })
-        # Add What-if section — LLM-generated if user submitted a what-if comment
-        whatif_content = _generate_whatif(whatif_comment, analysis, products, persona) if whatif_comment else ""
-        if whatif_content:
-            sections.append({
-                "id": "sec-whatif", "title": "What-if 推演",
-                "content": whatif_content, "content_type": "text",
-                "source_ids": [], "chart_path": None, "subsections": None,
-            })
-        else:
-            sections.append({
-                "id": "sec-whatif", "title": "What-if 推演",
-                "content": "输入假设条件，系统将在现有数据上做推演（不走 Collector，30 秒出结论）",
-                "content_type": "what-if-form", "source_ids": [], "chart_path": None, "subsections": None,
-            })
+
+    # What-if section — always present, LLM-generated when user submitted a what-if via rewrite
+    whatif_content = _generate_whatif(whatif_comment, analysis, products, persona) if whatif_comment else ""
+    if whatif_content:
+        sections.append({
+            "id": "sec-whatif", "title": "What-if 推演",
+            "content": whatif_content, "content_type": "text",
+            "source_ids": [], "chart_path": None, "subsections": None,
+        })
+    else:
+        sections.append({
+            "id": "sec-whatif", "title": "What-if 推演",
+            "content": "输入假设条件，系统将在现有数据上做推演（不走 Collector，30 秒出结论）",
+            "content_type": "what-if-form", "source_ids": [], "chart_path": None, "subsections": None,
+        })
 
     # 6. Recommendations (required)
+    rec_content: str
+    if hitl_action == "rewrite":
+        rec_content = _llm_rewrite_section("recommendations", analysis, products, persona)
+    else:
+        rec_content = f"**{profile['recommendations']}**\n\n基于以上分析，建议关注产品功能差异化和定价策略优化。"
     sections.append({
         "id": "sec-recommendations", "title": "建议",
-        "content": f"**{profile['recommendations']}**\n\n基于以上分析，建议关注产品功能差异化和定价策略优化。",
+        "content": rec_content,
         "content_type": "text", "source_ids": [], "chart_path": None, "subsections": None,
     })
 
@@ -367,6 +380,46 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
     return issues
 
 
+def _llm_rewrite_section(section: str, analysis: dict, products: list[str], persona: str) -> str:
+    """Use LLM to rewrite a report section from analysis data.
+
+    Called when HITL action is 'rewrite' — regenerates executive_summary or
+    recommendations so the user sees visible LLM effort and a fresh perspective.
+    """
+    from deerflow.competition.executor import execute_agent
+
+    matrix = analysis.get("comparison_matrix", {})
+    swot = analysis.get("swot", {})
+    trends = analysis.get("trends", [])
+
+    context = f"""竞品: {', '.join(products)}
+视角: {persona}
+对比矩阵摘要: {matrix.get('summary', 'N/A')}
+SWOT: {str(swot)[:600]}
+趋势: {str(trends)[:300]}"""
+
+    prompts = {
+        "executive_summary": f"""你是竞品分析报告撰写专家。基于以下数据，为竞品分析报告撰写一段 200-300 字的中文执行摘要。
+要求：简洁有力，突出关键差异化发现，避免套话。
+
+{context}
+
+请直接输出执行摘要文本：""",
+        "recommendations": f"""你是竞品分析策略顾问。基于以下数据，为产品团队撰写 3-5 条具体可操作的建议。
+每条建议应包含：方向、理由、优先级（高/中/低）。
+
+{context}
+
+请直接输出建议文本：""",
+    }
+
+    prompt = prompts.get(section, prompts["executive_summary"])
+    result, _tokens = execute_agent(prompt, "", temperature=0.6, max_tokens=800, agent_name="Writer")
+    if result:
+        return result.strip()
+    return f"[LLM rewrite failed for {section}]"
+
+
 def _generate_whatif(comment: str, analysis: dict, products: list[str], persona: str) -> str:
     """Generate what-if analysis via LLM based on user's assumption + existing data.
 
@@ -396,7 +449,7 @@ SWOT: {str(swot)[:800]}
 请基于以上数据，对以下假设做出 150-300 字的推演分析，直接输出推演文本：
 假设: {comment}"""
 
-    result = execute_agent(prompt, comment, temperature=0.7, max_tokens=600)
+    result, _tokens = execute_agent(prompt, comment, temperature=0.7, max_tokens=600, agent_name="Writer")
     if result:
         return result.strip()
     return f"基于现有数据，无法对「{comment}」做出可靠推演。请尝试更具体的假设条件。"

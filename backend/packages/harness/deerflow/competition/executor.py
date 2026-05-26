@@ -18,6 +18,20 @@ DOUBAO_MODEL = os.environ.get("DOUBAO_MODEL", "")
 DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", "")
 DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 
+# Global token counter for competition analysis session
+_total_tokens_used = 0
+_agent_tokens: dict[str, int] = {}
+
+
+def get_total_tokens() -> int:
+    """Return cumulative tokens used across all LLM calls in this process."""
+    return _total_tokens_used
+
+
+def get_agent_tokens() -> dict[str, int]:
+    """Return per-agent token breakdown for this process."""
+    return dict(_agent_tokens)
+
 
 def execute_agent(
     system_prompt: str,
@@ -27,8 +41,9 @@ def execute_agent(
     api_key: str = DOUBAO_API_KEY,
     temperature: float = 0.3,
     max_tokens: int = 4096,
-) -> str | None:
-    """Execute a single LLM call with system_prompt + task, return raw output.
+    agent_name: str = "",
+) -> tuple[str | None, int]:
+    """Execute a single LLM call with system_prompt + task, return (content, token_count).
 
     This is a lightweight alternative to SubagentExecutor that works without
     the full DF sandbox runtime. Used for competition demo.
@@ -53,24 +68,38 @@ def execute_agent(
 
         response = llm.invoke(messages)
         content = response.content if hasattr(response, "content") else str(response)
-        logger.info("Agent response: %d chars", len(str(content)))
-        return str(content) if content else None
+        # Extract token usage from response metadata
+        usage = 0
+        meta = getattr(response, "response_metadata", {})
+        token_info = meta.get("token_usage", {})
+        if token_info:
+            usage = token_info.get("total_tokens", 0)
+        elif hasattr(response, "usage_metadata"):
+            u = response.usage_metadata
+            usage = u.get("total_tokens", 0) if u else 0
+        logger.info("Agent response: %d chars (%d tokens)", len(str(content)), usage)
+        global _total_tokens_used
+        _total_tokens_used += usage
+        if agent_name:
+            _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + usage
+        return (str(content) if content else None, usage)
 
     except Exception as e:
         logger.exception("LLM call failed: %s", e)
-        return None
+        return (None, 0)
 
 
 def execute_structured_agent(
     system_prompt: str,
     task: str,
     output_schema_desc: str = "JSON",
+    agent_name: str = "",
     **kwargs,
-) -> dict | list | str | None:
-    """Execute LLM call and attempt to parse the output as JSON."""
-    raw = execute_agent(system_prompt, task, **kwargs)
+) -> tuple[dict | list | str | None, int]:
+    """Execute LLM call and attempt to parse the output as JSON. Returns (result, token_count)."""
+    raw, tokens = execute_agent(system_prompt, task, agent_name=agent_name, **kwargs)
     if raw is None:
-        return None
+        return (None, tokens)
 
     # Try to extract JSON from the response (may be wrapped in markdown code blocks)
     json_str = raw.strip()
@@ -80,11 +109,11 @@ def execute_structured_agent(
         json_str = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
     try:
-        return json.loads(json_str)
+        return (json.loads(json_str), tokens)
     except json.JSONDecodeError:
         # Return raw text if not valid JSON
         logger.warning("Could not parse agent output as JSON (%d chars)", len(raw))
-        return raw
+        return (raw, tokens)
 
 
 def is_available() -> bool:

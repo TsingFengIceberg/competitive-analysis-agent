@@ -41,6 +41,23 @@ export interface ReportResponse {
   report_data: ReportData | null;
   metrics: Record<string, number> | null;
   error: string | null;
+  history_count: number;
+  token_usage: TokenEntry[];
+}
+
+export interface TokenEntry {
+  label: string;
+  tokens: number;
+  cumulative: number;
+  timestamp: string;
+  agents: Record<string, number>;
+}
+
+export interface ReportHistoryItem {
+  version: number;
+  timestamp: string;
+  hitl_decision: { action: string; comment: string };
+  report_data: ReportData;
 }
 
 export interface ReportData {
@@ -199,5 +216,12 @@ export function useCompetitionAPI() {
     if (!res.ok) throw new Error(`Decision submission failed: ${res.status}`);
   }, []);
 
-  return { loading, startAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision };
+  const pollReportHistory = useCallback(async (threadId: string): Promise<ReportHistoryItem[]> => {
+    const res = await fetch(`${API_BASE}/report/${threadId}/history`);
+    if (!res.ok) throw new Error(`History fetch failed: ${res.status}`);
+    const data = await res.json();
+    return data.history as ReportHistoryItem[];
+  }, []);
+
+  return { loading, startAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory };
 }
