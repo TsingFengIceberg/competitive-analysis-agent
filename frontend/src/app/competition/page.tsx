@@ -38,7 +38,7 @@ export default function CompetitionPage() {
   const [status, setStatus] = useState<string>("idle");
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenEntry[]>([]);
-   
+
   const [dagState, setDagState] = useState<DagState | null>(null);
   const [activePanel, setActivePanel] = useState<string>("dag");
   const [hitlVisible, setHitlVisible] = useState(false);
@@ -47,37 +47,22 @@ export default function CompetitionPage() {
   const [viewingHistory, setViewingHistory] = useState<ReportHistoryItem | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Show HITL card when analysis completes or fails
+  // Show HITL card when analysis completes or fails, reset submitting flag
   useEffect(() => {
     if (status === "completed" || status === "failed") {
       setHitlVisible(true);
-      // Only reset submitting flag if this was the INITIAL analysis (not HITL feedback)
-      // For HITL, hitlSubmitting is reset when new report data arrives in poll
-      if (!hitlSubmitting) {
-        // initial analysis – no action needed
-      }
-      // Page title flash + toast-style notification (no HTTPS required)
-      if (status === "completed" || status === "failed") {
-        const prefix = status === "completed" ? "✅" : "❌";
-        const label = status === "completed"
-          ? (hitlSubmitting ? "修改意见已处理" : "竞品分析完成")
-          : "分析失败";
-        document.title = `${prefix} ${label} - CI-Agent`;
-        // Restore title after 5 seconds
-        setTimeout(() => {
-          document.title = "CI-Agent 竞品分析";
-        }, 5000);
-      }
-      // Also try native notification if available (HTTPS/localhost)
+      setHitlSubmitting(false);
+      // Page title flash
+      const prefix = status === "completed" ? "✅" : "❌";
+      const label = status === "completed" ? "竞品分析完成" : "分析失败";
+      document.title = `${prefix} ${label} - CI-Agent`;
+      setTimeout(() => { document.title = "CI-Agent 竞品分析"; }, 5000);
+      // Native notification if available
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        const title = status === "completed" ? "✅ 竞品分析完成" : "❌ 竞品分析失败";
-        const body = status === "completed"
-          ? (hitlSubmitting ? "修改意见已处理，报告已更新" : "报告已生成，点击查看")
-          : "分析过程中出现错误";
-        new Notification(title, { body, icon: "/favicon.ico" });
+        new Notification(label, { body: "报告已生成，点击查看", icon: "/favicon.ico" });
       }
     }
-  }, [status, hitlSubmitting]);
+  }, [status]);
 
   const handleStart = useCallback(async () => {
     if (!query.trim() || !products.trim()) return;
@@ -104,42 +89,51 @@ export default function CompetitionPage() {
     }
   }, [query, products, persona, deepMode, api]);
 
+  // Continuous poll — depends only on threadId, never self-destructs
   useEffect(() => {
-    if (!threadId || status !== "running") return;
+    if (!threadId) return;
     const poll = async () => {
       try {
-        const report = await api.pollReport(threadId);
+        const res = await fetch(`/api/competition/report/${threadId}`);
+        if (!res.ok) return;
+        const report = await res.json();
         if (report.report_data) {
           setReportData(report.report_data);
-          setViewingHistory(null);  // back to current version
-          setHitlSubmitting(false);  // HITL reanalysis produced new report
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
-        if (report.status === "completed" || report.status === "failed") {
-          setStatus(report.status);
-          if (pollRef.current) clearInterval(pollRef.current);
-        }
+        setStatus(report.status);
       } catch { /* retry on transient errors */ }
     };
     void poll();
     pollRef.current = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [threadId, status, api]);
+  }, [threadId]);
 
   const handleViewHistory = useCallback(async (version: number | null) => {
     if (!threadId) return;
-    if (version === null) {
-      // Back to current
-      setViewingHistory(null);
-      return;
+    if (version === null) { setViewingHistory(null); return; }
+    console.log("handleViewHistory: fetching history for", threadId);
+    // Retry up to 3 times on network errors (ERR_CONNECTION_RESET etc.)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(`/api/competition/report/${threadId}/history`, { cache: "no-store" });
+        console.log("handleViewHistory: response", res.status, "attempt", attempt);
+        if (!res.ok) return;
+        const data = await res.json();
+        const history = data.history as ReportHistoryItem[];
+        console.log("handleViewHistory: got", history.length, "items");
+        setHistoryCount(history.length);
+        const item = history.find((h: ReportHistoryItem) => h.version === version);
+        console.log("handleViewHistory: looking for v", version, "found:", !!item);
+        if (item) setViewingHistory(item);
+        return;
+      } catch (e) {
+        console.error("handleViewHistory attempt", attempt, "failed:", e);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 500));
+      }
     }
-    try {
-      const history = await api.pollReportHistory(threadId);
-      const item = history.find((h) => h.version === version);
-      if (item) setViewingHistory(item);
-    } catch { /* ignore */ }
-  }, [threadId, api]);
+  }, [threadId]);
 
   const displayReport = viewingHistory?.report_data ?? reportData;
 
@@ -181,7 +175,7 @@ export default function CompetitionPage() {
               .replace(
                 /\[(\d+)\]/g,
                 (_, id) => {
-                  const trace = reportData?.traceability_map?.[id];
+                  const trace = displayReport?.traceability_map?.[id];
                   const url = typeof trace === "object" ? trace.url : String(trace ?? "");
                   return `<sup class="cursor-pointer text-blue-600 hover:underline" title="${url}">[${id}]</sup>`;
                 },
@@ -296,7 +290,7 @@ export default function CompetitionPage() {
                 <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
                 {displayReport.sections.map((s) => renderSection(s))}
                 {/* HITL Approval Card */}
-                {hitlVisible && (
+                {hitlVisible && !viewingHistory && (
                   <div className="mt-6 rounded-lg border-2 border-orange-300 bg-orange-50/30 p-4">
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-semibold text-sm">
@@ -314,20 +308,21 @@ export default function CompetitionPage() {
                       data_stats={{ total_data_points: Object.keys(displayReport.traceability_map || {}).length }}
                       quality_summary={displayReport.quality_summary}
                       onSubmit={(action, comment) => {
-                        console.log("HITL decision:", action, comment);
                         if (threadId) {
                           if (action === "approve") {
+                            api.submitDecision(threadId, { action, comment, target_focus: null })
+                              .catch((err) => console.error("Approve submit failed:", err));
                             setHitlVisible(false);
                           } else {
                             setHitlSubmitting(true);
                             setStatus("running");
+                            api.submitDecision(threadId, { action, comment, target_focus: null })
+                              .catch((err) => {
+                                console.error("HITL submit failed:", err);
+                                setHitlSubmitting(false);
+                                setStatus("completed");
+                              });
                           }
-                          api.submitDecision(threadId, { action, comment, target_focus: null })
-                            .catch((err) => {
-                              console.error("HITL submit failed:", err);
-                              setHitlSubmitting(false);
-                              setStatus("completed");
-                            });
                         }
                       }}
                     />

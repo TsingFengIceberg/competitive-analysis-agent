@@ -158,6 +158,9 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
+    if entry.get("status") == "running":
+        raise HTTPException(status_code=409, detail="分析正在进行中，请等待完成后再提交")
+
     state = entry.get("state", {})
 
     # Always record the decision and trigger action (with or without comment)

@@ -13,14 +13,7 @@ const SEGMENT_COLORS = [
   "bg-indigo-500",
 ];
 
-const AGENT_LABELS: Record<string, string> = {
-  Collector: "采集",
-  Analyst: "分析",
-  Reviewer: "质检",
-  Writer: "写作",
-};
-
-const AGENT_ORDER = ["Collector", "Analyst", "Reviewer", "Writer"];
+const AGENT_ORDER = ["Collector", "Analyst", "Reviewer", "Writer", "HITL Gate"];
 
 function versionColor(index: number): string {
   return SEGMENT_COLORS[index % SEGMENT_COLORS.length] ?? "bg-gray-500";
@@ -48,7 +41,7 @@ export default function TokenPanel({ tokenUsage }: TokenPanelProps) {
       prev = cur;
     }
     return { agent, deltas, total: prev };
-  }).filter((a) => a.total > 0);
+  });
 
   const maxAgentTotal = Math.max(...agentData.map((a) => a.total), 1);
 
@@ -78,12 +71,11 @@ export default function TokenPanel({ tokenUsage }: TokenPanelProps) {
       {/* Per-agent rows — each agent: label, then version-colored chips for non-zero contributions */}
       <div className="space-y-0.5">
         {agentData.map(({ agent, deltas, total }) => {
-          const label = AGENT_LABELS[agent] ?? agent;
           const barPct = (total / maxAgentTotal) * 100;
           return (
             <div key={agent} className="flex items-center gap-1.5">
-              <span className="w-8 text-right text-[9px] text-muted-foreground">
-                {label}
+              <span className="w-16 text-right text-[9px] text-muted-foreground">
+                {agent}
               </span>
               {/* Bar: each version segment uses versionColor(vIdx) */}
               <div
@@ -97,7 +89,7 @@ export default function TokenPanel({ tokenUsage }: TokenPanelProps) {
                       key={vIdx}
                       className={`h-full ${versionColor(vIdx)}`}
                       style={{ width: `${segPct}%` }}
-                      title={`${label} · ${tokenUsage[vIdx]?.label ?? `v${vIdx}`}: ${delta.toLocaleString()}`}
+                      title={`${agent} · ${tokenUsage[vIdx]?.label ?? `v${vIdx}`}: ${delta.toLocaleString()}`}
                     />
                   ) : null;
                 })}

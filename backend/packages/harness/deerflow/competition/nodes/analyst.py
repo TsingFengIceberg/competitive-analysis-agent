@@ -5,6 +5,7 @@ Per COMPETITION_PLAN.md §3.5: 7 sub-rules governing analysis behavior.
 
 from __future__ import annotations
 
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -100,39 +101,120 @@ Self-check before output (§3.5.5):
 """
 
 
+def _repair_json(text: str) -> str:
+    """Repair common LLM JSON errors: trailing commas, unclosed braces/strings.
+
+    Also attempts to salvage truncated JSON by auto-closing unmatched brackets.
+    Returns repaired text — may still be invalid JSON if the damage is too severe.
+    """
+    import re
+
+    # 1. Remove markdown code fences
+    text = re.sub(r"^```(?:json|jsonc)?\s*\n?", "", text.strip(), flags=re.MULTILINE)
+    text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+
+    # 2. Remove trailing commas before closing ] or }
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    # 3. Repair empty values: "key":, → "key": null,
+    text = re.sub(r":\s*,", ": null,", text)
+
+    # 4. Auto-close unclosed strings (single trailing quote on last line)
+    lines = text.split("\n")
+    if lines:
+        last = lines[-1]
+        # If last line has odd number of quotes, add closing quote
+        if last.count('"') % 2 != 0 and not last.rstrip().endswith('"'):
+            lines[-1] = last.rstrip() + '"'
+    text = "\n".join(lines)
+
+    # 5. Count and auto-close unmatched brackets
+    pairs = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append(pairs[ch])
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+    # Append missing closing brackets in reverse order
+    closing = "".join(reversed(stack))
+    text = text.rstrip() + closing
+
+    return text
+
+
+def _llm_repair_json(raw_text: str, exc: json.JSONDecodeError) -> dict | str | None:
+    """Ask the LLM to fix its own broken JSON — the ultimate fallback.
+
+    Sends the raw output + the parse error back to the model with a one-shot
+    repair instruction. Returns the parsed dict/str on success, or the empty
+    result on failure.
+    """
+    from deerflow.competition.executor import execute_agent
+
+    # Keep the payload as small as possible to minimise token cost
+    snippet = raw_text[:6000]
+    error_msg = f"JSONDecodeError at line {exc.lineno}, col {exc.colno}: {exc.msg}"
+
+    prompt = (
+        "You are a JSON repair bot. The following text was meant to be valid JSON "
+        "but failed to parse. Fix ALL syntax errors (unclosed brackets, trailing commas, "
+        "unescaped characters, truncated strings, etc.) and output ONLY the corrected "
+        "JSON. Do not change any data — only fix the syntax.\n\n"
+        f"Parse error: {error_msg}\n\n"
+        "Broken JSON:\n"
+        f"{snippet}"
+    )
+
+    logger.warning("Attempting LLM JSON repair (error: %s)", error_msg)
+    result, tokens = execute_agent(prompt, "Fix the JSON syntax and return only the corrected JSON.", temperature=0.0, max_tokens=8192, agent_name="Analyst")
+    if result:
+        text = _repair_json(result)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("LLM JSON repair also failed (%d chars)", len(result))
+    return None
+
+
 def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
     """Normalize raw Analyst output into a dict suitable for AnalysisResult.model_validate()."""
     if raw is None:
         return _empty_analysis_result(state)
 
     if isinstance(raw, str):
-        import json
         import re
-        text = raw.strip()
-        # Strip markdown code fences
-        text = re.sub(r"^```(?:json|jsonc)?\s*\n?", "", text, flags=re.MULTILINE)
-        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
-        # Repair common LLM JSON errors:
-        # 1. Empty values like "rating":, → "rating": null,
-        text = re.sub(r':\s*,', ': null,', text)
-        # 2. Missing closing braces comma like "key": value\n  → "key": value,\n
-        text = re.sub(r'(["\d])\s*\n\s*"', r'\1,\n"', text)
+
+        text = _repair_json(raw)
         logger.warning("Analyst JSON parse attempt: first 200 chars=%s, last 100 chars=%s",
                        text[:200], text[-100:])
         try:
             raw = json.loads(text)
-        except json.JSONDecodeError:
-            # Try to find a JSON object in the text
+        except json.JSONDecodeError as exc:
+            # Regex fallback: try to find any JSON object in the repaired text
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 try:
                     raw = json.loads(match.group())
                 except json.JSONDecodeError:
-                    logger.warning("Analyst output is not valid JSON (%d chars)", len(raw))
-                    return _empty_analysis_result(state)
-            else:
-                logger.warning("Analyst output is not valid JSON (%d chars)", len(raw))
-                return _empty_analysis_result(state)
+                    pass  # falls through to LLM repair below
+            # LLM self-repair: ask the model to fix its own broken JSON
+            if not isinstance(raw, dict):
+                raw = _llm_repair_json(raw if isinstance(raw, str) else text, exc)
 
     if not isinstance(raw, dict):
         return _empty_analysis_result(state)
@@ -246,6 +328,6 @@ def _execute_analyst(task: str, state: dict) -> tuple[dict | str | None, int]:
 
     logger.info("Analyst executing task (%d chars)", len(task))
     prompt = load_prompt_with_vars("analyst", persona_profile=persona_str)
-    result, tokens = execute_structured_agent(prompt, task, agent_name="Analyst")
+    result, tokens = execute_structured_agent(prompt, task, agent_name="Analyst", max_tokens=8192)
     # Pass raw string through for fallback parsing in _build_analysis_result
     return (result if isinstance(result, (dict, str)) else None, tokens)

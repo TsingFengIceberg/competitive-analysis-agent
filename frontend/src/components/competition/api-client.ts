@@ -160,6 +160,8 @@ export interface HitlDecisionData {
 
 const API_BASE = "/api/competition";
 
+export { API_BASE };
+
 export function useCompetitionAPI() {
   const [loading, setLoading] = useState(false);
 
