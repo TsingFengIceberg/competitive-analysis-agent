@@ -161,6 +161,9 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     if entry.get("status") == "running":
         raise HTTPException(status_code=409, detail="分析正在进行中，请等待完成后再提交")
 
+    if entry.get("status") == "approved":
+        raise HTTPException(status_code=409, detail="报告已批准发布，无法再修改")
+
     state = entry.get("state", {})
 
     # Always record the decision and trigger action (with or without comment)
@@ -177,6 +180,11 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
         _store[thread_id]["status"] = "running"
         loop = asyncio.get_event_loop()
         loop.run_in_executor(None, _reanalyze_sync, thread_id, decision.action)
+
+    if decision.action == "approve":
+        _store[thread_id]["status"] = "approved"
+        # Persist to SQLite
+        _save_to_db(thread_id, entry)
 
     report_data = state.get("report_data")
     metrics = report_data.get("metrics") if report_data else None
@@ -271,6 +279,98 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             _store[thread_id]["state"]["error"] = str(e)
 
 
+def _save_to_db(thread_id: str, entry: dict) -> None:
+    """Persist an approved report to the SQLite analysis_history table."""
+    try:
+        from deerflow.competition.db import init_db, record_analysis
+
+        conn = init_db()
+        state = entry.get("state", {})
+        report = state.get("report_data") or {}
+        sections = report.get("sections", [])
+        # Extract key findings from report sections
+        findings: list[str] = []
+        for s in sections:
+            if s.get("id") in ("sec-executive-summary", "sec-swot"):
+                for line in s.get("content", "").split("\n"):
+                    stripped = line.strip("- ").strip()
+                    if stripped and len(stripped) > 10:
+                        findings.append(stripped[:200])
+        record_analysis(
+            thread_id=thread_id,
+            query=entry.get("query", ""),
+            products=entry.get("products", []),
+            persona=report.get("persona", "pm"),
+            deep_mode=False,
+            key_findings=findings[:5],
+            report_path="",
+            metrics=report.get("metrics") or {},
+            report_data=report,
+            conn=conn,
+        )
+        conn.close()
+        logger.info("Saved approved report %s to DB", thread_id[:12])
+    except Exception as e:
+        logger.exception("Failed to save report %s to DB: %s", thread_id, e)
+
+
+def _render_report_markdown(entry: dict) -> str:
+    """Render a competition report as a Markdown string for export."""
+    report = entry.get("state", {}).get("report_data") or {}
+    lines: list[str] = []
+    lines.append(f"# {report.get('title', '竞品分析报告')}")
+    lines.append(f"\n*生成时间: {report.get('generated_at', '')}*")
+    lines.append(f"*视角: {report.get('persona', '')}*")
+    lines.append(f"*产品: {', '.join(report.get('products', []))}*\n")
+    lines.append("---\n")
+    for section in report.get("sections", []):
+        lines.append(f"## {section.get('title', '')}")
+        content = section.get("content", "")
+        if section.get("content_type") == "table":
+            lines.append(content)
+        else:
+            lines.append(content)
+        lines.append("")
+    # Metrics footer
+    metrics = report.get("metrics") or {}
+    if metrics:
+        lines.append("---\n")
+        lines.append("## 报告指标")
+        lines.append(f"- 覆盖率: {metrics.get('coverage', 0):.0%}")
+        lines.append(f"- 交叉验证率: {metrics.get('cross_validation_rate', 0):.0%}")
+        lines.append(f"- 溯源完成度: {metrics.get('trace_completeness', 0):.0%}")
+    return "\n".join(lines)
+
+
+@router.get("/report/{thread_id}/export")
+async def export_report(thread_id: str, format: str = "md"):
+    """Export an approved report as Markdown (md) or JSON (json)."""
+    from fastapi.responses import PlainTextResponse
+
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    if entry.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="报告尚未批准发布，无法导出")
+
+    if format == "json":
+        import json
+        report = entry.get("state", {}).get("report_data") or {}
+        return PlainTextResponse(
+            json.dumps(report, ensure_ascii=False, indent=2, default=str),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=report-{thread_id[:12]}.json"},
+        )
+
+    md = _render_report_markdown(entry)
+    return PlainTextResponse(
+        md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=report-{thread_id[:12]}.md"},
+    )
+
+
 @router.get("/stream/{thread_id}")
 async def stream(thread_id: str):
     """SSE stream of graph execution events."""
@@ -302,6 +402,41 @@ async def list_history(limit: int = Query(default=10, le=50)):
             "created_at": entry.get("created_at", ""),
         })
     return {"history": history, "total": len(history)}
+
+
+@router.get("/db-history")
+async def list_db_history(limit: int = Query(default=20, le=100)):
+    """List analysis records saved to SQLite (approved reports)."""
+    try:
+        from deerflow.competition.db import init_db
+        from deerflow.competition.db import list_history as db_list_history
+
+        conn = init_db()
+        records = db_list_history(conn, limit=limit)
+        conn.close()
+        return {"history": records, "total": len(records)}
+    except Exception as e:
+        logger.exception("Failed to read DB history: %s", e)
+        return {"history": [], "total": 0, "error": str(e)}
+
+
+@router.get("/db-report/{thread_id}")
+async def get_db_report(thread_id: str):
+    """Retrieve a saved (approved) report from the SQLite database."""
+    try:
+        from deerflow.competition.db import get_analysis, init_db
+
+        conn = init_db()
+        record = get_analysis(thread_id, conn=conn)
+        conn.close()
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Report not found in DB: {thread_id}")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to read DB report %s: %s", thread_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Internal ──

@@ -64,7 +64,8 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT,
             key_findings TEXT,
             report_path TEXT,
-            metrics TEXT
+            metrics TEXT,
+            report_data TEXT
         );
     """)
     conn.commit()
@@ -172,19 +173,46 @@ def set_baseline(
 def record_analysis(
     thread_id: str, query: str, products: list[str], persona: str,
     deep_mode: bool, key_findings: list[str], report_path: str,
-    metrics: dict, conn: sqlite3.Connection,
+    metrics: dict, report_data: dict | None = None, conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Record a completed analysis in history."""
+    """Record a completed analysis in history. Stores full report_data JSON for later retrieval."""
+    if conn is None:
+        conn = init_db()
     conn.execute(
         """INSERT OR REPLACE INTO analysis_history
-           (thread_id, user_id, query, products, persona, deep_mode, created_at, key_findings, report_path, metrics)
+           (thread_id, user_id, query, products, persona, deep_mode, created_at, key_findings, report_path, metrics, report_data)
            VALUES (?, 'default', ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             thread_id, query, json.dumps(products), persona, int(deep_mode),
-            datetime.now(UTC).isoformat(), json.dumps(key_findings), report_path, json.dumps(metrics),
+            datetime.now(UTC).isoformat(), json.dumps(key_findings), report_path,
+            json.dumps(metrics), json.dumps(report_data, ensure_ascii=False, default=str) if report_data else None,
         ),
     )
     conn.commit()
+
+
+def get_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    """Retrieve a single analysis record by thread_id, including full report_data."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    row = conn.execute(
+        "SELECT thread_id, query, products, persona, created_at, key_findings, metrics, report_data "
+        "FROM analysis_history WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchone()
+    if close_conn:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "thread_id": row[0], "query": row[1],
+        "products": json.loads(row[2]) if row[2] else [],
+        "persona": row[3], "created_at": row[4],
+        "key_findings": json.loads(row[5]) if row[5] else [],
+        "metrics": json.loads(row[6]) if row[6] else {},
+        "report_data": json.loads(row[7]) if row[7] else None,
+    }
 
 
 def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:

@@ -1,6 +1,6 @@
 "use client";
 
-import { Send, Loader2, User, Building2 } from "lucide-react";
+import { Send, Loader2, User, Building2, Database } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
 
 import AgentDetailPanel from "@/components/competition/agent-detail-panel";
@@ -45,11 +45,15 @@ export default function CompetitionPage() {
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
   const [viewingHistory, setViewingHistory] = useState<ReportHistoryItem | null>(null);
+  const [showDbHistory, setShowDbHistory] = useState(false);
+  const [dbRecords, setDbRecords] = useState<Array<{thread_id: string; query: string; products: string[]; persona: string; created_at: string; key_findings: string[]; metrics: Record<string,number>}>>([]);
+  const [dbLoadedReport, setDbLoadedReport] = useState<ReportData | null>(null);
+  const [dbLoadedThreadId, setDbLoadedThreadId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
   useEffect(() => {
-    if (status === "completed" || status === "failed") {
+    if (status === "completed" || status === "failed" || status === "approved") {
       setHitlVisible(true);
       setHitlSubmitting(false);
       // Page title flash
@@ -72,6 +76,8 @@ export default function CompetitionPage() {
     setStatus("running");
     setReportData(null);
     setTokenUsage([]);
+    setDbLoadedReport(null);
+    setDbLoadedThreadId(null);
     setDagState(null);
     setHitlVisible(false);
     setHitlSubmitting(false);
@@ -135,7 +141,7 @@ export default function CompetitionPage() {
     }
   }, [threadId]);
 
-  const displayReport = viewingHistory?.report_data ?? reportData;
+  const displayReport = viewingHistory?.report_data ?? dbLoadedReport ?? reportData;
 
   const handlePersonaSwitch = useCallback(async (newPersona: Persona) => {
     setPersona(newPersona);
@@ -190,6 +196,7 @@ export default function CompetitionPage() {
   const statusBadge = status === "idle" ? <Badge variant="outline">就绪</Badge>
     : status === "running" ? <Badge variant="default">运行中…</Badge>
     : status === "completed" ? <Badge variant="secondary">✅ 完成</Badge>
+    : status === "approved" ? <Badge variant="secondary">✅ 已批准</Badge>
     : <Badge variant="destructive">❌ 失败</Badge>;
 
   return (
@@ -198,6 +205,18 @@ export default function CompetitionPage() {
       <div className="flex items-center gap-4 border-b px-6 py-3">
         <h1 className="text-lg font-bold">CI-Agent 竞品分析</h1>
         {statusBadge}
+        <Button variant="ghost" size="sm" onClick={async () => {
+          setShowDbHistory(true);
+          try {
+            const res = await fetch("/api/competition/db-history");
+            if (res.ok) {
+              const data = await res.json();
+              setDbRecords(data.history ?? []);
+            }
+          } catch { /* ignore */ }
+        }}>
+          <Database className="mr-1 h-4 w-4" /> 已保存报告
+        </Button>
         {reportData && (
           <div className="ml-auto flex items-center gap-2">
             <TokenPanel tokenUsage={tokenUsage} />
@@ -287,10 +306,76 @@ export default function CompetitionPage() {
                     因「{viewingHistory.hitl_decision?.comment?.slice(0, 30) || "无评论"}」生成
                   </div>
                 )}
+                {dbLoadedThreadId && !viewingHistory && (
+                  <div className="mb-3 flex items-center justify-between rounded border border-green-300 bg-green-50/50 p-2 text-xs text-green-800">
+                    <span>📁 查看已保存报告 ({dbLoadedThreadId.slice(0, 12)})</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!dbLoadedReport) return;
+                          setQuery(dbLoadedReport.title || "");
+                          setProducts((dbLoadedReport.products || []).join(", "));
+                          setPersona(dbLoadedReport.persona || "pm");
+                          setDbLoadedReport(null);
+                          setDbLoadedThreadId(null);
+                          setHitlVisible(false);
+                          // Start new analysis with saved report params
+                          setStatus("running");
+                          setReportData(null);
+                          setTokenUsage([]);
+                          setDagState(null);
+                          try {
+                            const res = await api.startAnalysis({
+                              query: dbLoadedReport.title || dbLoadedReport.products?.join(" vs ") || "",
+                              target_products: dbLoadedReport.products || [],
+                              persona: dbLoadedReport.persona || "pm",
+                              deep_mode: false,
+                            });
+                            setThreadId(res.thread_id);
+                          } catch (err) {
+                            setStatus("error");
+                            console.error("Reanalysis start failed:", err);
+                          }
+                        }}
+                        className="rounded bg-blue-500 px-2 py-0.5 text-white hover:bg-blue-600"
+                      >
+                        基于此报告新建分析
+                      </button>
+                      <button onClick={() => { setDbLoadedReport(null); setDbLoadedThreadId(null); }}
+                        className="text-green-700 hover:text-green-900 underline">
+                        返回
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
                 {displayReport.sections.map((s) => renderSection(s))}
-                {/* HITL Approval Card */}
-                {hitlVisible && !viewingHistory && (
+                {/* HITL Approval Card — shown on completed; export buttons on approved */}
+                {hitlVisible && !viewingHistory && status === "approved" && (
+                  <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="font-semibold text-sm text-green-700">✅ 报告已批准发布</h3>
+                    </div>
+                    <p className="mb-3 text-xs text-muted-foreground">该报告已保存到数据库，可以导出下载。</p>
+                    <div className="flex gap-2">
+                      <a
+                        href={`/api/competition/report/${threadId}/export?format=md`}
+                        className="inline-flex items-center gap-1 rounded bg-blue-500 px-3 py-1.5 text-xs text-white hover:bg-blue-600"
+                        download
+                      >
+                        📥 导出 Markdown
+                      </a>
+                      <a
+                        href={`/api/competition/report/${threadId}/export?format=json`}
+                        className="inline-flex items-center gap-1 rounded bg-gray-500 px-3 py-1.5 text-xs text-white hover:bg-gray-600"
+                        download
+                      >
+                        📦 导出 JSON
+                      </a>
+                    </div>
+                  </div>
+                )}
+                {hitlVisible && !viewingHistory && status !== "approved" && (
                   <div className="mt-6 rounded-lg border-2 border-orange-300 bg-orange-50/30 p-4">
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-semibold text-sm">
@@ -385,6 +470,63 @@ export default function CompetitionPage() {
                 </TabsContent>
               </Tabs>
             </div>
+          </div>
+        </div>
+      )}
+      {/* DB History Modal */}
+      {showDbHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowDbHistory(false)}>
+          <div className="max-h-[80vh] w-[600px] overflow-y-auto rounded-lg bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-bold">已保存的分析报告</h2>
+              <button onClick={() => setShowDbHistory(false)} className="text-muted-foreground hover:text-foreground text-lg">✕</button>
+            </div>
+            {dbRecords.length === 0 ? (
+              <p className="text-sm text-muted-foreground">暂无已批准保存的报告。完成分析后点击「批准发布」即可保存。</p>
+            ) : (
+              <div className="space-y-3">
+                {dbRecords.map((r) => (
+                  <div
+                    key={r.thread_id}
+                    className="cursor-pointer rounded border p-3 text-xs hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`/api/competition/db-report/${r.thread_id}`);
+                        if (res.ok) {
+                          const data = await res.json();
+                          if (data.report_data) {
+                            setDbLoadedReport(data.report_data as ReportData);
+                            setDbLoadedThreadId(r.thread_id);
+                            setShowDbHistory(false);
+                          } else {
+                            alert("该历史记录缺少完整报告数据（可能是在升级前保存的）。请重新运行分析并批准发布。");
+                          }
+                        }
+                      } catch { /* ignore */ }
+                    }}
+                  >
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="font-semibold text-blue-600 hover:underline">{r.query}</span>
+                      <span className="text-muted-foreground">{new Date(r.created_at).toLocaleString("zh-CN")}</span>
+                    </div>
+                    <div className="mb-1 text-muted-foreground">
+                      产品: {Array.isArray(r.products) ? r.products.join(", ") : r.products} | 视角: {r.persona === "pm" ? "产品经理" : "创业者"}
+                    </div>
+                    {r.key_findings && Array.isArray(r.key_findings) && r.key_findings.length > 0 && (
+                      <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+                        {r.key_findings.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    )}
+                    {r.metrics && (
+                      <div className="mt-1 flex gap-3 text-muted-foreground">
+                        <span>覆盖率: {((r.metrics.coverage ?? 0) * 100).toFixed(0)}%</span>
+                        <span>交叉验证: {((r.metrics.cross_validation_rate ?? 0) * 100).toFixed(0)}%</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
