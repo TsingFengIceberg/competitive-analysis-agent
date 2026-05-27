@@ -181,7 +181,7 @@ def record_analysis(
     conn.execute(
         """INSERT OR REPLACE INTO analysis_history
            (thread_id, user_id, query, products, persona, deep_mode, created_at, key_findings, report_path, metrics, report_data)
-           VALUES (?, 'default', ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, 'default', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             thread_id, query, json.dumps(products), persona, int(deep_mode),
             datetime.now(UTC).isoformat(), json.dumps(key_findings), report_path,

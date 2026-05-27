@@ -311,35 +311,31 @@ export default function CompetitionPage() {
                     <span>📁 查看已保存报告 ({dbLoadedThreadId.slice(0, 12)})</span>
                     <div className="flex gap-2">
                       <button
-                        onClick={async () => {
+                        onClick={() => {
                           if (!dbLoadedReport) return;
-                          setQuery(dbLoadedReport.title || "");
+                          // Build a context-rich query from the old report's key findings
+                          const oldProducts = (dbLoadedReport.products || []).join(", ");
+                          const execSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-executive-summary");
+                          const swotSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-swot");
+                          const recSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-recommendations");
+                          const oldContext = [
+                            execSection?.content?.slice(0, 500) ?? "",
+                            swotSection?.content?.slice(0, 500) ?? "",
+                            recSection?.content?.slice(0, 300) ?? "",
+                          ].filter(Boolean).join("\n\n");
+                          const newQuery = oldContext
+                            ? `基于以下上一轮分析报告的结论：\n\n${oldContext}\n\n请对 ${oldProducts} 进行新一轮竞品分析，重点关注之前未覆盖的维度和新变化。`
+                            : `分析 ${oldProducts} 的竞争力`;
+                          // Pre-fill inputs only — user can edit before starting
+                          setQuery(newQuery);
                           setProducts((dbLoadedReport.products || []).join(", "));
                           setPersona(dbLoadedReport.persona || "pm");
                           setDbLoadedReport(null);
                           setDbLoadedThreadId(null);
-                          setHitlVisible(false);
-                          // Start new analysis with saved report params
-                          setStatus("running");
-                          setReportData(null);
-                          setTokenUsage([]);
-                          setDagState(null);
-                          try {
-                            const res = await api.startAnalysis({
-                              query: dbLoadedReport.title || dbLoadedReport.products?.join(" vs ") || "",
-                              target_products: dbLoadedReport.products || [],
-                              persona: dbLoadedReport.persona || "pm",
-                              deep_mode: false,
-                            });
-                            setThreadId(res.thread_id);
-                          } catch (err) {
-                            setStatus("error");
-                            console.error("Reanalysis start failed:", err);
-                          }
                         }}
                         className="rounded bg-blue-500 px-2 py-0.5 text-white hover:bg-blue-600"
                       >
-                        基于此报告新建分析
+                        填入输入框
                       </button>
                       <button onClick={() => { setDbLoadedReport(null); setDbLoadedThreadId(null); }}
                         className="text-green-700 hover:text-green-900 underline">
