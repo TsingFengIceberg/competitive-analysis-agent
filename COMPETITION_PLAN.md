@@ -42,22 +42,22 @@
 |---|---------------------|------|---------|---------|
 | R1 | 角色 Agent：采集/分析/撰写/质检，职责边界明确 | 开题 §2 | [§3.3 角色定义](#33-4-个-agent-角色定义) + [§3.4 Collector规范](#34-collector-采集规范-竞赛要求-r1-r2) + [§3.5 Analyst规范](#35-analyst-分析规范) | 4 Agent 角色定义 + Collector 6 项采集规则 + Analyst 5 项分析规则 |
 | R2 | 采集 Agent 含问卷设计/问卷调研/用户访谈 | 开题 §2 | [§4.4 VoC Aggregator](#44-用户声音聚合器-voice-of-customer-aggregator-竞赛要求-r2) + [§3.3 Collector双轨](#33-4-个-agent-角色定义) | VoC Aggregator（主）+ 问卷生成（辅）双轨 |
-| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.9 竞品知识 Schema](#39-竞品知识-schemapydantic-强制校验) + [§3.10 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | 3 个 Pydantic BaseModel + model_validate() 强制校验 |
-| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.12 结构化通信协议](#312-agent-间结构化通信协议-竞赛要求-r4) | 6 边完整 Schema（AnalysisResult/ReviewVerdict/ReviewPackage/HitlDecision） |
-| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.6 Reviewer审阅清单](#36-reviewer-审阅清单与判定规则-竞赛要求-r5) + [§3.7 DAG工作流](#37-dag-工作流) + [§3.12 路由逻辑](#311-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮，8 种 gap 判定规则 |
-| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.11.1 改善追踪](#3111-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
-| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.8 CompetitionState](#38-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
-| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.10 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | model_validate() + 自动重试 + 降级 |
+| R3 | 知识结构化：功能树/定价模型/用户画像 Schema | 开题 §2 | [§3.10 竞品知识 Schema](#39-竞品知识-schemapydantic-强制校验) + [§3.11 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | 3 个 Pydantic BaseModel + model_validate() 强制校验 |
+| R4 | Agent 间结构化消息传递，非纯自然语言 | 开题 §2 | [§3.13 结构化通信协议](#312-agent-间结构化通信协议-竞赛要求-r4) | 6 边完整 Schema（AnalysisResult/ReviewVerdict/ReviewPackage/HitlDecision） |
+| R5 | 质检 Agent 将不足打回采集 Agent，DAG 式迭代闭环 | 开题 §2 | [§3.6 Reviewer审阅清单](#36-reviewer-审阅清单与判定规则-竞赛要求-r5) + [§3.7 DAG工作流](#37-dag-工作流) + [§3.13 路由逻辑](#311-路由逻辑普通模式--深度模式流水线) | route_after_reviewer → collector，最多 2 轮，8 种 gap 判定规则 |
+| R6 | 反馈闭环真实可触发，重做后输出有改善（非伪闭环） | 判标 §4 | [§3.12.1 改善追踪](#3111-反馈闭环改善追踪竞赛要求) | gap 覆盖率追踪 + 改善度量 |
+| R7 | 每条分析结论标注数据来源，支持 traceability | 开题 §2 | [§3.9 CompetitionState](#38-competitionstate-设计) + [§3.3 Writer](#33-4-个-agent-角色定义) | traceability_map + 报告内联 `[n]` 标注 |
+| R8 | 输出严格符合预定义 Schema，字段完整格式一致 | 判标 §4 | [§3.11 Schema强制校验链](#310-schema-强制校验链竞赛要求-r3-r8) | model_validate() + 自动重试 + 降级 |
 | R9 | DAG 任务流转可视化、可追溯 | 判标 §4 | [§7.2](#72-dag-执行图核心展示位) | ReactFlow 节点高亮 + 边动画 |
 | R10 | 可观测性：Prompt/输入/输出/决策过程/Token 可查 | 开题 §2 + 判标 §4 | [§7.1-7.7](#七答辩呈现设计--内部工作流可视化) | 双面板 + Agent 详情 + 消息流日志 |
 | R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.7 DAG工作流](#37-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
-| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.15.1 幻觉抑制](#3141-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
-| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.15.5 超时重试](#3145-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
-| R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) | 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
-| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.15.4 业务指标](#3144-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
+| R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.16.1 幻觉抑制](#3141-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
+| R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.16.5 超时重试](#3145-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
+| R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) + [§3.8](#38-版本状态树-versiontree--agent-工作流的-git-核心差异化) | 版本状态树 (VersionTree) + 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
+| R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.16.4 业务指标](#3144-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
 | R16 | 交互设计流畅：报告查看、溯源跳转、人工介入修正 | 判标 §4 | [§5.7](#57-人对报告的细粒度交互式编辑p0--答辩核心交互) + [§7.5](#75-溯源链视图traceability-viewer) | 飞书文档交互 + 溯源链视图 |
-| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.15.2 采集合规](#3142-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
-| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.15.3 数据脱敏](#3143-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
+| R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.16.2 采集合规](#3142-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
+| R18 | 数据隐私与安全：问卷/访谈数据脱敏 | 判标 §4 + 会议纪要 | [§3.16.3 数据脱敏](#3143-数据脱敏竞赛要求) | PII 自动检测 + 匿名化 |
 | R19 | TRAE 等 AI 编程工具使用痕迹清晰 | 判标 §4 | [§8](#八3-周开发计划含答辩呈现) | Git 提交记录 + TRAE IDE 工作流 |
 | R20 | 项目文档齐全：README/架构图/角色协议/部署说明 | 判标 §4 | [§10](#十参考信息) + README + PA-AGENT-DOCS/ | 文档体系 |
 | R21 | 前段展示页面，可现场演示 | 开题 + 会议纪要 | [§7](#七答辩呈现设计--内部工作流可视化) + [§8 Week 2](#week-2-527--63-前端--可观测--飞书集成) | Gradio/Next.js + DAG 可视化 |
@@ -254,7 +254,7 @@
 | `category` | 必须属于 features / pricing / users / market | 其他值 → LLM 重分类 1 次；无法分类 → 归入 market |
 | `label` | 非空，一句话描述（如 "Cursor Pro 月费价格"） | 缺失 → 重试 1 次；仍缺失 → 丢弃 |
 | `value` | str 或 float，非 None | 缺失 → 重试 1 次；仍缺失 → 丢弃 |
-| `source_url` | 非空，必须是有效 URL 格式 | 缺失 → **拒绝入库**（引用强制 §3.11.1） |
+| `source_url` | 非空，必须是有效 URL 格式 | 缺失 → **拒绝入库**（引用强制 §3.12.1） |
 | `source_type` | 必须属于 official / review / news / interview / social | 缺失 → LLM 推断 1 次；推断不出 → 标记 "unknown" |
 | `collected_at` | ISO 8601 格式 | 缺失 → 系统自动填当前时间 |
 
@@ -694,7 +694,7 @@ class ReportData(BaseModel):
     products: list[str]
     sections: list[ReportSection]
     traceability_map: dict           # source_id → {url, timestamp, confidence_level}
-    quality_summary: QualitySummary  # 来自 ReviewVerdict（§3.13.4）
+    quality_summary: QualitySummary  # 来自 ReviewVerdict（§3.14.4）
     forecast: ForecastResult | None  # 来自 AnalysisResult（§3.5.7）
     metrics: dict                    # coverage / improvement_ratio / trace_completeness
 ```
@@ -767,7 +767,226 @@ Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1]
 | W4 | 来源表中每条标注对应正确的 quality 标签 | 修正标签 |
 | W5 | 所选 persona 的侧重点正确 | 调整措辞 |
 
-### 3.8 DAG 工作流
+### 3.8 版本状态树 (VersionTree) — Agent 工作流的 Git `**[核心差异化]**`
+
+> **定位**：将 HITL 交互中的版本管理从"被动日志"升级为系统核心数据结构。
+> 抽象为通用基座模块 `deerflow/versiontree/`，与 LangGraph checkpointer 互补——checkpoint 管线性恢复，VersionTree 管分支、回溯、并排比较。
+
+#### 3.8.1 设计动机
+
+当前 AI Agent 框架（LangGraph、CrewAI、AutoGen）的 checkpoint/state 存储都是**线性的**——只能沿时间轴前进或回退，无法表达"从 v2 分叉出两条不同方向的后续实验"。这恰恰是人类专家做竞品分析的典型工作模式：
+
+```
+分析师看 v1 报告 → 从 PM 角度重写 → v2
+分析师看 v1 报告 → 从创业者角度重新搜索更多数据 → v3
+分析师看 v2 报告 → 觉得更好，基于 v2 继续深度分析 → v4
+```
+
+这与 Git 的分支模型完全一致，但 Agent 领域目前没有等价物。**VersionTree 填补了这个空白。**
+
+#### 3.8.2 核心概念
+
+| 概念 | 类比 | 含义 |
+|------|------|------|
+| **Snapshot** | Git commit | 某一时刻的完整 State 快照（report_data + analysis_result + collected_data + hitl_decision） |
+| **Branch** | Git branch | 从某历史快照 fork 出的独立发展线 |
+| **Fork** | `git checkout -b` | 恢复到历史快照 → 在新方向上继续 HITL 操作 |
+| **Lineage** | `git log --graph` | 父子关系链，可追溯任意版本的完整演进路径 |
+| **Restore** | `git checkout <commit>` | 将任意历史快照恢复为"当前工作状态" |
+| **Prune** | `git branch -d` | 批准某分支后，修剪无关分支（可配置是否启用） |
+
+#### 3.8.3 抽象层次
+
+```
+LangGraph Checkpoint (框架层)
+    └── VersionTree (我们这层 — deerflow/versiontree/)
+            ├── 分支/分叉 (fork)
+            ├── 状态快照 (snapshot)
+            ├── 回溯/恢复 (restore)
+            ├── 谱系追踪 (lineage)
+            ├── 跨线程引用 (cross-thread context_report)
+            └── 持久化 (SQLite → versiontree DB)
+```
+
+| 层 | 职责 | 依赖 |
+|------|------|------|
+| **Core** (`node.py`, `tree.py`) | 纯数据结构 + 树操作：add / fork / restore / navigate / prune / to_dict | 零依赖（标准库） |
+| **Adapter** (`adapter.py`) | LangGraph CompetitionState ↔ VersionTree snapshot 双向转换 | langgraph |
+| **Persistence** (`store.py`) | SQLite 持久化：tree 表 + snapshots 表 | deerflow.db |
+| **UI** | Tree visualization React 组件 | 前端 |
+
+#### 3.8.4 数据结构
+
+```python
+# node.py
+@dataclass
+class StateSnapshot:
+    """某个版本节点的完整状态快照。"""
+    snapshot_id: str          # "v1", "v2", ...
+    parent_id: str | None     # None = 根节点
+    created_at: datetime
+    state: dict               # 完整 CompetitionState（可恢复）
+    metadata: dict            # {action, comment, persona, trigger}
+    children: list[str]       # 子节点 ID 列表（内存索引）
+
+# tree.py
+class VersionTree:
+    """Agent 工作流版本树。"""
+    root: StateSnapshot | None
+    current: StateSnapshot | None  # 当前活跃节点
+    nodes: dict[str, StateSnapshot]  # snapshot_id → snapshot
+
+    def commit(state, parent_id, metadata) -> StateSnapshot
+    def fork(from_snapshot_id, state) -> StateSnapshot
+    def restore(snapshot_id) -> dict  # 返回完整 state
+    def lineage(snapshot_id) -> list[StateSnapshot]  # 从根到该节点
+    def to_dict() -> dict  # 前端树渲染
+    def diff(a_id, b_id) -> dict  # P2: 两版本对比
+```
+
+#### 3.8.5 与现有 HITL 闭环的关系
+
+版本树是 HITL 交互的"操作系统层"：
+
+```
+用户操作              →  版本树动作            →  HITL 动作
+──────────────────────────────────────────────────────────
+点击"重写报告"         →  commit(parent=当前)  →  Writer 重新生成
+点击"重新分析"         →  commit(parent=当前)  →  Analyst→Reviewer→Writer
+点击"重新搜索"         →  commit(parent=当前)  →  Collector→Analyst→Reviewer→Writer
+在 v2 点击"重新分析"   →  fork(from=v2)        →  恢复 v2 state → 重跑
+点击"批准"              →  mark_approved(id)   →  锁定节点 + 保存到 SQLite
+点击"基于此报告新建分析" → 跨线程引用            →  新 thread，context_report=vX
+```
+
+#### 3.8.6 持久化设计
+
+```sql
+-- versiontree 表（与 analysis_history 互补）
+CREATE TABLE IF NOT EXISTS version_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    parent_id TEXT,
+    created_at TEXT NOT NULL,
+    state_json TEXT NOT NULL,       -- 完整 CompetitionState JSON
+    metadata_json TEXT NOT NULL,    -- {action, comment, persona}
+    is_approved INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_id) REFERENCES version_snapshots(snapshot_id)
+);
+
+CREATE INDEX idx_vt_thread ON version_snapshots(thread_id);
+CREATE INDEX idx_vt_parent ON version_snapshots(parent_id);
+```
+
+#### 3.8.7 前端可视化
+
+版本树在前端以 Unicode 树形字符渲染：
+
+```
+📋 版本树                                    [最新]
+○ 📋初始 v1
+├─ ✏️重写 v2  "从PM视角重写"
+│  └─ 🔄重分析 v3  "补充用户数据"
+└─ 🔍重采集 v4  "搜索最新定价"    ← 从v1分支
+```
+
+每个节点可点击查看对应快照的报告。从历史节点打开 HITL 面板时，显示"🌿 从 vX 分支"提示，提交时自动执行 fork。
+
+#### 3.8.8 继承体系设计：两层三级
+
+版本树不是一棵树，而是**两个层级、三种树**的继承体系。核心洞察：**Agent 执行分支和用户交互分支不在同一个抽象层级上**。
+
+```
+                        BaseVersionTree（抽象基类）
+                        ├── 树操作: add / fork / restore / lineage / diff / to_dict
+                        ├── 抽象方法: _serialize / _deserialize / _persist / _load
+                        └── 零决策：只定义"树怎么操作"，不关心"树里存什么"
+                               │
+               ┌───────────────┴───────────────┐
+               │                               │
+      AgentExecutionTree              UserInteractionTree
+      （Agent 执行分支）                （用户交互分支）
+      ─── LangGraph checkpoint 层      ─── 用户感知层
+      ─── 粒度: 每次 tool call         ─── 粒度: 每次 HITL 决策
+      ─── 触发: Agent 错误/探索/A/B    ─── 触发: 用户审批/反馈/What-if
+      ─── 受众: Agent 开发者           ─── 受众: 用户（PM/创业者）
+      ─── 状态: checkpoint_id 引用     ─── 状态: CompetitionState
+      吸收 Agent Git 论文思路                    │
+                                      ┌────────┴────────┐
+                               ConversationTree   DeliverableTree
+                               （对话分支）         （报告/可交付物分支）
+                               state = messages    state = report_data
+                                                   + analysis_result
+                                                   + collected_data
+```
+
+**为什么 Agent 执行分支和用户交互分支不在同一层级**：
+
+| 维度 | Agent 执行分支 | 用户交互分支 |
+|------|-------------|------------|
+| 操作对象 | LangGraph checkpoint（内部执行状态） | CompetitionState + messages（用户可见数据） |
+| 分叉点 | tool call 之后要不要换策略 | HITL 决策（重写/重分析/重搜索/批准） |
+| 触发者 | Agent 系统（自动） | 用户（手动） |
+| 可见性 | Agent 开发者可见 | 最终用户可见 |
+| 是否可恢复执行 | 是（`aget_state()` 后继续 stream） | 是（恢复 state 后重新进入 HITL 闭环） |
+
+**为什么仍然共享 BaseVersionTree**：树操作（add / fork / restore / lineage）的算法完全同构——不管你分支的是 checkpoint 还是 CompetitionState，树的增删查改逻辑是一样的。BaseVersionTree 只管"这棵树怎么操作"，子类管"树节点里存的是什么、怎么序列化、怎么持久化"。
+
+**子类实现差异**：
+
+```python
+# AgentExecutionTree — 吸收 Agent Git 论文三层设计
+class AgentExecutionTree(BaseVersionTree):
+    def _serialize(self, state):   return state.checkpoint_id   # 只存引用
+    def _deserialize(self, cid):   return aget_state(cid)       # LangGraph 恢复
+    def _persist(self, node):      pass                         # 复用 LangGraph 的 SqliteSaver
+
+# DeliverableTree — 我们的当前实现
+class DeliverableTree(BaseVersionTree):
+    def _serialize(self, state):   return json.dumps(state)     # 完整序列化
+    def _deserialize(self, data):  return json.loads(data)
+    def _persist(self, node):      INSERT INTO version_snapshots
+```
+
+#### 3.8.9 Agent Git 论文对比与吸收（暂定，待评估）
+
+> **状态**：多 Agent 执行分支是否适合本项目的竞品分析场景，仍需讨论评估。以下为初步分析。
+
+**论文概要**（Li et al., AAAI 2026 WMAC Workshop, arXiv:2511.00628）：
+
+| 维度 | Agent Git | 我们的设计 |
+|------|-----------|-----------|
+| 定位 | Agent 开发者的调试/A/B 测试工具 | Agent 用户的可交付物版本演化系统 |
+| 层级 | LangGraph checkpoint 层 | 用户交互层（checkpoint 之上） |
+| 实验场景 | 单一任务：arXiv 论文摘要检索+分析 | 竞品分析全链路（采集→分析→质检→报告→HITL） |
+| HITL 支持 | ❌ 完全没有 | ✅ 审批/重写/重分析/重搜索/What-if |
+| UI 可视化 | ❌ 纯 API | ✅ 前端 React 树组件 |
+| 工具回滚 | ✅ 核心特性 | ❌ 不需要（HITL 场景下用户通过重做改变方向） |
+| 成熟度 | v0.2.0-alpha, ~50 stars | 已实现核心功能，持续迭代 |
+| 三层架构 | External Session / Internal Session / Session History | 可映射到 thread_id / node / lineage |
+
+**吸收思路（暂定）**：
+1. `AgentExecutionTree` 子类吸收 Agent Git 的 External/Internal Session 双层设计
+2. 在 LangGraph checkpoint tree 之上加 metadata 层（操作类型、触发原因、human feedback）
+3. 与 `UserInteractionTree`（对话+可交付物）形成互补——底层做执行分支探索，上层做用户决策追踪
+
+**待评估问题**：
+- 竞品分析的多 Agent 协作中，Agent 执行分支（tool call 级别的分支控制）是否确实需要？还是 HITL 在用户层的分支控制已经足够？
+- 如果不需要 Agent 执行分支，`AgentExecutionTree` 可以在不破坏继承体系的情况下移除（`UserInteractionTree` 直接从 `BaseVersionTree` 继承）
+- 当前优先实现 `UserInteractionTree`（已部分完成），Agent 执行分支留到 P2 或答辩时作为前瞻性思考口头阐述
+
+#### 3.8.10 为什么这是核心差异化亮点
+
+1. **填补框架空白**：LangGraph/CrewAI/AutoGen 都没有 Agent 工作流的分支管理概念。Agent Git (Li et al., AAAI 2026) 首次引入但聚焦于 Agent 开发者的 A/B 测试场景，未覆盖 HITL 审批闭环
+2. **继承架构设计**：两层三级继承模型（BaseVersionTree → AgentExecutionTree / UserInteractionTree → ConversationTree / DeliverableTree），既承认"Agent 执行分支和用户交互分支不在同一层级"，又通过共享基类统一树操作语义
+3. **通用性**：BaseVersionTree 不绑定任何业务场景——不仅本项目可用，任何有 HITL 的 Agent 系统都可以通过实现 `_serialize` / `_deserialize` 适配自己的 State 类型
+4. **技术深度**：涉及状态管理、树算法、OOP 继承设计、持久化、前端树渲染——完整覆盖全栈技术点
+5. **吸收前沿研究**：引用了 AAAI 2026 Workshop 的最新论文，展示了"站在前人肩膀上创新"的工程素养——评委看到的不只是"造了一个工具"，更是"调研了领域前沿，找准了差异化空间"。
+
+**答辩话术**：
+> "我们在开发 HITL 闭环时发现，LangGraph 的 checkpoint 只能线性恢复，无法表达'用户从 v1 分叉出 PM 视角和创业者视角两条独立分析线'这种真实场景。Git 有 branch，为什么 Agent 工作流不能有？我们把这个问题抽象出来，做成了 VersionTree——一个 600 行的独立模块，与 LangGraph checkpointer 互补，提供分支、fork、谱系追踪、快照持久化。它不仅服务本项目，任何有 HITL 的 Agent 系统都可以直接复用。"
+
+### 3.9 DAG 工作流
 
 ```
 普通模式 (始终执行):
@@ -789,7 +1008,7 @@ Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1]
                                                                    Feishu 交付
 ```
 
-### 3.9 CompetitionState 设计
+### 3.10 CompetitionState 设计
 
 ```python
 class CompetitionState(AgentState):
@@ -830,7 +1049,7 @@ class CompetitionState(AgentState):
     error: str | None
 ```
 
-### 3.10 竞品知识 Schema（Pydantic 强制校验）
+### 3.11 竞品知识 Schema（Pydantic 强制校验）
 
 **Schema 1 — 功能树**:
 ```python
@@ -881,7 +1100,7 @@ class UserPersona(BaseModel):
     primary_segments: list[UserSegment]
 ```
 
-### 3.11 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
+### 3.12 Schema 强制校验链 `**[竞赛要求 R3, R8]**`
 
 > 评审明确要求"输出严格符合预定义 Schema，字段完整、格式一致"。我们不仅定义 Schema，更在每个 Agent 输出边界做强制校验。
 
@@ -910,7 +1129,7 @@ Agent LLM 输出 (JSON string)
 - 每次校验失败时记录日志（时间、Agent、Schema 类型、原始输出、校验错误）
 - Schema 校验日志作为可观测面板的一部分展示
 
-### 3.12 路由逻辑（普通模式 + 深度模式流水线）
+### 3.13 路由逻辑（普通模式 + 深度模式流水线）
 
 ```python
 # competition/router.py
@@ -943,7 +1162,7 @@ def route_after_writer(state: CompetitionState) -> str:
     return "hitl_gate"
 
 def route_after_hitl(state: CompetitionState) -> str:
-    """HITL 决策路由（对应 §3.11.7 HitlDecision.action）。"""
+    """HITL 决策路由（对应 §3.12.7 HitlDecision.action）。"""
     decision: HitlDecision | None = state.get("hitl_decision")
     if not decision:
         return "__end__"
@@ -1043,7 +1262,7 @@ def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     return builder.compile(checkpointer=checkpointer)
 ```
 
-#### 3.12.PLACEHOLDER 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
+#### 3.13.PLACEHOLDER 反馈闭环改善追踪 `**[竞赛要求 R5, R6]**`
 
 > 判标 §4 明确要求"反馈闭环真实可触发，重做后输出有改善（非伪闭环）"。我们不仅实现打回，更量化改善。
 
@@ -1068,12 +1287,12 @@ def measure_improvement(gaps_before: list, gaps_after: list) -> dict:
 
 **答辩展示**：在 DAG 图上，反馈回环边标注改善数据，如 "🔁 Round 1 → 2 gaps → Round 2 → 0 gaps (改善率 100%)"。如果改善率为 0（伪闭环），可从日志看出 LLM 没有真正生成新搜索词。
 
-### 3.13 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
+### 3.14 Agent 间结构化通信协议 `**[竞赛要求 R4]**`
 
 > 判标 §4 35% 明确要求"Agent 间采用结构化消息传递（function calling / 标准 Schema），非纯自然语言对话"。
 > 以下 6 条边全部定义为 Pydantic 模型，每条消息可被日志捕获、可被前端渲染。
 
-#### 3.13.1 通信契约总览
+#### 3.14.1 通信契约总览
 
 ```
 Collector ──①──→ Analyst ──②──→ Reviewer ──③──→ Writer ──④──→ HITL
@@ -1090,7 +1309,7 @@ Collector ──①──→ Analyst ──②──→ Reviewer ──③──
 | ⑤ | Reviewer | Collector | `ReviewGap` | `gaps` | 定向补采指令 |
 | ⑥ | HITL Gate | 目标节点 | `HitlDecision` | `hitl_decision` | 精准回退指令 |
 
-#### 3.13.2 边 ①：Collector → Analyst
+#### 3.14.2 边 ①：Collector → Analyst
 
 ```python
 class CollectedDataPoint(BaseModel):
@@ -1105,7 +1324,7 @@ class CollectedDataPoint(BaseModel):
     collected_at: str           # ISO 8601
 ```
 
-#### 3.13.3 边 ②：Analyst → Reviewer
+#### 3.14.3 边 ②：Analyst → Reviewer
 
 每条分析结论必须带 `source_data_point_ids`，让 Reviewer 能从结论反向追溯到原始数据点。没有这个字段，Reviewer 无法做计算验证。
 
@@ -1154,7 +1373,7 @@ class AnalysisResult(BaseModel):
     visualization_paths: list[str]       # Sandbox 中图表文件路径
 ```
 
-#### 3.13.4 边 ③：Reviewer → Writer
+#### 3.14.4 边 ③：Reviewer → Writer
 
 Writer 生成报告时，措辞应该反映数据质量。多源验证过的写"多方来源显示"，单源的写"据 X 来源称"——这些信息在 QualitySummary 里。
 
@@ -1181,7 +1400,7 @@ class ReviewVerdict(BaseModel):
     reviewer_notes: str             # 给 Writer 的一句话
 ```
 
-#### 3.13.5 边 ④：Writer → HITL Gate
+#### 3.14.5 边 ④：Writer → HITL Gate
 
 驱动飞书审批卡片的内容渲染。卡片的 UI 就是 `ReviewPackage` 的可视化呈现。
 
@@ -1205,7 +1424,7 @@ class ReviewPackage(BaseModel):
     entrepreneur_report_preview: str    # 创业者视角报告前 500 字
 ```
 
-#### 3.13.6 边 ⑤：Reviewer → Collector（打回）
+#### 3.14.6 边 ⑤：Reviewer → Collector（打回）
 
 ```python
 class ReviewGap(BaseModel):
@@ -1216,7 +1435,7 @@ class ReviewGap(BaseModel):
     related_data_point_ids: list[str]
 ```
 
-#### 3.13.7 边 ⑥：HITL Gate → 目标节点
+#### 3.14.7 边 ⑥：HITL Gate → 目标节点
 
 用户说"重写 SWOT 部分"时，Writer 不应该全文重写。`target_focus` 让目标节点聚焦。
 
@@ -1229,7 +1448,7 @@ class HitlDecision(BaseModel):
     timestamp: str                  # ISO 8601
 ```
 
-#### 3.13.8 CompetitionState 对应更新
+#### 3.14.8 CompetitionState 对应更新
 
 新增 4 个强类型字段替代原有松散 dict：
 
@@ -1245,11 +1464,11 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 ---
 
-### 3.14 数据持久化架构
+### 3.15 数据持久化架构
 
 > 以下分析"整个系统用了哪些存储层"以及每层的职责边界。核心原则：**DF 基座层处理 Agent 基础设施的持久化（零工作量），业务层只在跨 run 有增量价值的点建表（三张）。**
 
-#### 3.14.1 全项目存储总览
+#### 3.15.1 全项目存储总览
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -1290,7 +1509,7 @@ hitl_decision: HitlDecision | None           # HITL → 目标节点
 
 > **关键认知**：这三张表不是系统运行的必需品——去掉它们，Collector → Analyst → Reviewer → Writer → HITL 照样跑通，因为 State 在内存中流转，Checkpointer 在图画完后已持久化。三张表的价值是**跨 run 的增量智能**——越用越准的来源可信度、自动感知的变更检测、可回溯的分析历史。
 
-#### 3.14.2 source_credibility 表 — 来源可信度动态演化
+#### 3.15.2 source_credibility 表 — 来源可信度动态演化
 
 ```sql
 CREATE TABLE IF NOT EXISTS source_credibility (
@@ -1321,7 +1540,7 @@ def update_credibility(domain: str, verdict: str) -> float:
 
 **答辩价值**：演示中展示 `g2.com` 的分数从 0.50→0.70→0.92 的演化曲线——"系统不是每次从零开始判断来源，而是越用越准"。
 
-#### 3.14.3 product_baseline 表 — 竞品变更检测基线
+#### 3.15.3 product_baseline 表 — 竞品变更检测基线
 
 > ⚠ **不是缓存**。不是"上次搜过了这次跳过"——那会导致漏掉竞品的真实变更。而是"上次是 X，这次定向验证是否变成 Y"。
 
@@ -1354,7 +1573,7 @@ CREATE TABLE IF NOT EXISTS product_baseline (
 
 **答辩价值**："系统不仅知道 Cursor 卖 $30，还知道它上次分析时卖 $20，变化发生在过去 3 天内"——这是 §5.3 竞品变更检测的技术底座。
 
-#### 3.14.4 analysis_history 表 — 分析历史索引
+#### 3.15.4 analysis_history 表 — 分析历史索引
 
 ```sql
 CREATE TABLE IF NOT EXISTS analysis_history (
@@ -1376,7 +1595,7 @@ CREATE TABLE IF NOT EXISTS analysis_history (
 - §5.6 竞品分析历史对比功能的数据基础
 - 答辩面板展示"历史分析时间线"
 
-#### 3.14.5 不需要建表的部分（及原因）
+#### 3.15.5 不需要建表的部分（及原因）
 
 | 候选 | 判断 | 原因 |
 |------|------|------|
@@ -1386,7 +1605,7 @@ CREATE TABLE IF NOT EXISTS analysis_history (
 | Agent 执行日志 | ❌ | DF Checkpointer + §7 可观测面板从 State 实时读 |
 | 搜索缓存 | ❌ | 危险——缓存会漏掉真实变更，product_baseline 是基线不是缓存 |
 
-#### 3.14.6 三张表的关系定位
+#### 3.15.6 三张表的关系定位
 
 ```
 source_credibility ──→ quality（质量维度）
@@ -1403,11 +1622,11 @@ analysis_history   ──→ reference（回溯维度）
 
 ---
 
-### 3.15 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
+### 3.16 工程质量保障机制 `**[竞赛要求 R12, R13, R17, R18, R15]**`
 
 > 判标 §4（25% 技术深度与工程完整度 + 10% 合规）明确要求：幻觉抑制策略、超时重试/降级、采集合规、数据脱敏、可量化业务指标。本节逐项落实。
 
-#### 3.15.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
+#### 3.16.1 幻觉抑制三策略 `**[竞赛要求 R12]**`
 
 | 策略 | 实现 | 触发条件 |
 |------|------|---------|
@@ -1417,7 +1636,7 @@ analysis_history   ──→ reference（回溯维度）
 
 **垃圾引用检测**（额外防御）：Reviewer 检查 source_url 域名是否在已知低质量源列表中（如内容农场、SEO 垃圾站），命中则自动降级 confidence。
 
-#### 3.15.2 采集合规 `**[竞赛要求 R17]**`
+#### 3.16.2 采集合规 `**[竞赛要求 R17]**`
 
 > 判标 §4 10% 明确要求"遵守目标站点 robots.txt 与服务条款，对外部数据来源有明确授权或公开声明"。
 
@@ -1428,7 +1647,7 @@ analysis_history   ──→ reference（回溯维度）
 | **速率控制** | 同一域名请求间隔 ≥1s，避免对目标站点造成压力 |
 | **工具合规** | 所有采集工具（Tavily/Firecrawl/Jina/Brave）均在各自免费/商业授权范围内使用 |
 
-#### 3.15.3 数据脱敏 `**[竞赛要求 R18]**`
+#### 3.16.3 数据脱敏 `**[竞赛要求 R18]**`
 
 > 会议纪要明确："报告中涉及用户访谈等数据需做脱敏处理，避免个人敏感信息露出"。
 
@@ -1441,7 +1660,7 @@ analysis_history   ──→ reference（回溯维度）
 
 实现：在 Writer 生成报告前，LLM prompt 中注入脱敏指令 + Python 正则后处理双重保障。
 
-#### 3.15.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
+#### 3.16.4 业务指标可量化追踪 `**[竞赛要求 R15]**`
 
 > 判标 §4 20% 要求"相比传统人工，在效率/覆盖度/一致性上有可量化的提升。设计清晰的业务闭环关键指标（准确率、覆盖率、人工修正率）"。
 
@@ -1467,7 +1686,7 @@ analysis_history   ──→ reference（回溯维度）
 效率提升: ~1,000x | 成本: < 0.5 元人民币
 ```
 
-#### 3.15.5 超时重试与降级 `**[竞赛要求 R13]**`
+#### 3.16.5 超时重试与降级 `**[竞赛要求 R13]**`
 
 | 机制 | 实现 |
 |------|------|
@@ -1477,7 +1696,7 @@ analysis_history   ──→ reference（回溯维度）
 | **降级策略** | 某数据源不可用时 → 自动切换备选源（Tavily 不可用 → Brave Search）；某 Agent 超时 → 带上已有部分结果继续下一节点 |
 | **看门狗** | DF 已有的 `loop_detection_middleware`（3 次警告/5 次强制停止）防止 Reviewer 无限打回 |
 
-#### 3.15.6 错误处理决策树 `**[竞赛要求 R12, R13]**`
+#### 3.16.6 错误处理决策树 `**[竞赛要求 R12, R13]**`
 
 > 判标 §4 25% 要求"错误恢复有明确策略"、"系统稳定性：异常处理、超时重试、降级机制完备"。
 > 分层原则：**DF 基座管"怎么重试"，我们管"重试失败后图往哪走"**。
@@ -1562,7 +1781,7 @@ Reviewer 执行中
   │   → 不阻塞其他检查
   │
   └─ review_round >= 2
-      → 强制进 Writer（已有路由逻辑 §3.10，不是错误处理）
+      → 强制进 Writer（已有路由逻辑 §3.11，不是错误处理）
 ```
 
 **Writer 节点**：
@@ -1909,7 +2128,7 @@ DF 的 `app/channels/feishu.py`（699 行）已实现完整飞书 Bot：
 
 #### 5.2.1 审批卡片信息结构
 
-卡片内容由 `ReviewPackage`（§3.13.5）驱动，分三个区域设计。信息原则：**摘要让用户 10 秒判断"结果对不对"，关键发现让用户定位"哪里不对"，数据质量让用户评估"要不要信"**。
+卡片内容由 `ReviewPackage`（§3.14.5）驱动，分三个区域设计。信息原则：**摘要让用户 10 秒判断"结果对不对"，关键发现让用户定位"哪里不对"，数据质量让用户评估"要不要信"**。
 
 ```
 ┌──────────────────────────────────────────┐
@@ -2225,7 +2444,24 @@ Analyst 和 Reviewer 使用 Sandbox Python 做真实计算：
 - **Token 消耗**：每个 Agent + 总计
 - **溯源链路**：每条结论 → 追溯到原始 URL 或视频时间轴
 
-### 6.6 外部项目灵感注入
+### 6.6 版本状态树 (VersionTree) — Agent 工作流的 Git `**[核心差异化]**`
+
+> 详见 [§3.8 版本状态树](#38-版本状态树-versiontree--agent-工作流的-git-核心差异化)。**这是本项目最核心的技术创新点**。
+
+**一句话价值**：LangGraph checkpointer 只能线性回退，VersionTree 提供了分支、fork、谱系追踪——填补了 AI Agent 框架在"人在环路交互版本管理"上的空白。
+
+**差异化竞争力**：
+
+1. **框架互补**：与 LangGraph checkpoint 形成"进度保存 + 分支管理"双层状态体系，不是替代而是增强
+2. **通用抽象**：`deerflow/versiontree/` 是独立模块——零依赖核心（`node.py` + `tree.py`）+ LangGraph adapter + SQLite store，任何有 HITL 的 Agent 系统都可直接复用。MIT 协议，可独立发布
+3. **全栈实现**：核心数据结构（Python dataclass）+ 持久化（SQLite version_snapshots 表）+ 前端可视化（React 树组件，Unicode tree-line 渲染），完整的全栈工程闭环
+4. **实际落地**：不仅是设计文档里的概念，已在 `competition/` 的 HITL Gate 中完整实现——fork/restore/lineage/persist 全部可运行
+5. **答辩杀手锏**：从具体问题（"用户想回到 v2 重新分析"）出发 → 识别为通用模式（Agent 工作流需要分支语义）→ 抽象为独立模块 → 全栈实现 → 可演示。这一套"发现问题 → 提取模式 → 建造工具链"的工程闭环，直接命中评分标准"技术方案有独特或前瞻性思考"
+
+**答辩话术**：
+> "Git 为代码提供了 branch，但 AI Agent 的工作流目前没有等价物。LangGraph 的 checkpoint 是线性的——只能沿时间轴前进或回退，无法表达'从 v1 分叉出 PM 视角和创业者视角两条独立线'。我们把这个空白做成了 VersionTree。"
+
+### 6.7 外部项目灵感注入
 
 调研了 2025-2026 年 GitHub 上 star 最高的 Agent 项目，提炼出可直接借鉴的外围功能：
 
@@ -2242,7 +2478,7 @@ Analyst 和 Reviewer 使用 Sandbox Python 做真实计算：
 | **AGNO** | 40K ⭐ | **原生 OpenTelemetry 追踪**：无需外部服务，自动捕获每个 Agent 的执行、模型调用、Token 用量 | 中 |
 | **Mastra** | 22K ⭐ | **Agent 版本管理**：分析配置每次变更自动版本化，支持 diff 对比和回滚，追踪"哪个配置产出哪个质量" | 中 |
 
-### 6.7 DF 基座已有但未充分利用的外围功能
+### 6.8 DF 基座已有但未充分利用的外围功能
 
 DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中利用，但可以直接发挥：
 
@@ -2259,11 +2495,11 @@ DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中�
 | **Skill Evolution** | `skill_evolution` (config 可开启) | LLM 驱动的 Skill 自我改进，积累多次分析的最佳实践 |
 | **Cron/Heartbeat** | DF 基础设施 | 定时触发竞品监控，变被动分析为主动推送 |
 
-### 6.8 DF 公共 Skills 应用与增强计划
+### 6.9 DF 公共 Skills 应用与增强计划
 
 > **核心策略**：在 DF 基座 16 个可用 Skill 上做二次增强，而非从零开发——既体现复用 DF 生态的能力，又展示我们自己的改进和创新。
 
-#### 6.8.1 现有 Skill → Agent 映射
+#### 6.9.1 现有 Skill → Agent 映射
 
 | Agent | DF 基座 Skill | 技能描述 |
 |-------|-------------|---------|
@@ -2284,7 +2520,7 @@ DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中�
 | | `newsletter-generation` | 多源策展简报（日报/周报/深度/行业格式） |
 | | `ppt-generation` | 8 种视觉风格 → PPTX |
 
-#### 6.8.2 每个 Skill 的增强方案（我们的工作量与创新）
+#### 6.9.2 每个 Skill 的增强方案（我们的工作量与创新）
 
 **Collector 层增强**：
 
@@ -2322,7 +2558,7 @@ DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中�
 | `newsletter-generation` | 多格式简报 | ➕ 竞品简报专用模板（竞品动态周报、行业趋势月报）<br>➕ 飞书/邮件自动推送 | 领域模板+自动分发 |
 | `ppt-generation` | 8 风格 PPTX | ➕ 竞品分析专用幻灯片模板（含对比矩阵页、SWOT 页、建议页）<br>➕ 自动嵌入生成的图表 | 领域模板 |
 
-#### 6.8.3 增强工作量估算
+#### 6.9.3 增强工作量估算
 
 | 层级 | 增强项数 | 预计额外代码量 | 创新度 |
 |------|---------|-------------|--------|
@@ -2332,7 +2568,7 @@ DF 基座远超"LangGraph + Sandbox"。以下能力当前未在比赛计划中�
 | Writer | 5 项 | ~400 行 Python + ~300 行前端 | 🔥 高 |
 | **总计** | **16 项增强** | **~2000 行 Python + 前端** | **显著** |
 
-### 6.9 竞品分析的本质是图问题（P2 扩展展望）
+### 6.10 竞品分析的本质是图问题（P2 扩展展望）
 
 > 当前 comparison_matrix 已经用结构化表格编码了图的关系。如果时间充裕，以下图算法方向可以作为长期扩展。
 
@@ -2369,7 +2605,7 @@ cursor.com                 github.com                 windsuf.com
 
 **答辩话术**："竞品分析本质上是异构图问题。当前我们用结构化 Schema（comparison_matrix）编码了图的节点和边，Reviewer 通过交叉验证给每条边赋置信度权重。如果未来升级到图数据库（Neo4j）+ GraphRAG，就可以用中心度算法自动发现行业关键节点，用社区检测自动识别市场阵营。"
 
-### 6.10 交互性报告扩展（P2 展望）
+### 6.11 交互性报告扩展（P2 展望）
 
 > §3.7 Writer 已将报告从静态文件升级为前端交互式 ReportData。以下是时间充裕时可进一步扩展的交互能力。
 
@@ -2693,7 +2929,7 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 | 现场演示 | 建议录屏，可单独展示采集能力 | §8 已加入演示准备 |
 | 可用 LangSmith | 收集 agent trace → 多 agent 执行过程可查 | 我们不用外部服务，用 LangGraph 自带 stream + checkpointer（更可控、零额外依赖、比赛合规） |
 | 细分方向 | 可以做，但系统需具备扩展性 | 双模架构 + config.yaml workflows 切换（§3.2） |
-| 数据脱敏 | 访谈数据需脱敏 | §3.10.3 已完整设计 |
+| 数据脱敏 | 访谈数据需脱敏 | §3.11.3 已完整设计 |
 | 并发 | 能做到更好，非强制 | Send API Fan-out 并行采集（§3.4） |
 | 前端展示 | 推荐做前端，本地机器演示 | §7 双面板 DAG 可视化 |
 

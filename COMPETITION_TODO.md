@@ -301,7 +301,78 @@
 
 ---
 
-## 九、增强展望（P2，答辩口头提）
+## 九、版本状态树 (VersionTree) — Agent 工作流分支管理 `**[核心差异化 P0]**`
+
+> 详见 [PLAN §3.8](../COMPETITION_PLAN.md#38-版本状态树-versiontree--agent-工作流的-git-核心差异化) 和 [PLAN §6.6](../COMPETITION_PLAN.md#66-版本状态树-versiontree--agent-工作流的-git-核心差异化)。
+> VersionTree 是本项目最核心的技术创新——填补 AI Agent 框架在"人在环路交互版本管理"上的空白。
+> 采用**两层三级继承体系**：BaseVersionTree（抽象基类） → AgentExecutionTree / UserInteractionTree → ConversationTree / DeliverableTree。
+
+### 继承体系设计（Base → 两层 → 三级）
+
+- [x] **BaseVersionTree 抽象基类设计**（`tree.py`）：add / fork / restore / lineage / diff / to_dict 树操作接口
+  → PLAN §3.8.8 完整定义了抽象基类的职责和各子类的差异
+- [ ] **BaseVersionTree 实现**（`tree.py`）：纯树算法实现（零决策，只定义"树怎么操作"）
+- [ ] **_serialize / _deserialize 抽象方法**：子类各自实现——AgentExecutionTree 存 checkpoint_id 引用，DeliverableTree 存完整 JSON
+
+### 用户交互分支（当前 P0 实现）
+
+- [x] **DeliverableTree（报告/可交付物版本分支）**：当前 `competition.py` + `page.tsx` 已实现的核心功能
+  → state = report_data + analysis_result + collected_data + hitl_decision + metadata
+- [ ] **ConversationTree（对话分支，P1）**：state = LangGraph messages，用户编辑历史消息 → 新分支
+- [ ] **UserInteractionTree 父类提取**：DeliverableTree 和 ConversationTree 共享用户交互层语义，抽取为父类
+
+### Agent 执行分支（吸收 Agent Git 论文，暂定待评估）`**[P2 前瞻]**`
+
+> **状态：暂定，需要讨论评估是否适合竞品分析的多 Agent 协作场景。**
+> 论文：Li et al., "AgentGit: A Version Control Framework for Reliable and Scalable LLM-Powered Multi-Agent Systems", AAAI 2026 WMAC Workshop, arXiv:2511.00628
+
+- [ ] **Agent Git 论文分析**：三层架构（External Session / Internal Session / Session History）评估吸收可行性
+  → PLAN §3.8.9 完整对比了 Agent Git 与我们的设计差异
+- [ ] **AgentExecutionTree（暂定）**：绑定 LangGraph checkpoint，tool call 级别的分支控制
+  → 吸收 Agent Git 的 External/Internal Session 双层设计，映射到 thread_id / node / lineage
+- [ ] **评估决策**：竞品分析场景中，Agent 执行层的分支控制是否确实需要？还是 HITL 在用户层的分支控制已经足够？
+  → 如果不需要，AgentExecutionTree 子类可从继承树中移除（UserInteractionTree 直接从 Base 继承，不破坏架构）
+
+### Core 层（`deerflow/versiontree/`）
+
+- [x] **StateSnapshot 数据结构**（`node.py`）：snapshot_id / parent_id / state / metadata / children
+  → 前端 `api-client.ts` 中的 `ReportHistoryItem` 已含 `parent_version` + `report_data` + `analysis_result` + `collected_data`
+- [ ] **VersionTree 核心类**（`tree.py`）：add / fork / restore / lineage / to_dict — 纯数据结构
+- [ ] **节点 Diff**（`diff.py`, P2）：两个快照的 state 差异计算 + 报告变化高亮
+
+### Adapter 层
+
+- [x] **LangGraph State → Snapshot 转换**：`_reanalyze_sync` 中保存完整 state 到 history
+- [x] **Snapshot → LangGraph State 恢复**：`submit_decision` 中 fork 逻辑恢复历史版本 state
+- [x] **Fork parent 追踪**：`_fork_parent_version` 标记确保 fork 分支正确挂载在源节点下
+- [ ] **独立 adapter.py**：将当前内联在 `competition.py` 中的转换逻辑抽取为 `VersionTreeAdapter`（支持不同子类的 State 类型适配）
+
+### Persistence 层
+
+- [ ] **version_snapshots 表**（SQLite）：thread_id / parent_id / state_json / metadata_json / is_approved
+  → 当前在内存 `_store` 中，需持久化到 `db.py`
+- [ ] **VersionTree.save() / .load()**：`store.py` 实现序列化/反序列化
+- [x] **已批准快照持久化**：`_save_to_db` 将 approved 报告写入 `analysis_history` 表
+
+### 前端可视化
+
+- [x] **VersionTree React 组件**：Unicode tree-line 渲染（├ └ │ ○）+ 节点点击查看 + 操作图标
+- [x] **历史版本 HITL 操作**：从任意历史节点打开 HITL 面板（紫色边框 + "🌿 从 vX 分支" 提示）
+- [x] **分支 fork 提交**：`fork_version` 参数传递给后端，自动创建新分支
+- [ ] **树节点 hover 预览**：悬停节点 → 弹出报告摘要卡片（P2）
+- [ ] **分支合并**：选择两个分支节点 → 调用 LLM 合并各自的优点生成新版本（P2 前瞻）
+
+### 文档
+
+- [x] **PLAN §3.8.8 继承体系设计**：两层三级继承模型 + 子类实现差异 + 为什么 Agent 执行和用户交互不在同一层级
+- [x] **PLAN §3.8.9 Agent Git 论文对比与吸收**：完整对比表 + 吸收思路 + 待评估问题 + 暂定状态标注
+- [x] **PLAN §3.8.10 差异化亮点**：5 条更新（含继承架构 + 吸收前沿研究）
+- [x] **PLAN §6.6 差异化创新**：VersionTree 列为最核心技术创新点
+- [x] **CLAUDE.md 目录结构**：添加 `deerflow/versiontree/` 模块
+
+---
+
+## 十、增强展望（P2，答辩口头提）
 
 - [ ] **图算法扩展**（中心度/社区检测/路径分析/PageRank）
   → [PLAN §6.9](../COMPETITION_PLAN.md#69-竞品分析的本质是图问题p2-扩展展望)

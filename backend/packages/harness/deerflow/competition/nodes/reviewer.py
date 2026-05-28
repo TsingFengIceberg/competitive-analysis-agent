@@ -5,6 +5,7 @@ Per COMPETITION_PLAN.md §3.6: G1-G8 gap detection rules with computational veri
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -29,7 +30,13 @@ def reviewer_node(state: dict) -> dict:
     gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
     gaps.extend(check_source_diversity(collected))         # G5
     gaps.extend(check_statistical_outliers(collected))     # G6
-    # G7 (semantic contradiction) + G8 (low confidence) are LLM-assisted in full impl
+
+    # G7 (semantic contradiction) + G8 (low confidence) — LLM-assisted
+    if _should_call_g7_g8(state):
+        g7_gaps, g8_verdicts = _run_g7_g8(analysis, collected, state.get("target_products", []))
+        gaps.extend(g7_gaps)
+        gaps.extend(_g8_verdicts_to_gaps(g8_verdicts, collected))
+        state["_g8_verdicts"] = g8_verdicts  # stored for confidence adjustment pass
 
     # Detect feedback loop (§3.15.6.2): same gap 3x → force close
     gaps = _filter_loop_gaps(gaps, prev_gaps, review_round)
@@ -316,3 +323,232 @@ def _generate_notes(gaps: list[dict], improvement: float) -> str:
     if improvement > 0:
         return f"{total} gap(s) found ({critical} critical). Improvement from previous round: {improvement:.0%}."
     return f"{total} gap(s) found ({critical} critical). First review round."
+
+
+# ── G7: Semantic Contradiction Detection (LLM-assisted) ──
+
+
+def check_semantic_contradictions(analysis: dict, collected: list[dict], target_products: list[str]) -> list[dict]:
+    """G7: Use LLM to detect contradictions between Analyst conclusions and raw data.
+
+    Returns list of gap dicts (same format as G1-G6).
+    """
+    from deerflow.competition.executor import execute_structured_agent
+    from deerflow.competition.prompts import load_prompt
+
+    # Build a compact comparison context — only send what the LLM needs
+    matrix = analysis.get("comparison_matrix", {})
+    cells = matrix.get("cells", [])
+
+    # Extract SWOT items (with their source data IDs)
+    swot = analysis.get("swot", {})
+    swot_items: list[dict] = []
+    for _prod_name, swot_data in swot.items():
+        if isinstance(swot_data, dict):
+            for item in swot_data.get("items", []):
+                if isinstance(item, dict):
+                    swot_items.append({
+                        "product": _prod_name,
+                        "category": item.get("category", "?"),
+                        "statement": item.get("statement", ""),
+                        "evidence": item.get("evidence", ""),
+                        "source_data_point_ids": item.get("source_data_point_ids", []),
+                    })
+
+    # Extract trends
+    trends = analysis.get("trends", [])
+
+    # Build a compact data point index (id → {label, value, product, category})
+    data_index = {}
+    for dp in collected:
+        if isinstance(dp, dict):
+            data_index[dp.get("id", "")] = {
+                "product": dp.get("product", ""),
+                "category": dp.get("category", ""),
+                "label": dp.get("label", ""),
+                "value": str(dp.get("value", ""))[:120],
+                "confidence": dp.get("confidence", 0),
+                "source_type": dp.get("source_type", ""),
+            }
+
+    # Skip G7 if not enough structured data
+    if not cells and not swot_items:
+        return []
+
+    task = json.dumps({
+        "comparison_cells": cells[:50],        # cap to prevent token overflow
+        "swot_items": swot_items[:30],
+        "trends": trends[:10] if isinstance(trends, list) else [],
+        "data_index": {k: v for k, v in list(data_index.items())[:80]},
+        "target_products": target_products,
+    }, ensure_ascii=False, indent=2)
+
+    prompt = load_prompt("reviewer-g7")
+    result, _tokens = execute_structured_agent(
+        prompt, task, output_schema_desc="JSON with contradictions array",
+        agent_name="Reviewer", temperature=0.0, max_tokens=2048,
+    )
+
+    if not isinstance(result, dict):
+        logger.warning("G7 returned non-dict result: %s", type(result).__name__)
+        return []
+
+    contradictions = result.get("contradictions", [])
+    if not isinstance(contradictions, list):
+        return []
+
+    # Convert contradictions to gap format
+    gaps = []
+    for c in contradictions:
+        if not isinstance(c, dict):
+            continue
+        ctype = c.get("type", "source_conflict")
+        claim = c.get("analysis_claim", {}) if isinstance(c.get("analysis_claim"), dict) else {}
+        counter = c.get("counter_evidence", {}) if isinstance(c.get("counter_evidence"), dict) else {}
+
+        severity = c.get("severity", "major")
+        # Upgrade: self-contradictory citations → critical
+        cited = set(claim.get("cited_data_point_ids", []))
+        counter_ids = set(counter.get("data_point_ids", []))
+        if cited & counter_ids:
+            severity = "critical"
+
+        gaps.append(_make_gap(
+            gid=c.get("contradiction_id", "g7-???"),
+            gap_type=ctype,
+            method="semantic_contradiction",
+            desc=f"[G7] {claim.get('content', '?')} vs {counter.get('description', '?')}",
+            evidence=f"Claim cites: {list(cited)[:5]}; Counter evidence: {counter.get('excerpts', [])[:3]}",
+            task=c.get("resolution_hint", "Re-analyze with counter-evidence considered"),
+            severity=severity,
+            related_ids=list(cited | counter_ids),
+        ))
+
+    return gaps
+
+
+# ── G8: Low Confidence Review (LLM-assisted) ──
+
+
+def review_low_confidence(collected: list[dict]) -> list[dict]:
+    """G8: Use LLM to cross-validate low-confidence data points against peers.
+
+    Returns list of verdict dicts: {data_point_id, verdict, reason, cross_referenced_with, new_confidence}.
+    """
+    from deerflow.competition.executor import execute_structured_agent
+    from deerflow.competition.prompts import load_prompt
+
+    # Identify low-confidence data points
+    low_conf = [dp for dp in collected if isinstance(dp, dict) and dp.get("confidence", 1.0) < 0.5]
+    if not low_conf:
+        return []
+
+    # Group all data by (product, category) for peer lookup
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for dp in collected:
+        if isinstance(dp, dict):
+            key = (dp.get("product", ""), dp.get("category", ""))
+            groups[key].append(dp)
+
+    # Build review items: each low-confidence point + its peers
+    review_items = []
+    for dp in low_conf:
+        key = (dp.get("product", ""), dp.get("category", ""))
+        peers = [p for p in groups.get(key, []) if p.get("id") != dp.get("id")]
+        review_items.append({
+            "target": {
+                "id": dp.get("id"),
+                "product": dp.get("product"),
+                "category": dp.get("category"),
+                "label": dp.get("label"),
+                "value": str(dp.get("value", ""))[:120],
+                "confidence": dp.get("confidence"),
+                "source_type": dp.get("source_type"),
+            },
+            "peers": [{
+                "id": p.get("id"),
+                "label": p.get("label"),
+                "value": str(p.get("value", ""))[:120],
+                "confidence": p.get("confidence"),
+                "source_type": p.get("source_type"),
+            } for p in peers[:5]],  # cap at 5 peers
+        })
+
+    task = json.dumps({"items": review_items}, ensure_ascii=False, indent=2)
+    prompt = load_prompt("reviewer-g8")
+    result, _tokens = execute_structured_agent(
+        prompt, task, output_schema_desc="JSON with verdicts array",
+        agent_name="Reviewer", temperature=0.0, max_tokens=1024,
+    )
+
+    if not isinstance(result, dict):
+        logger.warning("G8 returned non-dict result: %s", type(result).__name__)
+        return []
+
+    verdicts = result.get("verdicts", [])
+    if not isinstance(verdicts, list):
+        return []
+
+    # Validate verdict structure
+    valid = []
+    for v in verdicts:
+        if isinstance(v, dict) and v.get("data_point_id") and v.get("verdict") in ("KEEP", "DISCARD", "DOWNGRADE"):
+            valid.append(v)
+    return valid
+
+
+def _g8_verdicts_to_gaps(verdicts: list[dict], collected: list[dict]) -> list[dict]:
+    """Convert G8 DISCARD verdicts to gap format for Collector re-targeting."""
+    gaps = []
+    for v in verdicts:
+        if v.get("verdict") != "DISCARD":
+            continue
+        dp_id = v.get("data_point_id", "")
+        # Find the original data point for context
+        original = next((dp for dp in collected if isinstance(dp, dict) and dp.get("id") == dp_id), {})
+        gaps.append(_make_gap(
+            gid=f"gap-g8-{dp_id}",
+            gap_type="fact_error",
+            method="low_confidence_review",
+            desc=f"[G8] Low-confidence data point DISCARDED: {v.get('reason', '')}",
+            evidence=f"Cross-referenced with: {v.get('cross_referenced_with', [])}",
+            task=f"Re-search for reliable data on: {original.get('label', dp_id)}",
+            severity="major",
+            related_ids=[dp_id] + v.get("cross_referenced_with", []),
+        ))
+    return gaps
+
+
+def _should_call_g7_g8(state: dict) -> bool:
+    """Guard: only invoke G7/G8 LLM checks when conditions are met.
+
+    Avoids:
+    - Calling on empty/minimal data
+    - Re-calling after round 2 (data has been through multiple validations)
+    """
+    analysis = state.get("analysis_result")
+    collected = state.get("collected_data") or []
+    if not analysis or len(collected) < 5:
+        return False
+
+    # G7/G8 are most valuable on the first review pass; skip on late rounds
+    # to save tokens when data has already been validated multiple times
+    review_round = state.get("review_round", 0)
+    if review_round >= 2:
+        return False
+
+    return True
+
+
+def _run_g7_g8(analysis: dict, collected: list[dict], target_products: list[str]) -> tuple[list[dict], list[dict]]:
+    """Run G7 + G8 in sequence, returning (gaps, g8_verdicts).
+
+    G8 runs after G7 so that data points flagged by G7 as contradictory
+    get extra scrutiny in G8's cross-validation pass.
+    """
+    logger.info("Reviewer G7+G8 LLM checks starting (%d data points)", len(collected))
+    g7_gaps = check_semantic_contradictions(analysis, collected, target_products)
+    g8_verdicts = review_low_confidence(collected)
+    logger.info("Reviewer G7: %d contradictions, G8: %d verdicts", len(g7_gaps), len(g8_verdicts))
+    return g7_gaps, g8_verdicts

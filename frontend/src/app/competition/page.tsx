@@ -30,11 +30,119 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const POLL_INTERVAL_MS = 2000;
 
+// ── Version Tree Component ──
+
+interface TreeNode {
+  entry: ReportHistoryItem;
+  children: TreeNode[];
+}
+
+function buildTree(entries: ReportHistoryItem[]): TreeNode[] {
+  const childrenMap = new Map<number | null, ReportHistoryItem[]>();
+  for (const e of entries) {
+    const parent = e.parent_version ?? null;
+    const list = childrenMap.get(parent) || [];
+    list.push(e);
+    childrenMap.set(parent, list);
+  }
+  // Sort each group by version number
+  for (const list of childrenMap.values()) {
+    list.sort((a, b) => a.version - b.version);
+  }
+  function walk(parent: number | null): TreeNode[] {
+    return (childrenMap.get(parent) || []).map((e) => ({
+      entry: e,
+      children: walk(e.version),
+    }));
+  }
+  return walk(null);
+}
+
+const ACTION_LABELS: Record<string, string> = { rewrite: "✏️重写", reanalyze: "🔄重分析", replan: "🔍重采集" };
+
+function VersionTree({
+  entries,
+  activeVersion,
+  isViewingLatest,
+  onSelect,
+  onViewLatest,
+}: {
+  entries: ReportHistoryItem[];
+  activeVersion: number | null;
+  isViewingLatest: boolean;
+  onSelect: (v: number) => void;
+  onViewLatest: () => void;
+}) {
+  const tree = buildTree(entries);
+
+  function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
+    const { entry } = node;
+    const isActive = activeVersion === entry.version;
+    const actionIcon = ACTION_LABELS[entry.hitl_decision?.action] || "";
+    const comment = entry.hitl_decision?.comment?.slice(0, 25) || "";
+    const isRoot = !entry.parent_version;
+
+    // Build tree line prefix
+    let prefix = "";
+    for (let i = 0; i < depth; i++) {
+      prefix += ancestors[i] ? "   " : "│  ";
+    }
+    const branch = node.children.length > 0 ? "├─" : "└─";
+    const connector = depth === 0 && !isRoot ? "" : branch;
+
+    return (
+      <div key={entry.version} className="leading-relaxed">
+        <div className="flex items-center gap-1 font-mono text-xs">
+          <span className="select-none text-muted-foreground whitespace-pre shrink-0">
+            {depth > 0 ? prefix + connector + " " : (isRoot ? "○ " : "● ")}
+          </span>
+          <button
+            onClick={() => onSelect(entry.version)}
+            className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted"}`}
+            title={`v${entry.version}${entry.parent_version ? ` ← v${entry.parent_version}` : " (初始)"}`}
+          >
+            {actionIcon || "📋初始"} v{entry.version}
+          </button>
+          {comment && (
+            <span className="truncate text-muted-foreground/70" title={entry.hitl_decision?.comment}>
+              {comment}
+            </span>
+          )}
+        </div>
+        {node.children.map((child, i) => {
+          const newAncestors = [...ancestors, i < node.children.length - 1];
+          return renderNode(child, depth + 1, newAncestors);
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded border border-muted p-2">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">📋 版本树</span>
+        <button
+          onClick={onViewLatest}
+          className={`rounded px-2 py-0.5 text-xs ${isViewingLatest ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+        >
+          最新
+        </button>
+      </div>
+      <div className="space-y-0.5">
+        {tree.map((root, i) => {
+          const ancestors: boolean[] = tree.length > 1 ? [i < tree.length - 1] : [];
+          return renderNode(root, 0, ancestors);
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function CompetitionPage() {
   const api = useCompetitionAPI();
 
-  const [query, setQuery] = useState("");
-  const [products, setProducts] = useState("");
+  const [query, setQuery] = useState("分析Cursor vs Copilot vs Windsurf 的竞争力");
+  const [products, setProducts] = useState("Cursor,Copilot,Windsurf");
   const [persona, setPersona] = useState<Persona>("pm");
   const [deepMode, setDeepMode] = useState(false);
 
@@ -48,6 +156,7 @@ export default function CompetitionPage() {
   const [hitlVisible, setHitlVisible] = useState(false);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
+  const [historyEntries, setHistoryEntries] = useState<ReportHistoryItem[]>([]);
   const [viewingHistory, setViewingHistory] = useState<ReportHistoryItem | null>(null);
   const [showDbHistory, setShowDbHistory] = useState(false);
   const [dbRecords, setDbRecords] = useState<Array<{thread_id: string; query: string; products: string[]; persona: string; created_at: string; key_findings: string[]; metrics: Record<string,number>}>>([]);
@@ -99,6 +208,15 @@ export default function CompetitionPage() {
     }
   }, [query, products, persona, deepMode, api]);
 
+  // Fetch full history entries for tree display when count changes
+  useEffect(() => {
+    if (!threadId || historyCount === 0) return;
+    fetch(`/api/competition/report/${threadId}/history`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (d.history) setHistoryEntries(d.history); })
+      .catch(() => {});
+  }, [threadId, historyCount]);
+
   // Continuous poll — depends only on threadId, never self-destructs
   useEffect(() => {
     if (!threadId) return;
@@ -112,6 +230,7 @@ export default function CompetitionPage() {
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
+        setStatus(report.status);
         setStatus(report.status);
       } catch { /* retry on transient errors */ }
     };
@@ -134,6 +253,7 @@ export default function CompetitionPage() {
         const history = data.history as ReportHistoryItem[];
         console.log("handleViewHistory: got", history.length, "items");
         setHistoryCount(history.length);
+        setHistoryEntries(history);
         const item = history.find((h: ReportHistoryItem) => h.version === version);
         console.log("handleViewHistory: looking for v", version, "found:", !!item);
         if (item) setViewingHistory(item);
@@ -293,31 +413,37 @@ export default function CompetitionPage() {
           <div className="w-7/12 overflow-y-auto border-r p-6">
             {displayReport ? (
               <div>
-                {/* Version selector */}
-                {historyCount > 0 && (
-                  <div className="mb-2 flex items-center gap-2 text-xs">
-                    <span className="text-muted-foreground">版本:</span>
-                    <button
-                      onClick={() => handleViewHistory(null)}
-                      className={`rounded px-2 py-0.5 ${!viewingHistory ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
-                    >
-                      最新
-                    </button>
-                    {Array.from({ length: historyCount }, (_, i) => i + 1).map((v) => (
-                      <button
-                        key={v}
-                        onClick={() => handleViewHistory(v)}
-                        className={`rounded px-2 py-0.5 ${viewingHistory?.version === v ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
-                      >
-                        v{v}
-                      </button>
-                    ))}
-                  </div>
+                {/* Version tree */}
+                {historyEntries.length > 0 && (
+                  <VersionTree
+                    entries={historyEntries}
+                    activeVersion={viewingHistory?.version ?? null}
+                    isViewingLatest={!viewingHistory}
+                    onSelect={(v) => handleViewHistory(v)}
+                    onViewLatest={() => handleViewHistory(null)}
+                  />
                 )}
                 {viewingHistory && (
                   <div className="mb-3 rounded border border-amber-300 bg-amber-50/50 p-2 text-xs text-amber-800">
-                    查看历史版本 v{viewingHistory.version}（{new Date(viewingHistory.timestamp).toLocaleString("zh-CN")}）—
-                    因「{viewingHistory.hitl_decision?.comment?.slice(0, 30) || "无评论"}」生成
+                    <div className="flex items-center justify-between">
+                      <span>
+                        查看历史版本 v{viewingHistory.version}
+                        {viewingHistory.parent_version ? ` (← v${viewingHistory.parent_version})` : " (初始)"}
+                        — {new Date(viewingHistory.timestamp).toLocaleString("zh-CN")}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setViewingHistory(null);
+                          setHitlVisible(false);
+                        }}
+                        className="text-amber-700 underline hover:text-amber-900"
+                      >
+                        返回最新
+                      </button>
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      因「{viewingHistory.hitl_decision?.comment?.slice(0, 60) || "无评论"}」生成
+                    </div>
                   </div>
                 )}
                 {dbLoadedThreadId && !viewingHistory && (
@@ -365,8 +491,8 @@ export default function CompetitionPage() {
                 )}
                 <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
                 {displayReport.sections.map((s) => renderSection(s))}
-                {/* HITL Approval Card — shown on completed; export buttons on approved */}
-                {hitlVisible && !viewingHistory && status === "approved" && (
+                {/* HITL Approval Card — shown on completed for current; export buttons on approved */}
+                {hitlVisible && status === "approved" && !viewingHistory && (
                   <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">
                     <div className="mb-3 flex items-center justify-between">
                       <h3 className="font-semibold text-sm text-green-700">✅ 报告已批准发布</h3>
@@ -390,11 +516,16 @@ export default function CompetitionPage() {
                     </div>
                   </div>
                 )}
-                {hitlVisible && !viewingHistory && status !== "approved" && (
-                  <div className="mt-6 rounded-lg border-2 border-orange-300 bg-orange-50/30 p-4">
+                {hitlVisible && status !== "approved" && (
+                  <div className={`mt-6 rounded-lg border-2 p-4 ${viewingHistory ? "border-purple-300 bg-purple-50/30" : "border-orange-300 bg-orange-50/30"}`}>
+                    {viewingHistory && (
+                      <div className="mb-2 rounded border border-purple-200 bg-purple-100/50 px-2 py-1 text-xs text-purple-700">
+                        🌿 从 v{viewingHistory.version} 分支 — 此操作将创建新分支，不影响当前版本
+                      </div>
+                    )}
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-semibold text-sm">
-                        {hitlSubmitting ? "⏳ 处理中..." : "📋 审批（HITL Gate）"}
+                        {hitlSubmitting ? "⏳ 处理中..." : viewingHistory ? `📋 从 v${viewingHistory.version} 分支操作` : "📋 审批（HITL Gate）"}
                       </h3>
                       <button onClick={() => setHitlVisible(false)}
                         className="text-xs text-muted-foreground hover:text-foreground">收起</button>
@@ -410,18 +541,26 @@ export default function CompetitionPage() {
                       onSubmit={(action, comment) => {
                         if (threadId) {
                           if (action === "approve") {
-                            api.submitDecision(threadId, { action, comment, target_focus: null })
-                              .catch((err) => console.error("Approve submit failed:", err));
+                            api.submitDecision(threadId, {
+                              action,
+                              comment,
+                              target_focus: null,
+                              fork_version: viewingHistory ? viewingHistory.version : null,
+                            }).catch((err) => console.error("Approve submit failed:", err));
                             setHitlVisible(false);
                           } else {
                             setHitlSubmitting(true);
                             setStatus("running");
-                            api.submitDecision(threadId, { action, comment, target_focus: null })
-                              .catch((err) => {
-                                console.error("HITL submit failed:", err);
-                                setHitlSubmitting(false);
-                                setStatus("completed");
-                              });
+                            api.submitDecision(threadId, {
+                              action,
+                              comment,
+                              target_focus: null,
+                              fork_version: viewingHistory ? viewingHistory.version : null,
+                            }).catch((err) => {
+                              console.error("HITL submit failed:", err);
+                              setHitlSubmitting(false);
+                              setStatus("completed");
+                            });
                           }
                         }
                       }}

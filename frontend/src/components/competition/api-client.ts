@@ -57,9 +57,12 @@ export interface TokenEntry {
 
 export interface ReportHistoryItem {
   version: number;
+  parent_version?: number | null;
   timestamp: string;
-  hitl_decision: { action: string; comment: string };
+  hitl_decision: { action: string; comment: string; target_focus?: string[] | null };
   report_data: ReportData;
+  analysis_result?: Record<string, unknown> | null;
+  collected_data?: unknown[] | null;
 }
 
 export interface ReportData {
@@ -156,6 +159,7 @@ export interface HitlDecisionData {
   action: string;
   comment: string;
   target_focus: string[] | null;
+  fork_version?: number | null;
 }
 
 // ── API Client ──

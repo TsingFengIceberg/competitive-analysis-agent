@@ -145,6 +145,7 @@ class HitlDecisionRequest(BaseModel):
     action: str = "rewrite"  # "approve" | "rewrite" | "reanalyze" | "replan"
     comment: str = ""
     target_focus: list[str] | None = None
+    fork_version: int | None = None  # If set, fork from this historical version instead of current
 
 
 @router.put("/report/{thread_id}", response_model=ReportResponse)
@@ -175,6 +176,38 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
         "target_focus": decision.target_focus,
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     }
+
+    if decision.fork_version is not None and decision.fork_version > 0:
+        # Fork from a historical version: restore that version's state first
+        history = entry.get("report_history", [])
+        target = next((h for h in history if h.get("version") == decision.fork_version), None)
+        if target and target.get("report_data"):
+            # Save current state to history before forking (as a leaf)
+            old_report = state.get("report_data")
+            if old_report:
+                history.append({
+                    "version": len(history) + 1,
+                    "parent_version": _current_active_version(history),
+                    "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+                    "hitl_decision": {"action": decision.action, "comment": f"forked from v{decision.fork_version}", "target_focus": None},
+                    "report_data": __import__("copy").deepcopy(old_report),
+                    "analysis_result": __import__("copy").deepcopy(state.get("analysis_result")),
+                    "collected_data": __import__("copy").deepcopy(state.get("collected_data") or []),
+                    "action": f"fork-from-v{decision.fork_version}",
+                })
+
+            # Restore the historical version's state
+            state["report_data"] = __import__("copy").deepcopy(target["report_data"])
+            if target.get("analysis_result"):
+                state["analysis_result"] = __import__("copy").deepcopy(target["analysis_result"])
+            if target.get("collected_data"):
+                state["collected_data"] = __import__("copy").deepcopy(target["collected_data"])
+
+            # Mark fork parent so _reanalyze_sync creates the new version as child of the fork SOURCE
+            state["_fork_parent_version"] = decision.fork_version
+
+            logger.info("Forked thread %s from v%d → new branch", thread_id[:12], decision.fork_version)
+
     _store[thread_id]["state"] = state
 
     if decision.action in ("rewrite", "reanalyze", "replan"):
@@ -217,13 +250,20 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         old_report = state.get("report_data")
         if old_report:
             history = entry.setdefault("report_history", [])
+            # Use fork parent if set, otherwise use current active version
+            fork_parent = state.pop("_fork_parent_version", None)
+            parent = fork_parent if fork_parent is not None else _current_active_version(history)
             history.append({
                 "version": len(history) + 1,
+                "parent_version": parent,
                 "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
                 "hitl_decision": copy.deepcopy(state.get("hitl_decision", {})),
                 "report_data": copy.deepcopy(old_report),
+                "analysis_result": copy.deepcopy(state.get("analysis_result")),
+                "collected_data": copy.deepcopy(state.get("collected_data") or []),
             })
-            logger.info("Saved report v%d to history for %s", len(history), thread_id[:12])
+            logger.info("Saved report v%d (parent=v%s) to history for %s",
+                        len(history), parent, thread_id[:12])
 
         # Inject user feedback into user_request for reanalyze/replan (Analyst sees it)
         # For rewrite, the comment is used as what-if scenario by Writer directly
@@ -465,6 +505,14 @@ def _add_token_entry(thread_id: str, label: str) -> None:
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     })
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
+
+
+def _current_active_version(history: list[dict]) -> int | None:
+    """Return the version number of the most recent history entry (the 'tip').
+
+    Returns None if history is empty (initial run, no parent).
+    """
+    return history[-1]["version"] if history else None
 
 
 def _run_graph_sync(thread_id: str) -> None:

@@ -152,24 +152,24 @@ DeerFlow 原生实现 > 外围封装/适配器 > 引入外部框架 > 从零自�
 
 ```
 backend/packages/harness/deerflow/
-└── competition/                     # 竞赛代码（与 collaboration/ 平级）
-    ├── __init__.py
-    ├── state.py                     # CompetitionState (单层 TypedDict)
-    ├── schema.py                    # Pydantic Schema + validate_agent_output()
-    ├── graph.py                     # build_competition_graph()
-    ├── router.py                    # route_after_* 条件路由
-    ├── config.py                    # Pydantic 配置模型
-    ├── visualization.py             # matplotlib/seaborn 图表
-    ├── db.py                        # SQLite 业务表（source_credibility/product_baseline/analysis_history）
-    ├── nodes/
-    │   ├── __init__.py
-    │   ├── collector.py             # + VoC Aggregator 子模块
-    │   ├── analyst.py
-    │   ├── reviewer.py
-    │   ├── writer.py
-    │   ├── hitl_gate.py             # LangGraph interrupt() + 飞书审批
-    │   ├── error_handler.py
-    │   ├── deep_collector.py        # (P1)
+├── competition/                     # 竞赛代码（与 collaboration/ 平级）
+│   ├── __init__.py
+│   ├── state.py                     # CompetitionState (单层 TypedDict)
+│   ├── schema.py                    # Pydantic Schema + validate_agent_output()
+│   ├── graph.py                     # build_competition_graph()
+│   ├── router.py                    # route_after_* 条件路由
+│   ├── config.py                    # Pydantic 配置模型
+│   ├── visualization.py             # matplotlib/seaborn 图表
+│   ├── db.py                        # SQLite 业务表（source_credibility/product_baseline/analysis_history）
+│   ├── nodes/
+│   │   ├── __init__.py
+│   │   ├── collector.py             # + VoC Aggregator 子模块
+│   │   ├── analyst.py
+│   │   ├── reviewer.py
+│   │   ├── writer.py
+│   │   ├── hitl_gate.py             # LangGraph interrupt() + 飞书审批
+│   │   ├── error_handler.py
+│   │   ├── deep_collector.py        # (P1)
     │   ├── deep_analyst.py          # (P1)
     │   ├── deep_reviewer.py         # (P1)
     │   ├── deep_writer.py           # (P1)
@@ -183,6 +183,13 @@ backend/packages/harness/deerflow/
     │   └── video_source.py          # YouTube/Bilibili 字幕提取
     └── memory/
         └── source_credibility.py    # (P2)
+└── versiontree/                     # Agent 工作流版本树基座 `**[核心差异化]**`
+    ├── __init__.py
+    ├── node.py                      # StateSnapshot + VersionTreeNode 数据结构
+    ├── tree.py                      # VersionTree: add/fork/restore/lineage
+    ├── store.py                     # SQLite 持久化
+    ├── adapter.py                   # LangGraph State ↔ VersionTree 双向桥接
+    └── diff.py                      # 节点对比 (P2)
 
 backend/app/gateway/routers/
 └── competition.py                   # POST /analyze, GET /report/{id}, WS /stream
