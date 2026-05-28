@@ -28,6 +28,8 @@ export interface AnalyzeRequest {
   target_products: string[];
   persona: Persona;
   deep_mode: boolean;
+  context_report?: Record<string, unknown> | null;
+  uploaded_files?: string[] | null;
 }
 
 export interface AnalyzeResponse {

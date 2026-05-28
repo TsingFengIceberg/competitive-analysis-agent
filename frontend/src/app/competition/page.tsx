@@ -2,6 +2,10 @@
 
 import { Send, Loader2, User, Building2, Database } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
 import AgentDetailPanel from "@/components/competition/agent-detail-panel";
 import type { Persona, ReportData, ReportSection, DagState, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
@@ -159,6 +163,23 @@ export default function CompetitionPage() {
     }
   }, [threadId, reportData, query, deepMode, api]);
 
+  /** Convert [n] references to HTML sup links before passing to react-markdown. */
+  const preprocessContent = useCallback((content: string): string => {
+    return content
+      .replace(
+        /\[(\d+)\] (https?:\/\/[^\s—]+)/g,
+        (_, id, url) => `<sup class="ref-link"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup> <a href="${url}" target="_blank" rel="noopener">${url}</a>`,
+      )
+      .replace(/\[(\d+)\]/g, (_, id) => {
+        const trace = displayReport?.traceability_map?.[id];
+        const url = typeof trace === "object" ? trace.url : String(trace ?? "");
+        if (url) {
+          return `<sup class="ref-link"><a href="${url}" target="_blank" rel="noopener" title="${url}">[${id}]</a></sup>`;
+        }
+        return `<sup class="ref-link">[${id}]</sup>`;
+      });
+  }, [displayReport]);
+
   const renderSection = (section: ReportSection, depth = 0) => (
     <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
       <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
@@ -173,21 +194,14 @@ export default function CompetitionPage() {
           }} />
         </div>
       ) : (
-        <div
-          className="prose prose-sm max-w-none text-xs leading-relaxed"
-          dangerouslySetInnerHTML={{
-            __html: section.content
-              .replace(/\n/g, "<br/>")
-              .replace(
-                /\[(\d+)\]/g,
-                (_, id) => {
-                  const trace = displayReport?.traceability_map?.[id];
-                  const url = typeof trace === "object" ? trace.url : String(trace ?? "");
-                  return `<sup class="cursor-pointer text-blue-600 hover:underline" title="${url}">[${id}]</sup>`;
-                },
-              ),
-          }}
-        />
+        <div className="prose prose-sm max-w-none text-xs leading-relaxed [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkBreaks]}
+            rehypePlugins={[rehypeRaw]}
+          >
+            {preprocessContent(section.content)}
+          </ReactMarkdown>
+        </div>
       )}
       {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
     </div>
@@ -311,31 +325,36 @@ export default function CompetitionPage() {
                     <span>📁 查看已保存报告 ({dbLoadedThreadId.slice(0, 12)})</span>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => {
+                        onClick={async () => {
                           if (!dbLoadedReport) return;
-                          // Build a context-rich query from the old report's key findings
                           const oldProducts = (dbLoadedReport.products || []).join(", ");
-                          const execSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-executive-summary");
-                          const swotSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-swot");
-                          const recSection = dbLoadedReport.sections?.find((s: ReportSection) => s.id === "sec-recommendations");
-                          const oldContext = [
-                            execSection?.content?.slice(0, 500) ?? "",
-                            swotSection?.content?.slice(0, 500) ?? "",
-                            recSection?.content?.slice(0, 300) ?? "",
-                          ].filter(Boolean).join("\n\n");
-                          const newQuery = oldContext
-                            ? `基于以下上一轮分析报告的结论：\n\n${oldContext}\n\n请对 ${oldProducts} 进行新一轮竞品分析，重点关注之前未覆盖的维度和新变化。`
-                            : `分析 ${oldProducts} 的竞争力`;
-                          // Pre-fill inputs only — user can edit before starting
-                          setQuery(newQuery);
+                          setQuery(`基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`);
                           setProducts((dbLoadedReport.products || []).join(", "));
                           setPersona(dbLoadedReport.persona || "pm");
                           setDbLoadedReport(null);
                           setDbLoadedThreadId(null);
+                          setHitlVisible(false);
+                          setStatus("running");
+                          setReportData(null);
+                          setTokenUsage([]);
+                          setDagState(null);
+                          try {
+                            const res = await api.startAnalysis({
+                              query: `基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`,
+                              target_products: dbLoadedReport.products || [],
+                              persona: dbLoadedReport.persona || "pm",
+                              deep_mode: false,
+                              context_report: dbLoadedReport as unknown as Record<string, unknown>,
+                            });
+                            setThreadId(res.thread_id);
+                          } catch (err) {
+                            setStatus("error");
+                            console.error("Reanalysis start failed:", err);
+                          }
                         }}
                         className="rounded bg-blue-500 px-2 py-0.5 text-white hover:bg-blue-600"
                       >
-                        填入输入框
+                        基于此报告新建分析
                       </button>
                       <button onClick={() => { setDbLoadedReport(null); setDbLoadedThreadId(null); }}
                         className="text-green-700 hover:text-green-900 underline">

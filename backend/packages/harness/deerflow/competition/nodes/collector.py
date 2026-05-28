@@ -80,6 +80,17 @@ Output format: a JSON array of objects, each with:
         for g in gaps:
             task += f"  - [{g.get('type', '?')}] {g.get('target_collect_task', g.get('description', ''))}\n"
 
+    context = state.get("context_report")
+    if context and isinstance(context, dict):
+        sections = context.get("sections", [])
+        if sections:
+            task += "\n\nPrevious analysis report findings (use as reference, verify and update):\n"
+            for s in sections:
+                content = s.get("content", "")
+                if content:
+                    task += f"\n### {s.get('title', '')}\n{content[:800]}\n"
+            task += "\nFocus on finding NEW or UPDATED data beyond the above, especially recent changes.\n"
+
     return task
 
 

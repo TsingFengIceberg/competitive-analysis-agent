@@ -33,6 +33,7 @@ class AnalyzeRequest(BaseModel):
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
     deep_mode: bool = Field(default=False, description="Enable deep mode pipeline after normal mode")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
+    context_report: dict | None = Field(default=None, description="Previous report data to use as analysis context")
 
 
 class AnalyzeResponse(BaseModel):
@@ -86,6 +87,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         "persona": request.persona,
         "deep_mode": request.deep_mode,
         "collected_data": [],
+        "context_report": request.context_report,
     }
 
     _store[thread_id] = {

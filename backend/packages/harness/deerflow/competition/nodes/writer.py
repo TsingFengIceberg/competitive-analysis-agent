@@ -256,17 +256,18 @@ def _render_comparison_table(rows: list[dict], products: list[str], dimensions: 
     if not rows or not dimensions:
         return "_暂无对比数据_"
     header = "| 产品 | " + " | ".join(dimensions) + " |\n"
-    sep = "|------" + "|------" * len(dimensions) + " |\n"
+    sep = "|------|" + "|".join(["------" for _ in dimensions]) + "|\n"
     body = ""
     for product in products:
-        body += f"| {product} | "
+        body += f"| {product} |"
         for dim in dimensions:
             match = [r for r in rows if r.get("product") == product and r.get("dimension") == dim]
             if match:
-                body += f"{match[0].get('rating', '?')} "
+                rating = match[0].get("rating", "?")
+                body += f" {rating} |"
             else:
-                body += "N/A "
-        body += " |\n"
+                body += " N/A |"
+        body += "\n"
     return header + sep + body
 
 

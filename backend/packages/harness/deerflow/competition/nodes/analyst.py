@@ -68,16 +68,22 @@ User request: {user_request}
 Persona: {persona}
 Available data points: {data_count}
 
+CRITICAL: You MUST produce ratings for EVERY product listed below, for EVERY dimension:
+Products: {products_str}
+Dimensions: {", ".join(dimensions)}
+
+If collected data lacks direct evidence for a product×dimension, still produce a best-estimate rating (1-5) based on indirect evidence or industry knowledge, and mark evidence as "间接推断" (indirect inference). Never skip a product.
+
 Required analysis dimensions: {", ".join(dimensions)}
 
 Output a JSON object with these sections:
 
-1. comparison_matrix — for each product × dimension, provide:
-   - rating (1-5): use quantile mapping for quantitative data, LLM judgment for qualitative
-   - evidence: specific data supporting the rating
+1. comparison_matrix — MUST include EVERY product ({products_str}) × EVERY dimension ({", ".join(dimensions)}). For each cell:
+   - rating (1-5): use quantile mapping for quantitative data, LLM judgment for qualitative. NEVER omit any product×dimension pair.
+   - evidence: specific data supporting the rating (use "间接推断" if no direct data)
    - source_data_point_ids: list of referenced data point IDs
 
-2. swot — for each product, list SWOT items with:
+2. swot — MUST include EVERY product ({products_str}). For each product, provide at least 2 SWOT items with:
    - category: "strength" / "weakness" / "opportunity" / "threat"
    - statement, evidence, source_data_point_ids (≥1 required per §3.5.3)
 
