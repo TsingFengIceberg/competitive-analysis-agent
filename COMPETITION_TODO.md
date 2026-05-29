@@ -301,74 +301,82 @@
 
 ---
 
-## 九、版本状态树 (VersionTree) — Agent 工作流分支管理 `**[核心差异化 P0]**`
+## 九、分支树 (BranchTree) + CheckpointOps — Agent 工作流分支管理 `**[核心差异化 P0]**`
 
-> 详见 [PLAN §3.8](../COMPETITION_PLAN.md#38-版本状态树-versiontree--agent-工作流的-git-核心差异化) 和 [PLAN §6.6](../COMPETITION_PLAN.md#66-版本状态树-versiontree--agent-工作流的-git-核心差异化)。
-> VersionTree 是本项目最核心的技术创新——填补 AI Agent 框架在"人在环路交互版本管理"上的空白。
-> 采用**两层三级继承体系**：BaseVersionTree（抽象基类） → AgentExecutionTree / UserInteractionTree → ConversationTree / DeliverableTree。
+> **设计更新（2026-05-29）**：继承体系从"两层三级"修正为**单层两级**。Agent 执行分支（操作 LangGraph checkpoint tree）与用户交互分支（操作 BranchTree）是两个独立树结构，不应共享基类。新增 **CheckpointOps** 独立工具层——封装 LangGraph checkpoint 裸 API 为便捷原子操作，BranchTree 通过调用 CheckpointOps（而非直接调 LangGraph API）来获取/恢复 state。
+> 
+> 详见 [PLAN §3.8](../COMPETITION_PLAN.md#38-分支树-branchtree--agent-工作流的-git-核心差异化) 和 [PLAN §6.6](../COMPETITION_PLAN.md#66-分支树-branchtree--agent-工作流的-git-核心差异化)。
 
-### 继承体系设计（Base → 两层 → 三级）
+### 继承体系设计（单层两级）
 
-- [x] **BaseVersionTree 抽象基类设计**（`tree.py`）：add / fork / restore / lineage / diff / to_dict 树操作接口
-  → PLAN §3.8.8 完整定义了抽象基类的职责和各子类的差异
-- [ ] **BaseVersionTree 实现**（`tree.py`）：纯树算法实现（零决策，只定义"树怎么操作"）
-- [ ] **_serialize / _deserialize 抽象方法**：子类各自实现——AgentExecutionTree 存 checkpoint_id 引用，DeliverableTree 存完整 JSON
+- [x] **BranchTree 抽象基类设计**（`tree.py`）：snapshot / fork / restore / lineage / to_dict 树操作接口
+  → PLAN §3.8.8 完整定义了单层两级继承模型
+- [ ] **BranchTree 实现**（`tree.py`）：纯树算法 + 依赖注入 CheckpointOps + MetadataStore
+- [ ] **_serialize / _deserialize 抽象方法**：子类各自实现——DeliverableTree 存完整 CompetitionState JSON，ConversationTree 存 messages
 
-### 用户交互分支（当前 P0 实现）
+### 子类
 
-- [x] **DeliverableTree（报告/可交付物版本分支）**：当前 `competition.py` + `page.tsx` 已实现的核心功能
+- [x] **DeliverableTree（报告/可交付物版本分支，P0）**：当前 `competition.py` + `page.tsx` 已实现的核心功能
   → state = report_data + analysis_result + collected_data + hitl_decision + metadata
 - [ ] **ConversationTree（对话分支，P1）**：state = LangGraph messages，用户编辑历史消息 → 新分支
-- [ ] **UserInteractionTree 父类提取**：DeliverableTree 和 ConversationTree 共享用户交互层语义，抽取为父类
 
-### Agent 执行分支（吸收 Agent Git 论文，暂定待评估）`**[P2 前瞻]**`
+### CheckpointOps — 独立工具层 `**[新增]**`
 
-> **状态：暂定，需要讨论评估是否适合竞品分析的多 Agent 协作场景。**
-> 论文：Li et al., "AgentGit: A Version Control Framework for Reliable and Scalable LLM-Powered Multi-Agent Systems", AAAI 2026 WMAC Workshop, arXiv:2511.00628
+> 定位：独立的工具库（不是 BranchTree 子类，不是树）。封装 LangGraph checkpoint 裸 API 为应用层友好的原子操作。BranchTree 通过调用 CheckpointOps 来跟 LangGraph 交互，实现依赖倒置。
 
-- [ ] **Agent Git 论文分析**：三层架构（External Session / Internal Session / Session History）评估吸收可行性
-  → PLAN §3.8.9 完整对比了 Agent Git 与我们的设计差异
-- [ ] **AgentExecutionTree（暂定）**：绑定 LangGraph checkpoint，tool call 级别的分支控制
-  → 吸收 Agent Git 的 External/Internal Session 双层设计，映射到 thread_id / node / lineage
-- [ ] **评估决策**：竞品分析场景中，Agent 执行层的分支控制是否确实需要？还是 HITL 在用户层的分支控制已经足够？
-  → 如果不需要，AgentExecutionTree 子类可从继承树中移除（UserInteractionTree 直接从 Base 继承，不破坏架构）
+- [x] **需求调研**：确认 PyPI 7 个 langgraph-checkpoint-* 包全是存储后端，无操作封装层；DeerFlow 仅工厂函数；LangGraph JS SDK 有 getBranchSequence 但 Python 端无等价物 → **真正的生态空白**
+- [x] **隐式 Fork 机制分析**：LangGraph pregel loop 在检测到时间旅行（`is_time_traveling=True`）且非 update/fork source 时自动创建 `source: "fork"` checkpoint — 不需要我们实现 fork，只需封装
+- [ ] **CheckpointOps 核心类**（`checkpoint_ops.py`）：
+  - 读: `get_state()` / `get_history()` / `latest()` / `build_tree()` / `lineage()` / `children()` / `is_fork_point()`
+  - 写: `fork()` / `update_state()`
+  - 管理: `tag()` / `list_tags()` / `restore_to_tag()`
+- [ ] **便捷度证明**：对比裸调 LangGraph API vs CheckpointOps 封装，写进设计文档
 
-### Core 层（`deerflow/versiontree/`）
+### Core 层（`deerflow/branchtree/`）
 
-- [x] **StateSnapshot 数据结构**（`node.py`）：snapshot_id / parent_id / state / metadata / children
-  → 前端 `api-client.ts` 中的 `ReportHistoryItem` 已含 `parent_version` + `report_data` + `analysis_result` + `collected_data`
-- [ ] **VersionTree 核心类**（`tree.py`）：add / fork / restore / lineage / to_dict — 纯数据结构
+- [x] **BranchNode 数据结构**（`node.py`）：node_id / parent_id / checkpoint_id / metadata / children
+  → 改为存 checkpoint_id 引用而非完整 state（完整 state 由 LangGraph 管理）
+- [ ] **BranchTree 核心类**（`tree.py`）：snapshot / fork / restore / lineage / to_dict — 依赖注入 CheckpointOps
 - [ ] **节点 Diff**（`diff.py`, P2）：两个快照的 state 差异计算 + 报告变化高亮
 
 ### Adapter 层
 
-- [x] **LangGraph State → Snapshot 转换**：`_reanalyze_sync` 中保存完整 state 到 history
+- [x] **LangGraph State → Snapshot 转换**：`_reanalyze_sync` 中保存 checkpoint_id 引用到 history
 - [x] **Snapshot → LangGraph State 恢复**：`submit_decision` 中 fork 逻辑恢复历史版本 state
 - [x] **Fork parent 追踪**：`_fork_parent_version` 标记确保 fork 分支正确挂载在源节点下
-- [ ] **独立 adapter.py**：将当前内联在 `competition.py` 中的转换逻辑抽取为 `VersionTreeAdapter`（支持不同子类的 State 类型适配）
+- [ ] **独立 adapter.py**：将当前内联在 `competition.py` 中的转换逻辑抽取为 `BranchTreeAdapter`
 
 ### Persistence 层
 
-- [ ] **version_snapshots 表**（SQLite）：thread_id / parent_id / state_json / metadata_json / is_approved
-  → 当前在内存 `_store` 中，需持久化到 `db.py`
-- [ ] **VersionTree.save() / .load()**：`store.py` 实现序列化/反序列化
+- [ ] **branch_snapshots 表**（SQLite）：version / thread_id / parent_version / checkpoint_id / action / is_approved / metadata_json
+  → 改为只存 checkpoint_id 引用 + 业务 metadata，完整 state 由 LangGraph 管理（避免重复存储）
+- [ ] **BranchTree.save() / .load()**：`store.py` 实现序列化/反序列化
 - [x] **已批准快照持久化**：`_save_to_db` 将 approved 报告写入 `analysis_history` 表
 
 ### 前端可视化
 
-- [x] **VersionTree React 组件**：Unicode tree-line 渲染（├ └ │ ○）+ 节点点击查看 + 操作图标
+- [x] **BranchTree React 组件**：Unicode tree-line 渲染（├ └ │ ○）+ 节点点击查看 + 操作图标
 - [x] **历史版本 HITL 操作**：从任意历史节点打开 HITL 面板（紫色边框 + "🌿 从 vX 分支" 提示）
 - [x] **分支 fork 提交**：`fork_version` 参数传递给后端，自动创建新分支
 - [ ] **树节点 hover 预览**：悬停节点 → 弹出报告摘要卡片（P2）
 - [ ] **分支合并**：选择两个分支节点 → 调用 LLM 合并各自的优点生成新版本（P2 前瞻）
 
+### Agent Git 论文参考（P2 前瞻，不影响 BranchTree 继承体系）
+
+> Agent Git 操作的是 LangGraph checkpoint 层，与 BranchTree（Data 粒度用户层）是不同层级。如需扩展 Agent 执行层分支探索，在 CheckpointOps 上加操作语义即可。
+
+- [x] **论文分析**：三层架构（External/Internal Session / Session History）可映射到 thread_id / node / lineage
+- [ ] **CheckpointOps Agent 扩展（P2）**：在 CheckpointOps 上增加 Agent 执行层的操作语义（自动分支探索/A/B 测试），不需要新建树数据结构
+
 ### 文档
 
-- [x] **PLAN §3.8.8 继承体系设计**：两层三级继承模型 + 子类实现差异 + 为什么 Agent 执行和用户交互不在同一层级
-- [x] **PLAN §3.8.9 Agent Git 论文对比与吸收**：完整对比表 + 吸收思路 + 待评估问题 + 暂定状态标注
-- [x] **PLAN §3.8.10 差异化亮点**：5 条更新（含继承架构 + 吸收前沿研究）
-- [x] **PLAN §6.6 差异化创新**：VersionTree 列为最核心技术创新点
-- [x] **CLAUDE.md 目录结构**：添加 `deerflow/versiontree/` 模块
+- [x] **PLAN §3.8.3 双层树架构**：BranchTree + LangGraph Checkpoint Tree + CheckpointOps 协作关系图
+- [x] **PLAN §3.8.8 继承体系**：单层两级（BranchTree → DeliverableTree / ConversationTree）+ 勘误说明
+- [x] **PLAN §3.8.9 Agent Git 论文参考**：定位为 LangGraph checkpoint 层工具链，不影响 BranchTree 继承
+- [x] **PLAN §3.8.10 CheckpointOps**：完整 API 设计 + 隐式 fork 机制讲解 + 便捷度对比表 + 生态空白论证
+- [x] **PLAN §3.8.11 差异化亮点**：6 条更新（含双树架构 + CheckpointOps 生态空白 + 依赖倒置）
+- [x] **PLAN §6.6 差异化创新**：BranchTree + CheckpointOps 列为最核心技术创新点
+- [x] **CLAUDE.md 目录结构**：更新为 `deerflow/branchtree/` 模块 + CheckpointOps
 
 ---
 

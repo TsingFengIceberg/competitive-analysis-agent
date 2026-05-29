@@ -53,7 +53,7 @@
 | R11 | 端到端链路完整，可现场演示 | 判标 §4 | [§3.7 DAG工作流](#37-dag-工作流) + [§8](#八3-周开发计划含答辩呈现) | 普通模式全链路 + 前端 |
 | R12 | 上下文管理、错误恢复、幻觉抑制有明确策略 | 判标 §4 | [§3.16.1 幻觉抑制](#3141-幻觉抑制三策略竞赛要求-r12) | 自一致性校验 + 引用强制 + 超长分片 |
 | R13 | 超时重试、降级机制完备 | 判标 §4 | [§3.16.5 超时重试](#3145-超时重试与降级-竞赛要求-r13) | per-Agent 超时 + 指数退避 + 降级 |
-| R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) + [§3.8](#38-版本状态树-versiontree--agent-工作流的-git-核心差异化) | 版本状态树 (VersionTree) + 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
+| R14 | 技术方案有独特或前瞻性思考 | 判标 §4 | [§6](#六核心差异化创新点总结) + [§3.8](#38-分支树-branchtree--agent-工作流的-git-核心差异化) | 分支树 (BranchTree) + CheckpointOps + 来源可信度动态演化 + 字节生态深度集成 + 双视角报告 |
 | R15 | 效率/覆盖度/一致性可量化提升 | 判标 §4 | [§3.16.4 业务指标](#3144-业务指标可量化追踪竞赛要求) | 准确率/覆盖率/人工修正率指标 |
 | R16 | 交互设计流畅：报告查看、溯源跳转、人工介入修正 | 判标 §4 | [§5.7](#57-人对报告的细粒度交互式编辑p0--答辩核心交互) + [§7.5](#75-溯源链视图traceability-viewer) | 飞书文档交互 + 溯源链视图 |
 | R17 | 信息采集合规：遵守 robots.txt 与服务条款 | 判标 §4 | [§3.16.2 采集合规](#3142-采集合规竞赛要求) | robots.txt 预检 + 来源声明 |
@@ -767,10 +767,15 @@ Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1]
 | W4 | 来源表中每条标注对应正确的 quality 标签 | 修正标签 |
 | W5 | 所选 persona 的侧重点正确 | 调整措辞 |
 
-### 3.8 版本状态树 (VersionTree) — Agent 工作流的 Git `**[核心差异化]**`
+### 3.8 分支树 (BranchTree) — Agent 工作流的 Git `**[核心差异化]**`
 
 > **定位**：将 HITL 交互中的版本管理从"被动日志"升级为系统核心数据结构。
-> 抽象为通用基座模块 `deerflow/versiontree/`，与 LangGraph checkpointer 互补——checkpoint 管线性恢复，VersionTree 管分支、回溯、并排比较。
+> 抽象为通用基座模块 `deerflow/branchtree/`，与 LangGraph checkpointer 互补——checkpoint 管线性恢复，BranchTree 管分支、回溯、并排比较。
+>
+> **本轮设计更新（2026-05-29）**：
+> - 继承体系从"两层三级"修正为**单层两级**：Agent 执行分支（操作 LangGraph checkpoint tree）与用户交互分支（操作 BranchTree）是两个独立树结构，不应放在同一继承体系下
+> - 新增 **CheckpointOps** 独立工具层：封装 LangGraph checkpoint 裸 API 为便捷原子操作（`get_state()` / `fork()` / `build_tree()`），BranchTree 通过调用 CheckpointOps 而非直接调用 LangGraph checkpoint API
+> - BranchTree 与 CheckpointOps 是**调用关系**（不是继承、不是封装），各自操作不同的树
 
 #### 3.8.1 设计动机
 
@@ -782,7 +787,7 @@ Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1]
 分析师看 v2 报告 → 觉得更好，基于 v2 继续深度分析 → v4
 ```
 
-这与 Git 的分支模型完全一致，但 Agent 领域目前没有等价物。**VersionTree 填补了这个空白。**
+这与 Git 的分支模型完全一致，但 Agent 领域目前没有等价物。**BranchTree 填补了这个空白。**
 
 #### 3.8.2 核心概念
 
@@ -795,95 +800,161 @@ Cursor 的 Tab 补全准确率在多个独立评测中被认为优于 Copilot[1]
 | **Restore** | `git checkout <commit>` | 将任意历史快照恢复为"当前工作状态" |
 | **Prune** | `git branch -d` | 批准某分支后，修剪无关分支（可配置是否启用） |
 
-#### 3.8.3 抽象层次
+#### 3.8.3 双层树架构 + CheckpointOps 工具层
+
+本项目涉及**两棵独立的树**，分别管理不同粒度的状态，通过 CheckpointOps 工具层协作：
 
 ```
-LangGraph Checkpoint (框架层)
-    └── VersionTree (我们这层 — deerflow/versiontree/)
-            ├── 分支/分叉 (fork)
-            ├── 状态快照 (snapshot)
-            ├── 回溯/恢复 (restore)
-            ├── 谱系追踪 (lineage)
-            ├── 跨线程引用 (cross-thread context_report)
-            └── 持久化 (SQLite → versiontree DB)
+                        ┌──────────────────────────┐
+                        │     BranchTree (我们)      │
+                        │  Data 粒度 · 用户可见       │
+                        │  ───────────────────────  │
+                        │  节点 = 一次完整分析的快照   │
+                        │  fork = HITL 决策触发      │
+                        │  持久化 = 我们自己的 SQLite  │
+                        └───────────┬──────────────┘
+                                    │ 调用
+                        ┌───────────▼──────────────┐
+                        │   CheckpointOps (我们)     │
+                        │  LangGraph checkpoint     │
+                        │  便捷操作工具层             │
+                        │  ───────────────────────  │
+                        │  get_state / fork /        │
+                        │  build_tree / lineage      │
+                        └───────────┬──────────────┘
+                                    │ 封装
+                        ┌───────────▼──────────────┐
+                        │ LangGraph Checkpoint Tree │
+                        │ Agent 粒度 · 框架管理      │
+                        │ ────────────────────────  │
+                        │ 节点 = 一次 Agent 执行步骤   │
+                        │ fork = update_state(非最新) │
+                        │ 持久化 = SqliteSaver        │
+                        └───────────────────────────┘
 ```
 
 | 层 | 职责 | 依赖 |
 |------|------|------|
-| **Core** (`node.py`, `tree.py`) | 纯数据结构 + 树操作：add / fork / restore / navigate / prune / to_dict | 零依赖（标准库） |
-| **Adapter** (`adapter.py`) | LangGraph CompetitionState ↔ VersionTree snapshot 双向转换 | langgraph |
-| **Persistence** (`store.py`) | SQLite 持久化：tree 表 + snapshots 表 | deerflow.db |
-| **UI** | Tree visualization React 组件 | 前端 |
+| **BranchTree** (`tree.py`, `node.py`) | 用户语义层的版本分支树。节点 = Data 快照（report_data + analysis_result + collected_data）。操作：snapshot / fork / restore / lineage / to_dict | CheckpointOps（调其获取/恢复 LangGraph state），MetadataStore（自己的薄持久层） |
+| **CheckpointOps** (`checkpoint_ops.py`) | LangGraph checkpoint 操作的便捷封装。不是一棵树——是一个工具库。把裸 API 转为原子操作：`get_state()` / `fork()` / `build_tree()` / `lineage()` / `tag()` | langgraph（BaseCheckpointSaver / CompiledStateGraph） |
+| **LangGraph Checkpoint Tree** | 框架内置的执行粒度 checkpoint 树。隐式 fork 机制：非最新 checkpoint_id 调 update_state/stream → 自动创建 source:"fork" checkpoint | LangGraph 内置 |
+
+**为什么不是一棵树？**：
+
+| | LangGraph Checkpoint Tree | BranchTree |
+|---|---|---|
+| 一个节点 = | 一个 Agent 执行步骤（collector/analyst/reviewer/writer） | 一次完整分析的产出快照 |
+| 粒度 | Agent 级 | Run 级 |
+| 谁看 | 框架/开发者 | 用户（PM/创业者） |
+| 触发分支 | `update_state(非最新 checkpoint)` → 内部 source:"fork" | HITL 决策 / 编辑历史消息 |
+| 管理方 | LangGraph 内置 SqliteSaver | 我们的 BranchTree + MetadataStore |
+| 存什么 | channel_values（完整 LangGraph State） | checkpoint_id 引用 + 业务 metadata（version/action/is_approved） |
+
+**为什么 CheckpointOps 是独立的？**：调研结果显示，PyPI 上所有 langgraph-checkpoint-* 包都是存储后端（LMDB/Neo4j/CosmosDB/S3），没有一个是操作封装层。LangGraph JS SDK 有 `getBranchSequence` / `getBranchView`，但 Python 端没有等价物。DeerFlow 自身也只封装了 checkpointer 工厂函数。**这是真正的空白**——每个用 LangGraph 的团队都在裸调 checkpoint API。CheckpointOps 填补了"让调用方不必拼 RunnableConfig、不必理解隐式 fork 机制、不必从 channel_values 挖数据"的缺失层。
+
+**BranchTree 为什么调用 CheckpointOps 而非替代它？**：BranchTree 需要跟 LangGraph 交互来"获取当前 state"和"恢复历史 state"，但它不关心 LangGraph checkpoint 的内部结构。CheckpointOps 把这种交互变成 3-5 个函数调用，BranchTree 只依赖这些函数签名。如果未来换编排框架，只需要换 CheckpointOps 的实现，BranchTree 不受影响。
 
 #### 3.8.4 数据结构
 
 ```python
-# node.py
+# node.py — BranchTree 节点
 @dataclass
-class StateSnapshot:
-    """某个版本节点的完整状态快照。"""
-    snapshot_id: str          # "v1", "v2", ...
+class BranchNode:
+    """某个版本节点的完整快照引用。"""
+    node_id: str              # "v1", "v2", ...
     parent_id: str | None     # None = 根节点
     created_at: datetime
-    state: dict               # 完整 CompetitionState（可恢复）
+    checkpoint_id: str        # 指向 LangGraph checkpoint（引用，不复制数据）
     metadata: dict            # {action, comment, persona, trigger}
-    children: list[str]       # 子节点 ID 列表（内存索引）
+    children: list[str]       # 子节点 ID 列表
 
-# tree.py
-class VersionTree:
-    """Agent 工作流版本树。"""
-    root: StateSnapshot | None
-    current: StateSnapshot | None  # 当前活跃节点
-    nodes: dict[str, StateSnapshot]  # snapshot_id → snapshot
+# tree.py — BranchTree
+class BranchTree:
+    """Data 粒度的版本分支树。节点 = 一次完整分析的快照。"""
+    root: BranchNode | None
+    current: BranchNode | None
+    nodes: dict[str, BranchNode]
 
-    def commit(state, parent_id, metadata) -> StateSnapshot
-    def fork(from_snapshot_id, state) -> StateSnapshot
-    def restore(snapshot_id) -> dict  # 返回完整 state
-    def lineage(snapshot_id) -> list[StateSnapshot]  # 从根到该节点
-    def to_dict() -> dict  # 前端树渲染
-    def diff(a_id, b_id) -> dict  # P2: 两版本对比
+    # 内部依赖
+    _ck: CheckpointOps       # 用于获取/恢复 LangGraph state
+    _store: MetadataStore    # 版本号 / parent / action / is_approved
+
+    def snapshot(thread_id, action) -> BranchNode    # 创建新版本快照
+    def fork(from_version, action) -> BranchNode     # 从历史版本分叉
+    def restore(version) -> dict                      # 返回该版本的完整 state（通过 CheckpointOps 获取）
+    def lineage(version) -> list[BranchNode]          # 从根到该节点的祖先链
+    def to_dict() -> dict                             # 前端树渲染
+
+# checkpoint_ops.py — LangGraph checkpoint 便捷工具
+class CheckpointOps:
+    """LangGraph checkpoint 原子操作封装。不是一棵树——是工具库。"""
+    _checkpointer: BaseCheckpointSaver
+    _graph: CompiledStateGraph | None
+
+    # 读操作
+    def get_state(thread_id, checkpoint_id=None) -> StateSnapshot
+    def get_history(thread_id, limit=None) -> list[StateSnapshot]
+    def latest(thread_id) -> StateSnapshot
+    def build_tree(thread_id) -> dict[checkpoint_id, list[children]]
+
+    # 写操作
+    def fork(thread_id, from_checkpoint, state_update) -> str  # 返回新 checkpoint_id
+    def update_state(thread_id, values, as_node=None) -> str
+
+    # 便捷查询
+    def lineage(checkpoint_id) -> list[CheckpointTuple]
+    def children(checkpoint_id) -> list[CheckpointTuple]
+    def is_fork_point(checkpoint_id) -> bool
 ```
 
 #### 3.8.5 与现有 HITL 闭环的关系
 
-版本树是 HITL 交互的"操作系统层"：
+BranchTree 是 HITL 交互的"操作系统层"：
 
 ```
-用户操作              →  版本树动作            →  HITL 动作
+用户操作              →  BranchTree 动作           →  HITL 动作
 ──────────────────────────────────────────────────────────
-点击"重写报告"         →  commit(parent=当前)  →  Writer 重新生成
-点击"重新分析"         →  commit(parent=当前)  →  Analyst→Reviewer→Writer
-点击"重新搜索"         →  commit(parent=当前)  →  Collector→Analyst→Reviewer→Writer
-在 v2 点击"重新分析"   →  fork(from=v2)        →  恢复 v2 state → 重跑
-点击"批准"              →  mark_approved(id)   →  锁定节点 + 保存到 SQLite
-点击"基于此报告新建分析" → 跨线程引用            →  新 thread，context_report=vX
+点击"重写报告"         →  snapshot(parent=当前)      →  Writer 重新生成
+点击"重新分析"         →  snapshot(parent=当前)      →  Analyst→Reviewer→Writer
+点击"重新搜索"         →  snapshot(parent=当前)      →  Collector→Analyst→Reviewer→Writer
+在 v2 点击"重新分析"   →  fork(from=v2)             →  恢复 v2 state → 重跑
+点击"批准"              →  mark_approved(id)         →  锁定节点 + 保存到 SQLite
+点击"基于此报告新建分析" → 跨线程引用                  →  新 thread，context_report=vX
 ```
+
+每次 snapshot/fork 时，BranchTree 通过 CheckpointOps 获取当前的 LangGraph state 并记录 checkpoint_id 引用。
 
 #### 3.8.6 持久化设计
 
 ```sql
--- versiontree 表（与 analysis_history 互补）
-CREATE TABLE IF NOT EXISTS version_snapshots (
-    snapshot_id TEXT PRIMARY KEY,
+-- BranchTree metadata 表（薄持久层：只存引用 + 业务语义，完整 state 由 LangGraph 管理）
+CREATE TABLE IF NOT EXISTS branch_snapshots (
+    version INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT NOT NULL,
-    parent_id TEXT,
-    created_at TEXT NOT NULL,
-    state_json TEXT NOT NULL,       -- 完整 CompetitionState JSON
-    metadata_json TEXT NOT NULL,    -- {action, comment, persona}
+    parent_version INTEGER,
+    checkpoint_id TEXT NOT NULL,       -- 指向 LangGraph checkpoint（引用）
+    action TEXT NOT NULL,              -- "initial" | "rewrite" | "reanalyze" | "recollect" | "approve"
     is_approved INTEGER DEFAULT 0,
-    FOREIGN KEY (parent_id) REFERENCES version_snapshots(snapshot_id)
+    metadata_json TEXT NOT NULL,       -- {comment, persona, timestamp}
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (parent_version) REFERENCES branch_snapshots(version)
 );
 
-CREATE INDEX idx_vt_thread ON version_snapshots(thread_id);
-CREATE INDEX idx_vt_parent ON version_snapshots(parent_id);
+CREATE INDEX idx_bt_thread ON branch_snapshots(thread_id);
+CREATE INDEX idx_bt_parent ON branch_snapshots(parent_version);
 ```
+
+与 LangGraph 的存储分工：
+- **LangGraph checkpoints 表**：存完整 channel_values（state 全量数据），由 SqliteSaver 管理
+- **branch_snapshots 表**：存 checkpoint_id 引用 + 业务 metadata（version/action/is_approved），由 BranchTree 管理
+- 需要查看某版本 state 时：查 branch_snapshots → 拿 checkpoint_id → CheckpointOps.get_state(checkpoint_id) → LangGraph 返回完整 state
 
 #### 3.8.7 前端可视化
 
-版本树在前端以 Unicode 树形字符渲染：
+BranchTree 在前端以 Unicode 树形字符渲染：
 
 ```
-📋 版本树                                    [最新]
+📋 分支树                                    [最新]
 ○ 📋初始 v1
 ├─ ✏️重写 v2  "从PM视角重写"
 │  └─ 🔄重分析 v3  "补充用户数据"
@@ -892,96 +963,161 @@ CREATE INDEX idx_vt_parent ON version_snapshots(parent_id);
 
 每个节点可点击查看对应快照的报告。从历史节点打开 HITL 面板时，显示"🌿 从 vX 分支"提示，提交时自动执行 fork。
 
-#### 3.8.8 继承体系设计：两层三级
+#### 3.8.8 继承体系设计：单层两级
 
-版本树不是一棵树，而是**两个层级、三种树**的继承体系。核心洞察：**Agent 执行分支和用户交互分支不在同一个抽象层级上**。
+> **勘误**：此前设计为"两层三级"（BaseVersionTree → AgentExecutionTree / UserInteractionTree → ConversationTree / DeliverableTree），将 Agent 执行分支和用户交互分支放在同一继承体系下。经深入讨论确认：**Agent 执行分支操作的是 LangGraph checkpoint tree（框架管理的独立树），与 BranchTree（我们管理的 Data 粒度树）是完全不同的两棵树，不应共享基类。**
+
+BranchTree 的继承体系——**单层抽象基类 + 两级子类**：
 
 ```
-                        BaseVersionTree（抽象基类）
-                        ├── 树操作: add / fork / restore / lineage / diff / to_dict
-                        ├── 抽象方法: _serialize / _deserialize / _persist / _load
-                        └── 零决策：只定义"树怎么操作"，不关心"树里存什么"
-                               │
-               ┌───────────────┴───────────────┐
-               │                               │
-      AgentExecutionTree              UserInteractionTree
-      （Agent 执行分支）                （用户交互分支）
-      ─── LangGraph checkpoint 层      ─── 用户感知层
-      ─── 粒度: 每次 tool call         ─── 粒度: 每次 HITL 决策
-      ─── 触发: Agent 错误/探索/A/B    ─── 触发: 用户审批/反馈/What-if
-      ─── 受众: Agent 开发者           ─── 受众: 用户（PM/创业者）
-      ─── 状态: checkpoint_id 引用     ─── 状态: CompetitionState
-      吸收 Agent Git 论文思路                    │
-                                      ┌────────┴────────┐
-                               ConversationTree   DeliverableTree
-                               （对话分支）         （报告/可交付物分支）
-                               state = messages    state = report_data
-                                                   + analysis_result
-                                                   + collected_data
+                    BranchTree（抽象基类）
+                    ├── 树操作: snapshot / fork / restore / lineage / to_dict
+                    ├── 依赖注入: CheckpointOps（LangGraph 交互）+ MetadataStore（持久化）
+                    └── 不关心"节点里存什么"，只定义"树怎么操作"
+                           │
+               ┌───────────┴───────────┐
+               │                       │
+        DeliverableTree          ConversationTree
+        （报告/可交付物分支）       （对话消息分支）
+        ─── 当前 P0 已实现         ─── P1
+        ─── 节点 = report_data     ─── 节点 = messages
+               + analysis_result         + 用户编辑历史消息
+               + collected_data          触发分叉
+        ─── 触发: HITL 决策        ─── 受众: 用户
+        ─── 受众: 用户（PM/创业者）
 ```
 
-**为什么 Agent 执行分支和用户交互分支不在同一层级**：
+**为什么是单层？**：
 
-| 维度 | Agent 执行分支 | 用户交互分支 |
-|------|-------------|------------|
-| 操作对象 | LangGraph checkpoint（内部执行状态） | CompetitionState + messages（用户可见数据） |
-| 分叉点 | tool call 之后要不要换策略 | HITL 决策（重写/重分析/重搜索/批准） |
-| 触发者 | Agent 系统（自动） | 用户（手动） |
-| 可见性 | Agent 开发者可见 | 最终用户可见 |
-| 是否可恢复执行 | 是（`aget_state()` 后继续 stream） | 是（恢复 state 后重新进入 HITL 闭环） |
+| 维度 | DeliverableTree | ConversationTree |
+|---|---|---|
+| 操作数据 | report_data + analysis_result + collected_data | messages（对话历史） |
+| 分叉触发 | HITL 决策（重写/重分析/重搜索/批准） | 用户编辑历史消息 |
+| 都是什么 | 都是 CompetitionState 的快照，都是用户触发，都是用户可见 | |
+| 为什么共享 BranchTree | 树操作完全同构——不管快照存的是报告还是消息，snapshot/fork/restore/lineage 算法一样 | |
 
-**为什么仍然共享 BaseVersionTree**：树操作（add / fork / restore / lineage）的算法完全同构——不管你分支的是 checkpoint 还是 CompetitionState，树的增删查改逻辑是一样的。BaseVersionTree 只管"这棵树怎么操作"，子类管"树节点里存的是什么、怎么序列化、怎么持久化"。
+**Agent 执行分支为什么不在这个体系里**：
+
+Agent 执行分支（原 AgentExecutionTree）的操作对象是 **LangGraph checkpoint tree**——每个 checkpoint 是一个 Agent 执行步骤（collector/analyst/reviewer/writer）。这棵树由 LangGraph 内置的 SqliteSaver 管理，`parent_checkpoint_id` 天然维护树结构，隐式 fork 机制（非最新 checkpoint_id → source:"fork"）自动创建分支。
+
+我们不需要为它再建一个 BranchTree 子类。需要做的只是：
+1. 做 **CheckpointOps** 工具层——把 LangGraph 裸 checkpoint API 封装为便捷原子操作（`get_state()` / `fork()` / `build_tree()`）
+2. 如果未来需要 Agent 执行层分支探索（P2 前瞻），在 CheckpointOps 上加操作语义即可，不需要引入新的树数据结构
 
 **子类实现差异**：
 
 ```python
-# AgentExecutionTree — 吸收 Agent Git 论文三层设计
-class AgentExecutionTree(BaseVersionTree):
-    def _serialize(self, state):   return state.checkpoint_id   # 只存引用
-    def _deserialize(self, cid):   return aget_state(cid)       # LangGraph 恢复
-    def _persist(self, node):      pass                         # 复用 LangGraph 的 SqliteSaver
-
-# DeliverableTree — 我们的当前实现
-class DeliverableTree(BaseVersionTree):
-    def _serialize(self, state):   return json.dumps(state)     # 完整序列化
+# DeliverableTree — 当前 P0 已实现
+class DeliverableTree(BranchTree):
+    def _serialize(self, state):   return json.dumps(state)     # 完整序列化 CompetitionState
     def _deserialize(self, data):  return json.loads(data)
-    def _persist(self, node):      INSERT INTO version_snapshots
+    def _persist(self, node):      INSERT INTO branch_snapshots
+
+# ConversationTree — P1
+class ConversationTree(BranchTree):
+    def _serialize(self, state):   return json.dumps({"messages": state["messages"]})  # 只序列化消息
+    def _deserialize(self, data):  return json.loads(data)
+    def _persist(self, node):      INSERT INTO conversation_branches
 ```
 
-#### 3.8.9 Agent Git 论文对比与吸收（暂定，待评估）
+#### 3.8.9 Agent Git 论文与 LangGraph Checkpoint 层（参考）
 
-> **状态**：多 Agent 执行分支是否适合本项目的竞品分析场景，仍需讨论评估。以下为初步分析。
+> **定位变更**：Agent Git 操作的是 LangGraph checkpoint 层，与 BranchTree（Data 粒度用户层）是不同层级。此节作为前沿调研参考，不影响 BranchTree 的继承体系。
 
 **论文概要**（Li et al., AAAI 2026 WMAC Workshop, arXiv:2511.00628）：
 
-| 维度 | Agent Git | 我们的设计 |
-|------|-----------|-----------|
-| 定位 | Agent 开发者的调试/A/B 测试工具 | Agent 用户的可交付物版本演化系统 |
-| 层级 | LangGraph checkpoint 层 | 用户交互层（checkpoint 之上） |
+| 维度 | Agent Git | 我们 |
+|------|-----------|------|
+| 定位 | Agent 开发者的调试/A/B 测试工具 | 最终用户的可交付物版本演化系统 |
+| 层级 | LangGraph checkpoint 层 | 用户交互层（checkpoint 之上，BranchTree） |
 | 实验场景 | 单一任务：arXiv 论文摘要检索+分析 | 竞品分析全链路（采集→分析→质检→报告→HITL） |
 | HITL 支持 | ❌ 完全没有 | ✅ 审批/重写/重分析/重搜索/What-if |
 | UI 可视化 | ❌ 纯 API | ✅ 前端 React 树组件 |
 | 工具回滚 | ✅ 核心特性 | ❌ 不需要（HITL 场景下用户通过重做改变方向） |
 | 成熟度 | v0.2.0-alpha, ~50 stars | 已实现核心功能，持续迭代 |
-| 三层架构 | External Session / Internal Session / Session History | 可映射到 thread_id / node / lineage |
 
-**吸收思路（暂定）**：
-1. `AgentExecutionTree` 子类吸收 Agent Git 的 External/Internal Session 双层设计
-2. 在 LangGraph checkpoint tree 之上加 metadata 层（操作类型、触发原因、human feedback）
-3. 与 `UserInteractionTree`（对话+可交付物）形成互补——底层做执行分支探索，上层做用户决策追踪
+**吸收思路**：Agent Git 的思路（External/Internal Session 双层设计）可映射到 LangGraph 的 thread_id/node/lineage，属于 CheckpointOps 工具层未来的扩展方向（P2 前瞻）。如果做 Agent 执行层分支探索，在 CheckpointOps 上增加操作语义即可，不需要新建树数据结构。
 
-**待评估问题**：
-- 竞品分析的多 Agent 协作中，Agent 执行分支（tool call 级别的分支控制）是否确实需要？还是 HITL 在用户层的分支控制已经足够？
-- 如果不需要 Agent 执行分支，`AgentExecutionTree` 可以在不破坏继承体系的情况下移除（`UserInteractionTree` 直接从 `BaseVersionTree` 继承）
-- 当前优先实现 `UserInteractionTree`（已部分完成），Agent 执行分支留到 P2 或答辩时作为前瞻性思考口头阐述
+#### 3.8.10 CheckpointOps — LangGraph Checkpoint 便捷工具层
 
-#### 3.8.10 为什么这是核心差异化亮点
+> **定位**：独立的工具库，封装 LangGraph checkpoint 裸 API。**不是 BranchTree 的子类，不是树——是工具集。** BranchTree 通过调用 CheckpointOps 来跟 LangGraph 交互。
 
-1. **填补框架空白**：LangGraph/CrewAI/AutoGen 都没有 Agent 工作流的分支管理概念。Agent Git (Li et al., AAAI 2026) 首次引入但聚焦于 Agent 开发者的 A/B 测试场景，未覆盖 HITL 审批闭环
-2. **继承架构设计**：两层三级继承模型（BaseVersionTree → AgentExecutionTree / UserInteractionTree → ConversationTree / DeliverableTree），既承认"Agent 执行分支和用户交互分支不在同一层级"，又通过共享基类统一树操作语义
-3. **通用性**：BaseVersionTree 不绑定任何业务场景——不仅本项目可用，任何有 HITL 的 Agent 系统都可以通过实现 `_serialize` / `_deserialize` 适配自己的 State 类型
-4. **技术深度**：涉及状态管理、树算法、OOP 继承设计、持久化、前端树渲染——完整覆盖全栈技术点
-5. **吸收前沿研究**：引用了 AAAI 2026 Workshop 的最新论文，展示了"站在前人肩膀上创新"的工程素养——评委看到的不只是"造了一个工具"，更是"调研了领域前沿，找准了差异化空间"。
+**设计动机**：
+
+当前每个用 LangGraph 的团队都在直接裸调 checkpoint API。一个典型的"从历史版本 fork"需要：
+1. 手动拼 `RunnableConfig`（`{"configurable": {"thread_id": ..., "checkpoint_id": ...}}`）
+2. 理解 `update_state()` 内部隐式 fork 机制（`source: "fork"`）
+3. 从 `channel_values` 中手动提取数据
+4. 遍历 `CheckpointTuple` 列表自己构建树结构
+
+这些是 **框架内部接口**（为 pregel loop 设计），不是应用层接口。CheckpointOps 把它们转为应用层友好的原子操作。
+
+**LangGraph 隐式 Fork 机制**（CheckpointOps 封装的核心机制）：
+
+LangGraph 没有公开的 `fork()` 方法。分叉通过一个内部机制自动触发：
+1. 当用**非最新** `checkpoint_id` 调用 `graph.update_state()` 或 `graph.stream()` 时
+2. LangGraph pregel loop 检测到 `is_time_traveling=True`（不是 resume from interrupt，是主动回到旧版本）
+3. 且当前 checkpoint 的 `source` 不是 `"update"` 或 `"fork"`
+4. → 自动创建 `source: "fork"` 的新 checkpoint，`parent_checkpoint_id` 指向历史节点
+
+示例：
+```
+ck001(input) → ck002(collector) → ck003(analyst) → ck004(reviewer) → ck005(writer)
+                                                                          ↓
+                                                          ck006(fork, parent=ck003)
+                                                          → ck007(新collector) → ...
+```
+旧分支 ck004-ck005 完全不受影响——fork 是写新行，不 UPDATE 旧行。
+
+**便捷度对比**：
+
+| 操作 | 裸调 LangGraph API | CheckpointOps |
+|------|-------------------|---------------|
+| 获取某版本状态 | 拼 `RunnableConfig` → `saver.get(config)` → 从 `channel_values` 挖数据 | `ck.get_state(thread_id, checkpoint_id)` → 返回 struct |
+| 从历史版本 fork | 拼 config + `graph.update_state()` + 理解隐式 fork 机制 | `ck.fork(thread_id, from_checkpoint, state_update)` |
+| 构建 checkpoint 树 | 遍历 `list()` 结果 → 自己按 `parent_checkpoint_id` 建树 | `ck.build_tree(thread_id)` → dict |
+| 查祖先链 | 遍历 list + 手动追溯 parent | `ck.lineage(checkpoint_id)` |
+
+**API 设计**：
+
+```python
+class CheckpointOps:
+    """LangGraph checkpoint 便捷操作工具。"""
+    def __init__(self, checkpointer: BaseCheckpointSaver, graph: CompiledStateGraph | None = None): ...
+
+    # 读操作
+    def get_state(self, thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot
+    def get_history(self, thread_id: str, limit: int | None = None) -> list[StateSnapshot]
+    def latest(self, thread_id: str) -> StateSnapshot
+    def build_tree(self, thread_id: str) -> dict[str, list[str]]  # checkpoint_id → [child_ids]
+    def lineage(self, checkpoint_id: str) -> list[CheckpointTuple]
+    def children(self, checkpoint_id: str) -> list[CheckpointTuple]
+    def is_fork_point(self, checkpoint_id: str) -> bool
+
+    # 写操作
+    def fork(self, thread_id: str, from_checkpoint: str, state_update: dict) -> str  # 返回新 checkpoint_id
+    def update_state(self, thread_id: str, values: dict, as_node: str | None = None) -> str
+
+    # 便捷管理
+    def tag(self, checkpoint_id: str, label: str) -> None
+    def list_tags(self, thread_id: str) -> dict[str, str]
+    def restore_to_tag(self, thread_id: str, label: str) -> StateSnapshot
+```
+
+**独立性论证**：
+
+调研确认：PyPI 上所有 `langgraph-checkpoint-*` 包（7 个）全是存储后端（LMDB/Neo4j/CosmosDB/S3/Typesense），没有一个操作封装层。LangGraph JS SDK 有 `getBranchSequence`/`getBranchView`，但 Python 端没有等价物。DeerFlow 自身也只封装了 checkpointer 工厂函数。**CheckpointOps 填补了 Python 生态中"LangGraph checkpoint 应用层操作封装"的空白。**
+
+BranchTree 使用 CheckpointOps 而非直接调 LangGraph API 的论点：如果未来换编排框架（如从 LangGraph 迁移到其他），只需换 CheckpointOps 的实现，BranchTree 不受影响。这是经典的依赖倒置——BranchTree 依赖抽象（CheckpointOps 的函数签名），不依赖具体框架（LangGraph checkpoint 内部结构）。
+
+#### 3.8.11 为什么这是核心差异化亮点
+
+1. **填补框架空白**：LangGraph/CrewAI/AutoGen 都没有 Agent 工作流的分支管理概念。LangGraph checkpoint 只能线性恢复，Agent Git (Li et al., AAAI 2026) 首次引入但聚焦于 Agent 开发者的 A/B 测试场景，未覆盖 HITL 审批闭环。BranchTree 填补了"人在环路交互版本管理"的空白。
+2. **双层树架构**：BranchTree（Data 粒度，用户可见）+ LangGraph Checkpoint Tree（Agent 粒度，框架管理）+ CheckpointOps（便捷操作层）。两层树各司其职，通过 CheckpointOps 协作——不是嵌套封装，而是调用关系。
+3. **继承设计**：单层两级（BranchTree → DeliverableTree / ConversationTree），通用基类不绑定业务场景，任何有 HITL 的 Agent 系统都可通过实现子类适配自己的 State 类型
+4. **生态空缺**：调研 7 个 PyPI checkpoint 包 + DeerFlow + LangGraph JS SDK，确认 Python 端没有 CheckpointOps 等价物——我们的 CheckpointOps 填补了"LangGraph checkpoint API 应用层封装"的空白
+5. **技术深度**：涉及状态管理、树算法、OOP 继承设计、持久化、框架间桥接、前端树渲染——完整覆盖全栈技术点
+6. **工程自洽**：BranchTree 通过 CheckpointOps 而非直接调 LangGraph API，实现依赖倒置——换编排框架只需换 CheckpointOps 实现，BranchTree 不受影响
 
 **答辩话术**：
 > "我们在开发 HITL 闭环时发现，LangGraph 的 checkpoint 只能线性恢复，无法表达'用户从 v1 分叉出 PM 视角和创业者视角两条独立分析线'这种真实场景。Git 有 branch，为什么 Agent 工作流不能有？我们把这个问题抽象出来，做成了 VersionTree——一个 600 行的独立模块，与 LangGraph checkpointer 互补，提供分支、fork、谱系追踪、快照持久化。它不仅服务本项目，任何有 HITL 的 Agent 系统都可以直接复用。"
@@ -2444,22 +2580,23 @@ Analyst 和 Reviewer 使用 Sandbox Python 做真实计算：
 - **Token 消耗**：每个 Agent + 总计
 - **溯源链路**：每条结论 → 追溯到原始 URL 或视频时间轴
 
-### 6.6 版本状态树 (VersionTree) — Agent 工作流的 Git `**[核心差异化]**`
+### 6.6 分支树 (BranchTree) + CheckpointOps — Agent 工作流的 Git `**[核心差异化]**`
 
-> 详见 [§3.8 版本状态树](#38-版本状态树-versiontree--agent-工作流的-git-核心差异化)。**这是本项目最核心的技术创新点**。
+> 详见 [§3.8 分支树](#38-分支树-branchtree--agent-工作流的-git-核心差异化)。**这是本项目最核心的技术创新点**。
 
-**一句话价值**：LangGraph checkpointer 只能线性回退，VersionTree 提供了分支、fork、谱系追踪——填补了 AI Agent 框架在"人在环路交互版本管理"上的空白。
+**一句话价值**：LangGraph checkpointer 只能线性回退，BranchTree 提供了分支、fork、谱系追踪——填补了 AI Agent 框架在"人在环路交互版本管理"上的空白。CheckpointOps 同时填补了 Python 生态中"LangGraph checkpoint 应用层操作封装"的空白。
 
 **差异化竞争力**：
 
-1. **框架互补**：与 LangGraph checkpoint 形成"进度保存 + 分支管理"双层状态体系，不是替代而是增强
-2. **通用抽象**：`deerflow/versiontree/` 是独立模块——零依赖核心（`node.py` + `tree.py`）+ LangGraph adapter + SQLite store，任何有 HITL 的 Agent 系统都可直接复用。MIT 协议，可独立发布
-3. **全栈实现**：核心数据结构（Python dataclass）+ 持久化（SQLite version_snapshots 表）+ 前端可视化（React 树组件，Unicode tree-line 渲染），完整的全栈工程闭环
-4. **实际落地**：不仅是设计文档里的概念，已在 `competition/` 的 HITL Gate 中完整实现——fork/restore/lineage/persist 全部可运行
-5. **答辩杀手锏**：从具体问题（"用户想回到 v2 重新分析"）出发 → 识别为通用模式（Agent 工作流需要分支语义）→ 抽象为独立模块 → 全栈实现 → 可演示。这一套"发现问题 → 提取模式 → 建造工具链"的工程闭环，直接命中评分标准"技术方案有独特或前瞻性思考"
+1. **双树架构**：BranchTree（Data 粒度，用户语义）+ LangGraph Checkpoint Tree（Agent 粒度，执行追踪）+ CheckpointOps（便捷操作层）。两棵树各司其职，通过 CheckpointOps 协作——承认"Agent 执行分支和用户交互分支不是同一层级"，分别用不同机制管理。
+2. **生态空白填补**：调研 7 个 PyPI checkpoint 包（全是存储后端）+ DeerFlow 自身（仅工厂函数）+ LangGraph JS SDK（`getBranchSequence`/`getBranchView`，Python 端无等价物），确认 CheckpointOps 是真正的空白——每个用 LangGraph 的团队都在裸调 checkpoint API
+3. **通用抽象**：`deerflow/branchtree/` 是独立模块——BranchTree 抽象基类 + CheckpointOps 工具库 + DeliverableTree / ConversationTree 子类。任何有 HITL 的 Agent 系统都可直接复用。MIT 协议，可独立发布
+4. **全栈实现**：核心数据结构（Python dataclass）+ 持久化（SQLite branch_snapshots 表）+ 前端可视化（React 树组件，Unicode tree-line 渲染），完整的全栈工程闭环
+5. **实际落地**：不仅是设计文档里的概念，已在 `competition/` 的 HITL Gate 中完整实现——fork/restore/lineage/persist 全部可运行
+6. **依赖倒置**：BranchTree 通过 CheckpointOps 与 LangGraph 交互，而非直接依赖 LangGraph API——换编排框架只需换 CheckpointOps 实现，BranchTree 不受影响
 
 **答辩话术**：
-> "Git 为代码提供了 branch，但 AI Agent 的工作流目前没有等价物。LangGraph 的 checkpoint 是线性的——只能沿时间轴前进或回退，无法表达'从 v1 分叉出 PM 视角和创业者视角两条独立线'。我们把这个空白做成了 VersionTree。"
+> "Git 为代码提供了 branch，但 AI Agent 的工作流目前没有等价物。LangGraph 的 checkpoint 是线性的——只能沿时间轴前进或回退，无法表达'从 v1 分叉出 PM 视角和创业者视角两条独立线'。我们把这个空白做成了 BranchTree——Data 粒度的版本分支树。同时我们还发现，Python 生态中没有便捷操作 LangGraph checkpoint 的工具层——每个团队都在裸调 API，拼 RunnableConfig、从 channel_values 挖数据。所以我们又做了 CheckpointOps——一个独立的工具层，填补了两个空白。"
 
 ### 6.7 外部项目灵感注入
 

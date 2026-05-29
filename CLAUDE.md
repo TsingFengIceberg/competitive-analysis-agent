@@ -183,12 +183,13 @@ backend/packages/harness/deerflow/
     │   └── video_source.py          # YouTube/Bilibili 字幕提取
     └── memory/
         └── source_credibility.py    # (P2)
-└── versiontree/                     # Agent 工作流版本树基座 `**[核心差异化]**`
+└── versiontree/                     # Agent 工作流分支树基座 `**[核心差异化]**`
     ├── __init__.py
-    ├── node.py                      # StateSnapshot + VersionTreeNode 数据结构
-    ├── tree.py                      # VersionTree: add/fork/restore/lineage
-    ├── store.py                     # SQLite 持久化
-    ├── adapter.py                   # LangGraph State ↔ VersionTree 双向桥接
+    ├── node.py                      # BranchNode 数据结构
+    ├── tree.py                      # BranchTree: snapshot/fork/restore/lineage
+    ├── checkpoint_ops.py            # CheckpointOps: LangGraph checkpoint 便捷操作工具
+    ├── store.py                     # SQLite 持久化（branch_snapshots 表）
+    ├── adapter.py                   # LangGraph State ↔ BranchTree 双向桥接
     └── diff.py                      # 节点对比 (P2)
 
 backend/app/gateway/routers/
