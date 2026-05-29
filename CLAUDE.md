@@ -295,4 +295,4 @@ CI（GitHub Actions）每次 push 自动跑这两条，失败会发邮件通知�
 
 ## 8. 上游文档
 
-PA-Agent-DF 的原始架构和开发指令见 [PA-AGENT-DOCS/](./PA-AGENT-DOCS/)。
+PA-Agent-DF 的原始架构和开发指令见 [DOCS-PA-AGENT/](./DOCS-PA-AGENT/)。

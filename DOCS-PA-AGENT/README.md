@@ -17,4 +17,4 @@ PA-Agent-DF 表现为一个"数字调研小组"——多个专门化 AI Agent �
 
 ## 上游文档
 
-DeerFlow 原始 README、构建说明及多语言文档已移至 [UPSTREAM-DOCS/](./UPSTREAM-DOCS/) 目录。
+DeerFlow 原始 README、构建说明及多语言文档已移至 [DOCS-UPSTREAM/](./DOCS-UPSTREAM/) 目录。

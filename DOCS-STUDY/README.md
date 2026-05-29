@@ -1,4 +1,4 @@
-# STUDY-DOCS 目录索引
+# DOCS-STUDY 目录索引
 
 > PA-Agent-DF 编码过程中的学习记录，按架构主题分类，非逐文件对应。
 

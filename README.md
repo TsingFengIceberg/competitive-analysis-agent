@@ -18,7 +18,7 @@ CI-Agent 表现为一个"数字竞争情报小组"——4 个专门化 AI Agent�
 ## 文档
 
 - [竞赛适配方案](./COMPETITION_PLAN.md) — 完整技术方案与开发计划
-- [上游 PA-Agent-DF 文档](./PA-AGENT-DOCS/) — 原架构参考、开发指令、架构规约
+- [上游 PA-Agent-DF 文档](./DOCS-PA-AGENT/) — 原架构参考、开发指令、架构规约
 
 ## 开源协议
 
