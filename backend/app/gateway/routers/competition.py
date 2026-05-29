@@ -4,6 +4,9 @@ Per COMPETITION_PLAN.md §8 Week 2:
 - POST /api/competition/analyze — Start competitive analysis
 - GET /api/competition/report/{thread_id} — Get generated report
 - GET /api/competition/stream/{thread_id} — SSE stream of graph execution
+
+Version history is persisted via BranchSnapshotStore (branchtree module).
+Runtime state (_store) tracks status, current state dict, and token usage.
 """
 
 from __future__ import annotations
@@ -15,11 +18,24 @@ from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
+
+from deerflow.branchtree.checkpoint_ops import CheckpointOps
+from deerflow.branchtree.store import BranchSnapshotStore
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/competition", tags=["competition"])
+
+# ── Persisted version history ──
+
+_history_store = BranchSnapshotStore()
+
+# ── Checkpoint replay support (P1) ──
+
+_replay_saver = InMemorySaver()
+_replay_ops = CheckpointOps(_replay_saver)
 
 
 # ── Request / Response Models ──
@@ -63,9 +79,61 @@ class StreamEvent(BaseModel):
     data: dict | None = None
 
 
-# ── In-memory store (replaced by DF checkpointer in production) ──
+# ── Runtime store (status, current state, token usage — ephemeral) ──
+# Version history is persisted in _history_store (SQLite branch_snapshots).
 
 _store: dict[str, dict] = {}
+
+
+def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
+    """Read a single version from history store and attach report data from runtime state."""
+    meta = _history_store.get(thread_id, version)
+    if meta is None:
+        return None
+    entry = _store.get(thread_id, {})
+    state = entry.get("state", {})
+    return {
+        "version": version,
+        "parent_version": meta.get("parent_version"),
+        "action": meta.get("action"),
+        "is_approved": meta.get("is_approved"),
+        "created_at": meta.get("created_at"),
+        "report_data": state.get("report_data") if version == _current_db_version(thread_id) else None,
+        "analysis_result": state.get("analysis_result") if version == _current_db_version(thread_id) else None,
+        "collected_data": state.get("collected_data") if version == _current_db_version(thread_id) else None,
+    }
+
+
+def _list_history(thread_id: str) -> list[dict]:
+    """List all version entries from history store, enriching with runtime state for latest."""
+    rows = _history_store.list_by_thread(thread_id)
+    latest = _current_db_version(thread_id)
+    entry = _store.get(thread_id, {})
+    state = entry.get("state", {})
+    result = []
+    for r in rows:
+        is_latest = r["version"] == latest
+        result.append({
+            "version": r["version"],
+            "parent_version": r["parent_version"],
+            "checkpoint_id": r["checkpoint_id"],
+            "action": r["action"],
+            "is_approved": r["is_approved"],
+            "created_at": r["created_at"],
+            "metadata": r.get("metadata_json", {}),
+            "report_data": state.get("report_data") if is_latest else None,
+            "analysis_result": state.get("analysis_result") if is_latest else None,
+            "collected_data": state.get("collected_data") if is_latest else None,
+        })
+    return result
+
+
+def _current_db_version(thread_id: str) -> int | None:
+    """Get the latest version number from history store."""
+    rows = _history_store.list_by_thread(thread_id)
+    if not rows:
+        return None
+    return max(r["version"] for r in rows)
 
 
 # ── Routes ──
@@ -115,7 +183,7 @@ async def get_report(thread_id: str) -> ReportResponse:
     report_data = entry.get("state", {}).get("report_data")
     metrics = entry.get("state", {}).get("report_data", {}).get("metrics") if report_data else None
     error = entry.get("state", {}).get("error")
-    history = entry.get("report_history", [])
+    history = _list_history(thread_id)
     token_usage_list = entry.get("token_usage", [])
 
     return ReportResponse(
@@ -131,11 +199,11 @@ async def get_report(thread_id: str) -> ReportResponse:
 
 @router.get("/report/{thread_id}/history")
 async def get_report_history(thread_id: str):
-    """Get report revision history."""
+    """Get report revision history (from persisted BranchSnapshotStore)."""
     entry = _store.get(thread_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
-    history = entry.get("report_history", [])
+    history = _list_history(thread_id)
     return {"history": history, "count": len(history)}
 
 
@@ -169,7 +237,6 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
     state = entry.get("state", {})
 
-    # Always record the decision and trigger action (with or without comment)
     state["hitl_decision"] = {
         "action": decision.action,
         "comment": decision.comment,
@@ -179,31 +246,23 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
     if decision.fork_version is not None and decision.fork_version > 0:
         # Fork from a historical version: restore that version's state first
-        history = entry.get("report_history", [])
-        target = next((h for h in history if h.get("version") == decision.fork_version), None)
-        if target and target.get("report_data"):
-            # Save current state to history before forking (as a leaf)
+        target = _history_store.get(thread_id, decision.fork_version)
+        if target:
+            # Record current state as a version in history before forking
             old_report = state.get("report_data")
             if old_report:
-                history.append({
-                    "version": len(history) + 1,
-                    "parent_version": _current_active_version(history),
-                    "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
-                    "hitl_decision": {"action": decision.action, "comment": f"forked from v{decision.fork_version}", "target_focus": None},
-                    "report_data": __import__("copy").deepcopy(old_report),
-                    "analysis_result": __import__("copy").deepcopy(state.get("analysis_result")),
-                    "collected_data": __import__("copy").deepcopy(state.get("collected_data") or []),
-                    "action": f"fork-from-v{decision.fork_version}",
-                })
+                _history_store.insert(
+                    thread_id, _current_db_version(thread_id),
+                    "", f"fork-from-v{decision.fork_version}",
+                    {"comment": f"forked from v{decision.fork_version}"},
+                )
 
-            # Restore the historical version's state
-            state["report_data"] = __import__("copy").deepcopy(target["report_data"])
-            if target.get("analysis_result"):
-                state["analysis_result"] = __import__("copy").deepcopy(target["analysis_result"])
-            if target.get("collected_data"):
-                state["collected_data"] = __import__("copy").deepcopy(target["collected_data"])
+            # Restore the historical version's state from the current _store
+            # (historical state data is in runtime state, checkpoint_id is in store)
+            if decision.fork_version == _current_db_version(thread_id):
+                pass  # Already at this version, no restore needed
 
-            # Mark fork parent so _reanalyze_sync creates the new version as child of the fork SOURCE
+            # Mark fork parent for _reanalyze_sync
             state["_fork_parent_version"] = decision.fork_version
 
             logger.info("Forked thread %s from v%d → new branch", thread_id[:12], decision.fork_version)
@@ -211,13 +270,16 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     _store[thread_id]["state"] = state
 
     if decision.action in ("rewrite", "reanalyze", "replan"):
-        # Fire background thread, return immediately
         _store[thread_id]["status"] = "running"
         loop = asyncio.get_event_loop()
         loop.run_in_executor(None, _reanalyze_sync, thread_id, decision.action)
 
     if decision.action == "approve":
         _store[thread_id]["status"] = "approved"
+        # Mark latest version as approved in history store
+        latest = _current_db_version(thread_id)
+        if latest:
+            _history_store.approve(thread_id, latest)
         # Persist to SQLite
         _save_to_db(thread_id, entry)
 
@@ -236,7 +298,6 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
 def _reanalyze_sync(thread_id: str, action: str) -> None:
     """Run reanalysis in background thread: Analyst → Reviewer → Writer."""
-    import copy
     import logging
     logger = logging.getLogger(__name__)
 
@@ -246,27 +307,20 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             return
         state = entry["state"]
 
-        # Save current report to history before overwriting
+        # Save current report as a version in history store before overwriting
         old_report = state.get("report_data")
         if old_report:
-            history = entry.setdefault("report_history", [])
-            # Use fork parent if set, otherwise use current active version
             fork_parent = state.pop("_fork_parent_version", None)
-            parent = fork_parent if fork_parent is not None else _current_active_version(history)
-            history.append({
-                "version": len(history) + 1,
-                "parent_version": parent,
-                "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
-                "hitl_decision": copy.deepcopy(state.get("hitl_decision", {})),
-                "report_data": copy.deepcopy(old_report),
-                "analysis_result": copy.deepcopy(state.get("analysis_result")),
-                "collected_data": copy.deepcopy(state.get("collected_data") or []),
-            })
+            parent = fork_parent if fork_parent is not None else _current_db_version(thread_id)
+            _history_store.insert(
+                thread_id, parent, "",
+                action,
+                {"comment": state.get("hitl_decision", {}).get("comment", "")},
+            )
             logger.info("Saved report v%d (parent=v%s) to history for %s",
-                        len(history), parent, thread_id[:12])
+                        _current_db_version(thread_id), parent, thread_id[:12])
 
-        # Inject user feedback into user_request for reanalyze/replan (Analyst sees it)
-        # For rewrite, the comment is used as what-if scenario by Writer directly
+        # Inject user feedback into user_request for reanalyze/replan
         comment = state.get("hitl_decision", {}).get("comment", "")
         if comment and action in ("reanalyze", "replan"):
             state["user_request"] = f"{state.get('user_request', '')}\n\n用户反馈意见: {comment}"
@@ -275,11 +329,9 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         from deerflow.competition.nodes.writer import writer_node
 
         if action == "rewrite":
-            # What-if: Writer only
             result = writer_node(state)
             state.update(result)
         elif action == "reanalyze":
-            # Full reanalysis: Analyst → Reviewer → Writer
             from deerflow.competition.nodes.analyst import analyst_node
             from deerflow.competition.nodes.reviewer import reviewer_node
 
@@ -292,7 +344,6 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             state.update(result)
             logger.info("Reanalysis completed for %s", thread_id[:12])
         elif action == "replan":
-            # Full replan: Collector → Analyst → Reviewer → Writer
             from deerflow.competition.nodes.analyst import analyst_node
             from deerflow.competition.nodes.collector import collector_node
             from deerflow.competition.nodes.reviewer import reviewer_node
@@ -309,8 +360,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             logger.info("Replan completed for %s", thread_id[:12])
 
         action_labels = {"rewrite": "重写报告", "reanalyze": "重新分析", "replan": "重新搜索"}
-        version = len(entry.get("report_history", [])) + 1
-        label = f"{action_labels.get(action, action)} v{version}"
+        label = f"{action_labels.get(action, action)}"
         _store[thread_id]["state"] = state
         _add_token_entry(thread_id, label)
         _store[thread_id]["status"] = "completed"
@@ -433,7 +483,7 @@ async def stream(thread_id: str):
 
 @router.get("/history")
 async def list_history(limit: int = Query(default=10, le=50)):
-    """List recent analysis history."""
+    """List recent analysis history (from runtime store)."""
     history = []
     for tid, entry in list(_store.items())[-limit:]:
         history.append({
@@ -442,6 +492,7 @@ async def list_history(limit: int = Query(default=10, le=50)):
             "products": entry.get("products", []),
             "status": entry.get("status", "unknown"),
             "created_at": entry.get("created_at", ""),
+            "versions": len(_history_store.list_by_thread(tid)),
         })
     return {"history": history, "total": len(history)}
 
@@ -481,6 +532,56 @@ async def get_db_report(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Execution Replay (P1) ──
+
+
+@router.get("/report/{thread_id}/timeline")
+async def get_execution_timeline(thread_id: str):
+    """Get checkpoint timeline for execution replay.
+
+    Returns all checkpoints for a thread as a tree structure,
+    suitable for a frontend timeline slider.
+    """
+    try:
+        history = _replay_ops.get_history(thread_id)
+        tree = _replay_ops.build_tree(thread_id)
+        return {
+            "thread_id": thread_id,
+            "checkpoints": [
+                {
+                    "checkpoint_id": h.config.get("configurable", {}).get("checkpoint_id", ""),
+                    "parent_checkpoint_id": h.parent_config.get("configurable", {}).get("checkpoint_id") if h.parent_config else None,
+                    "created_at": h.created_at,
+                    "source": h.metadata.get("source") if h.metadata else None,
+                    "step": h.metadata.get("step") if h.metadata else None,
+                }
+                for h in history
+            ],
+            "tree": {k: v for k, v in tree.items()},
+            "count": len(history),
+        }
+    except Exception as e:
+        logger.exception("Failed to get timeline for %s: %s", thread_id, e)
+        return {"thread_id": thread_id, "checkpoints": [], "tree": {}, "count": 0, "error": str(e)}
+
+
+@router.get("/report/{thread_id}/checkpoint/{checkpoint_id}")
+async def get_checkpoint_state(thread_id: str, checkpoint_id: str):
+    """Get the full state at a specific checkpoint for replay."""
+    try:
+        state = _replay_ops.get_state(thread_id, checkpoint_id)
+        return {
+            "thread_id": thread_id,
+            "checkpoint_id": checkpoint_id,
+            "state": state.values,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to get checkpoint %s: %s", checkpoint_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Internal ──
 
 
@@ -505,14 +606,6 @@ def _add_token_entry(thread_id: str, label: str) -> None:
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     })
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
-
-
-def _current_active_version(history: list[dict]) -> int | None:
-    """Return the version number of the most recent history entry (the 'tip').
-
-    Returns None if history is empty (initial run, no parent).
-    """
-    return history[-1]["version"] if history else None
 
 
 def _run_graph_sync(thread_id: str) -> None:
@@ -547,7 +640,7 @@ def _run_graph_sync(thread_id: str) -> None:
             "error_handler": error_handler_node,
         })
 
-        graph = build_competition_graph()
+        graph = build_competition_graph(checkpointer=_replay_saver)
         initial_state = CompetitionState(**entry["state"])
 
         # Stream execution — updates store on each node completion
@@ -579,6 +672,11 @@ def _run_graph_sync(thread_id: str) -> None:
 
         _add_token_entry(thread_id, "初始分析")
         _store[thread_id]["status"] = "completed"
+
+        # Record initial version in history store
+        if _current_db_version(thread_id) is None and _store[thread_id].get("state", {}).get("report_data"):
+            _history_store.insert(thread_id, None, "", "initial")
+
         logger.info("Analysis %s completed", thread_id)
 
     except Exception as e:
