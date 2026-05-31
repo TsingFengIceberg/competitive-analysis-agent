@@ -645,7 +645,7 @@ def _run_graph_sync(thread_id: str) -> None:
 
         # Stream execution — updates store on each node completion
         event_num = 0
-        for event in graph.stream(initial_state, stream_mode=["values"]):
+        for event in graph.stream(initial_state, {"configurable": {"thread_id": thread_id}}, stream_mode=["values"]):
             event_num += 1
             # LangGraph stream returns (mode, data) tuple or dict
             if isinstance(event, tuple):

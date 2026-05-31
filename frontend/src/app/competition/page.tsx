@@ -58,7 +58,10 @@ function buildTree(entries: ReportHistoryItem[]): TreeNode[] {
   return walk(null);
 }
 
-const ACTION_LABELS: Record<string, string> = { rewrite: "✏️重写", reanalyze: "🔄重分析", replan: "🔍重采集" };
+const ACTION_LABELS: Record<string, string> = {
+  rewrite: "✏️重写", reanalyze: "🔄重分析", replan: "🔍重采集",
+  initial: "📋初始", merge: "🔀合并", approve: "✅批准",
+};
 
 function VersionTree({
   entries,
@@ -78,9 +81,10 @@ function VersionTree({
   function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
     const { entry } = node;
     const isActive = activeVersion === entry.version;
-    const actionIcon = ACTION_LABELS[entry.hitl_decision?.action] || "";
+    const actionIcon = entry.action ? (ACTION_LABELS[entry.action] || "") : (entry.hitl_decision?.action ? (ACTION_LABELS[entry.hitl_decision.action] || "") : "");
     const comment = entry.hitl_decision?.comment?.slice(0, 25) || "";
     const isRoot = !entry.parent_version;
+    const isApproved = entry.is_approved === true;
 
     // Build tree line prefix
     let prefix = "";
@@ -98,10 +102,18 @@ function VersionTree({
           </span>
           <button
             onClick={() => onSelect(entry.version)}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget;
+              el.title = [
+                `v${entry.version} · ${actionIcon || "初始"}`,
+                entry.hitl_decision?.comment ? `备注: ${entry.hitl_decision.comment.slice(0, 80)}` : "",
+                entry.created_at ? `时间: ${entry.created_at.slice(0, 19)}` : entry.timestamp ? `时间: ${entry.timestamp.slice(0, 19)}` : "",
+              ].filter(Boolean).join("\n");
+            }}
             className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted"}`}
-            title={`v${entry.version}${entry.parent_version ? ` ← v${entry.parent_version}` : " (初始)"}`}
           >
             {actionIcon || "📋初始"} v{entry.version}
+            {isApproved && <span className="text-green-500 shrink-0">✓</span>}
           </button>
           {comment && (
             <span className="truncate text-muted-foreground/70" title={entry.hitl_decision?.comment}>
@@ -429,7 +441,7 @@ export default function CompetitionPage() {
                       <span>
                         查看历史版本 v{viewingHistory.version}
                         {viewingHistory.parent_version ? ` (← v${viewingHistory.parent_version})` : " (初始)"}
-                        — {new Date(viewingHistory.timestamp).toLocaleString("zh-CN")}
+                        — {new Date(viewingHistory.timestamp || viewingHistory.created_at || "").toLocaleString("zh-CN")}
                       </span>
                       <button
                         onClick={() => {
@@ -618,8 +630,10 @@ export default function CompetitionPage() {
                 </TabsContent>
                 <TabsContent value="replay" className="flex-1 overflow-auto p-3">
                   <ReplaySlider
-                    reviewRound={Number(reportData?.metrics?.review_rounds) ?? 0}
-                    onStepChange={(step, nodeId) => console.log("Replay step:", step, "node:", nodeId)}
+                    threadId={threadId}
+                    apiGetTimeline={api.getTimeline}
+                    apiGetState={api.getCheckpointState}
+                    onStateLoaded={(state) => console.log("Replay state loaded:", Object.keys(state))}
                   />
                 </TabsContent>
               </Tabs>

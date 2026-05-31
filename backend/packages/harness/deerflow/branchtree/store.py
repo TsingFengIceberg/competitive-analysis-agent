@@ -59,8 +59,13 @@ class BranchSnapshotStore:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is not None:
-            return self._conn
-        conn = sqlite3.connect(str(self._db_path))
+            try:
+                self._conn.execute("SELECT 1")
+                return self._conn
+            except sqlite3.ProgrammingError:
+                # Connection from another thread — recreate
+                self._conn = None
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(CREATE_TABLE_SQL)

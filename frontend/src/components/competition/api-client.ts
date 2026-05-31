@@ -58,9 +58,14 @@ export interface TokenEntry {
 export interface ReportHistoryItem {
   version: number;
   parent_version?: number | null;
-  timestamp: string;
-  hitl_decision: { action: string; comment: string; target_focus?: string[] | null };
-  report_data: ReportData;
+  timestamp?: string;
+  created_at?: string;
+  checkpoint_id?: string;
+  action?: string;
+  is_approved?: boolean;
+  metadata?: Record<string, unknown>;
+  hitl_decision?: { action: string; comment: string; target_focus?: string[] | null };
+  report_data?: ReportData | null;
   analysis_result?: Record<string, unknown> | null;
   collected_data?: unknown[] | null;
 }
@@ -162,6 +167,30 @@ export interface HitlDecisionData {
   fork_version?: number | null;
 }
 
+// ── Execution Replay Types (P1) ──
+
+export interface TimelineCheckpoint {
+  checkpoint_id: string;
+  parent_checkpoint_id: string | null;
+  created_at: string;
+  source: string | null;
+  step: number | null;
+}
+
+export interface TimelineResponse {
+  thread_id: string;
+  checkpoints: TimelineCheckpoint[];
+  tree: Record<string, string[]>;
+  count: number;
+  error?: string;
+}
+
+export interface CheckpointStateResponse {
+  thread_id: string;
+  checkpoint_id: string;
+  state: Record<string, unknown>;
+}
+
 // ── API Client ──
 
 const API_BASE = "/api/competition";
@@ -231,5 +260,19 @@ export function useCompetitionAPI() {
     return data.history as ReportHistoryItem[];
   }, []);
 
-  return { loading, startAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory };
+  // ── Execution Replay (P1) ──
+
+  const getTimeline = useCallback(async (threadId: string): Promise<TimelineResponse> => {
+    const res = await fetch(`${API_BASE}/report/${threadId}/timeline`);
+    if (!res.ok) throw new Error(`Timeline fetch failed: ${res.status}`);
+    return res.json();
+  }, []);
+
+  const getCheckpointState = useCallback(async (threadId: string, checkpointId: string): Promise<CheckpointStateResponse> => {
+    const res = await fetch(`${API_BASE}/report/${threadId}/checkpoint/${checkpointId}`);
+    if (!res.ok) throw new Error(`Checkpoint fetch failed: ${res.status}`);
+    return res.json();
+  }, []);
+
+  return { loading, startAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getCheckpointState };
 }
