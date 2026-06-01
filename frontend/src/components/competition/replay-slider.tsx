@@ -102,7 +102,7 @@ export default function ReplaySlider({
   const currentLabel = current
     ? `${current.source ?? "checkpoint"} · step ${current.step ?? "-"}`
     : "---";
-  const rootIds = tree["null"] || tree[null as unknown as string] || [];
+  const rootIds = tree.null ?? tree[null as unknown as string] ?? [];
 
   return (
     <div className="space-y-2 text-xs">

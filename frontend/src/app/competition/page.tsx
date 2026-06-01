@@ -28,7 +28,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 3000;
 
 // ── Version Tree Component ──
 
@@ -41,7 +41,7 @@ function buildTree(entries: ReportHistoryItem[]): TreeNode[] {
   const childrenMap = new Map<number | null, ReportHistoryItem[]>();
   for (const e of entries) {
     const parent = e.parent_version ?? null;
-    const list = childrenMap.get(parent) || [];
+    const list = childrenMap.get(parent) ?? [];
     list.push(e);
     childrenMap.set(parent, list);
   }
@@ -50,7 +50,7 @@ function buildTree(entries: ReportHistoryItem[]): TreeNode[] {
     list.sort((a, b) => a.version - b.version);
   }
   function walk(parent: number | null): TreeNode[] {
-    return (childrenMap.get(parent) || []).map((e) => ({
+    return (childrenMap.get(parent) ?? []).map((e) => ({
       entry: e,
       children: walk(e.version),
     }));
@@ -82,8 +82,8 @@ function VersionTree({
   function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
     const { entry } = node;
     const isActive = activeVersion === entry.version;
-    const actionIcon = entry.action ? (ACTION_LABELS[entry.action] || "") : (entry.hitl_decision?.action ? (ACTION_LABELS[entry.hitl_decision.action] || "") : "");
-    const comment = entry.hitl_decision?.comment?.slice(0, 25) || "";
+    const actionIcon = entry.action ? (ACTION_LABELS[entry.action] ?? "") : (entry.hitl_decision?.action ? (ACTION_LABELS[entry.hitl_decision.action] ?? "") : "");
+    const comment = entry.hitl_decision?.comment?.slice(0, 25) ?? "";
     const isRoot = !entry.parent_version;
     const isApproved = entry.is_approved === true;
 
@@ -250,7 +250,7 @@ export default function CompetitionPage() {
     fetch(`/api/competition/report/${threadId}/history`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => { if (d.history) setHistoryEntries(d.history); })
-      .catch(() => {});
+      .catch(() => undefined);
   }, [threadId, historyCount]);
 
   // Continuous poll — depends only on threadId, never self-destructs
@@ -278,28 +278,25 @@ export default function CompetitionPage() {
   const handleViewHistory = useCallback(async (version: number | null) => {
     if (!threadId) return;
     if (version === null) { setViewingHistory(null); return; }
-    console.log("handleViewHistory: fetching history for", threadId);
-    // Retry up to 3 times on network errors (ERR_CONNECTION_RESET etc.)
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // First try cached entries
+    const cached = historyEntries.find((h: ReportHistoryItem) => h.version === version);
+    if (cached) { setViewingHistory(cached); return; }
+    // Fallback: fetch from API
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const res = await fetch(`/api/competition/report/${threadId}/history`, { cache: "no-store" });
-        console.log("handleViewHistory: response", res.status, "attempt", attempt);
         if (!res.ok) return;
         const data = await res.json();
         const history = data.history as ReportHistoryItem[];
-        console.log("handleViewHistory: got", history.length, "items");
-        setHistoryCount(history.length);
         setHistoryEntries(history);
         const item = history.find((h: ReportHistoryItem) => h.version === version);
-        console.log("handleViewHistory: looking for v", version, "found:", !!item);
         if (item) setViewingHistory(item);
         return;
-      } catch (e) {
-        console.error("handleViewHistory attempt", attempt, "failed:", e);
-        if (attempt < 3) await new Promise((r) => setTimeout(r, 500));
+      } catch {
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 300));
       }
     }
-  }, [threadId]);
+  }, [threadId, historyEntries]);
 
   const displayReport = viewingHistory?.report_data ?? dbLoadedReport ?? reportData;
 
@@ -465,7 +462,7 @@ export default function CompetitionPage() {
                       <span>
                         查看历史版本 v{viewingHistory.version}
                         {viewingHistory.parent_version ? ` (← v${viewingHistory.parent_version})` : " (初始)"}
-                        — {new Date(viewingHistory.timestamp || viewingHistory.created_at || "").toLocaleString("zh-CN")}
+                        — {new Date(viewingHistory.timestamp ?? viewingHistory.created_at ?? "").toLocaleString("zh-CN")}
                       </span>
                       <button
                         onClick={() => {
@@ -477,7 +474,7 @@ export default function CompetitionPage() {
                       </button>
                     </div>
                     <div className="mt-1 text-muted-foreground">
-                      因「{viewingHistory.hitl_decision?.comment?.slice(0, 60) || "无评论"}」生成
+                      因「{viewingHistory.hitl_decision?.comment?.slice(0, 60) ?? "无评论"}」生成
                     </div>
                   </div>
                 )}

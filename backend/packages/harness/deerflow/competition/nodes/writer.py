@@ -63,6 +63,13 @@ def writer_node(state: dict) -> dict:
     # Build report sections
     quality = verdict.get("quality_summary", {})
     sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality)
+
+    # Generate executive summary via LLM for all actions (not just rewrite)
+    try:
+        _llm_generate_section(sections, "sec-executive-summary", analysis, target_products, persona)
+    except Exception:
+        logger.exception("Writer LLM generation failed for executive summary")
+
     traceability = _build_traceability_map(collected)
     forecast = analysis.get("forecast")
     metrics = _compute_report_metrics(collected, verdict, traceability)
@@ -381,6 +388,39 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
     return issues
 
 
+def _llm_generate_section(
+    sections: list[dict],
+    section_id: str,
+    analysis: dict,
+    products: list[str],
+    persona: str,
+) -> None:
+    """Generate a report section via LLM call (Writer always contributes tokens)."""
+    from deerflow.competition.executor import execute_agent
+
+    section = next((s for s in sections if s.get("id") == section_id), None)
+    if not section:
+        return
+
+    matrix = analysis.get("comparison_matrix", {})
+    swot = analysis.get("swot", {})
+    trends = analysis.get("trends", [])
+    persona_label = "产品经理" if persona == "pm" else "创业者"
+
+    prompt = f"""你是竞品分析报告撰写专家。请为竞品分析报告撰写一段 150-250 字的中文执行摘要。
+视角: {persona_label}
+竞品: {', '.join(products)}
+对比矩阵: {str(matrix.get('summary', ''))[:400]}
+SWOT: {str(swot)[:400]}
+趋势: {str(trends)[:300]}
+
+要求：简洁有力，突出关键差异化发现，避免套话。请直接输出摘要文本："""
+
+    result, _ = execute_agent(prompt, "", temperature=0.4, max_tokens=300, agent_name="Writer")
+    if result:
+        section["content"] = result.strip()
+
+
 def _llm_rewrite_section(section: str, analysis: dict, products: list[str], persona: str) -> str:
     """Use LLM to rewrite a report section from analysis data.
 
@@ -415,7 +455,7 @@ SWOT: {str(swot)[:600]}
     }
 
     prompt = prompts.get(section, prompts["executive_summary"])
-    result, _tokens = execute_agent(prompt, "", temperature=0.6, max_tokens=800, agent_name="Writer")
+    result, _tokens = execute_agent(prompt, "", temperature=0.6, max_tokens=500, agent_name="Writer")
     if result:
         return result.strip()
     return f"[LLM rewrite failed for {section}]"
