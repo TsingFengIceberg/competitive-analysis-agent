@@ -45,12 +45,12 @@ class TestInsert:
 
     def test_insert_auto_increment_across_threads(self):
         store = new_store()
-        v1 = store.insert("t1", None, "ck1", "initial")  # version 1
-        v2 = store.insert("t2", None, "ckA", "initial")  # version 2
-        v3 = store.insert("t1", v1, "ck2", "rewrite")    # version 3
+        v1 = store.insert("t1", None, "ck1", "initial")  # t1 version 1
+        v2 = store.insert("t2", None, "ckA", "initial")  # t2 version 1
+        v3 = store.insert("t1", v1, "ck2", "rewrite")    # t1 version 2
         assert v1 == 1
-        assert v2 == 2
-        assert v3 == 3
+        assert v2 == 1
+        assert v3 == 2
 
 
 class TestGet:

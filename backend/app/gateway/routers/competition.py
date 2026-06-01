@@ -245,26 +245,11 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     }
 
     if decision.fork_version is not None and decision.fork_version > 0:
-        # Fork from a historical version: restore that version's state first
+        # Fork from a historical version: mark fork parent for _reanalyze_sync
+        # (_reanalyze_sync handles saving the old state as a version entry)
         target = _history_store.get(thread_id, decision.fork_version)
         if target:
-            # Record current state as a version in history before forking
-            old_report = state.get("report_data")
-            if old_report:
-                _history_store.insert(
-                    thread_id, _current_db_version(thread_id),
-                    "", f"fork-from-v{decision.fork_version}",
-                    {"comment": f"forked from v{decision.fork_version}"},
-                )
-
-            # Restore the historical version's state from the current _store
-            # (historical state data is in runtime state, checkpoint_id is in store)
-            if decision.fork_version == _current_db_version(thread_id):
-                pass  # Already at this version, no restore needed
-
-            # Mark fork parent for _reanalyze_sync
             state["_fork_parent_version"] = decision.fork_version
-
             logger.info("Forked thread %s from v%d → new branch", thread_id[:12], decision.fork_version)
 
     _store[thread_id]["state"] = state

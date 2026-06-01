@@ -20,18 +20,19 @@ DEFAULT_DB_PATH = Path(".deer-flow/competition.db")
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS branch_snapshots (
-    version INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
     parent_version INTEGER,
     checkpoint_id TEXT NOT NULL,
     action TEXT NOT NULL,
     is_approved INTEGER DEFAULT 0,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (parent_version) REFERENCES branch_snapshots(version)
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_bs_thread ON branch_snapshots(thread_id);
+CREATE INDEX IF NOT EXISTS idx_bs_thread_version ON branch_snapshots(thread_id, version);
 CREATE INDEX IF NOT EXISTS idx_bs_parent ON branch_snapshots(parent_version);
 CREATE INDEX IF NOT EXISTS idx_bs_approved ON branch_snapshots(thread_id, is_approved);
 """
@@ -82,19 +83,24 @@ class BranchSnapshotStore:
         action: str,
         metadata: dict | None = None,
     ) -> int:
-        """插入新版本记录，返回自增 version 号。"""
+        """插入新版本记录，返回 per-thread version 号。"""
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
+        # Compute next version number for this thread (per-thread, starts at 1)
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM branch_snapshots WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        next_version = row[0]
         conn.execute(
             """INSERT INTO branch_snapshots
-               (thread_id, parent_version, checkpoint_id, action, metadata_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (thread_id, parent_version, checkpoint_id, action,
+               (thread_id, version, parent_version, checkpoint_id, action, metadata_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (thread_id, next_version, parent_version, checkpoint_id, action,
              json.dumps(metadata or {}, ensure_ascii=False), now),
         )
         conn.commit()
-        version = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        return version
+        return next_version
 
     def get(self, thread_id: str, version: int) -> dict | None:
         """获取指定版本的 metadata。"""

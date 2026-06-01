@@ -77,6 +77,7 @@ function VersionTree({
   onViewLatest: () => void;
 }) {
   const tree = buildTree(entries);
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
 
   function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
     const { entry } = node;
@@ -94,12 +95,29 @@ function VersionTree({
     const branch = node.children.length > 0 ? "├─" : "└─";
     const connector = depth === 0 && !isRoot ? "" : branch;
 
+    const isCollapsed = collapsed.has(entry.version);
+    const canCollapse = node.children.length > 0;
+
     return (
       <div key={entry.version} className="leading-relaxed">
         <div className="flex items-center gap-1 font-mono text-xs">
           <span className="select-none text-muted-foreground whitespace-pre shrink-0">
             {depth > 0 ? prefix + connector + " " : (isRoot ? "○ " : "● ")}
           </span>
+          {canCollapse && (
+            <button
+              onClick={() => {
+                const next = new Set(collapsed);
+                if (isCollapsed) next.delete(entry.version);
+                else next.add(entry.version);
+                setCollapsed(next);
+              }}
+              className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
+              title={isCollapsed ? "展开子分支" : "折叠子分支"}
+            >
+              {isCollapsed ? "▶" : "▼"}
+            </button>
+          )}
           <button
             onClick={() => onSelect(entry.version)}
             onMouseEnter={(e) => {
@@ -121,10 +139,16 @@ function VersionTree({
             </span>
           )}
         </div>
-        {node.children.map((child, i) => {
-          const newAncestors = [...ancestors, i < node.children.length - 1];
-          return renderNode(child, depth + 1, newAncestors);
-        })}
+        {isCollapsed ? (
+          <div className="ml-8 text-[10px] text-muted-foreground/50">
+            ··· {node.children.length} 个子分支已折叠
+          </div>
+        ) : (
+          node.children.map((child, i) => {
+            const newAncestors = [...ancestors, i < node.children.length - 1];
+            return renderNode(child, depth + 1, newAncestors);
+          })
+        )}
       </div>
     );
   }
@@ -446,7 +470,6 @@ export default function CompetitionPage() {
                       <button
                         onClick={() => {
                           setViewingHistory(null);
-                          setHitlVisible(false);
                         }}
                         className="text-amber-700 underline hover:text-amber-900"
                       >

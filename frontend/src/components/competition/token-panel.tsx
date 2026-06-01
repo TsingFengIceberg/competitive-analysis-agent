@@ -56,9 +56,17 @@ export default function TokenPanel({ tokenUsage }: TokenPanelProps) {
             return pct > 0.5 ? (
               <div
                 key={i}
-                className={`h-full ${versionColor(i)}`}
+                className={`h-full ${versionColor(i)} hover:scale-y-125 hover:brightness-110 transition-transform`}
                 style={{ width: `${pct}%` }}
-                title={`${entry.label}: ${entry.tokens.toLocaleString()} tokens`}
+                title={[
+                  `${entry.label}`,
+                  `累计: ${entry.cumulative.toLocaleString()} tokens`,
+                  `本次: +${entry.tokens.toLocaleString()} tokens`,
+                  ...AGENT_ORDER.map((a) => {
+                    const v = entry.agents?.[a];
+                    return v ? `${a}: ${v.toLocaleString()}` : null;
+                  }).filter(Boolean),
+                ].join("\n")}
               />
             ) : null;
           })}
@@ -89,7 +97,11 @@ export default function TokenPanel({ tokenUsage }: TokenPanelProps) {
                       key={vIdx}
                       className={`h-full ${versionColor(vIdx)}`}
                       style={{ width: `${segPct}%` }}
-                      title={`${agent} · ${tokenUsage[vIdx]?.label ?? `v${vIdx}`}: ${delta.toLocaleString()}`}
+                      title={[
+                        `${agent} · ${tokenUsage[vIdx]?.label ?? `v${vIdx}`}`,
+                        `本次: ${delta.toLocaleString()} tokens`,
+                        `该阶段累计: ${tokenUsage[vIdx]?.cumulative?.toLocaleString() ?? 0}`,
+                      ].join("\n")}
                     />
                   ) : null;
                 })}
