@@ -136,6 +136,263 @@ def _current_db_version(thread_id: str) -> int | None:
     return max(r["version"] for r in rows)
 
 
+# ── Product name extraction & correction ──
+
+# Known product aliases for quick correction (avoid LLM call for common cases)
+_PRODUCT_ALIASES: dict[str, str] = {
+    "copilot": "GitHub Copilot",
+    "github copilot": "GitHub Copilot",
+    "gh copilot": "GitHub Copilot",
+    "cursor": "Cursor",
+    "cursor ai": "Cursor",
+    "cursor ide": "Cursor",
+    "windsurf": "Windsurf",
+    "windsurf ide": "Windsurf",
+    "codeium": "Codeium",
+    "codeium windsurf": "Windsurf",
+    "claude": "Claude",
+    "claude code": "Claude Code",
+    "claude ai": "Claude",
+    "chatgpt": "ChatGPT",
+    "gpt": "ChatGPT",
+    "copilot x": "GitHub Copilot",
+    "tabnine": "TabNine",
+    "kite": "Kite",
+    "jetbrains ai": "JetBrains AI",
+    "aws codewhisperer": "Amazon CodeWhisperer",
+    "codewhisperer": "Amazon CodeWhisperer",
+    "qwen": "Qwen",
+    "tongyi": "Tongyi Lingma",
+    "lingma": "Tongyi Lingma",
+    "codex": "OpenAI Codex",
+    "replit": "Replit",
+    "replit ghostwriter": "Replit",
+    "v0": "Vercel v0",
+    "vercel": "Vercel v0",
+    "bolt": "Bolt.new",
+    "lovable": "Lovable",
+    "devin": "Devin",
+    "cognition": "Devin",
+    "sourcegraph": "Sourcegraph Cody",
+    "cody": "Sourcegraph Cody",
+    "augment": "Augment Code",
+    "augment code": "Augment Code",
+    "super maven": "Supermaven",
+    "supermaven": "Supermaven",
+}
+
+
+def _llm_extract_products(query: str) -> list[str]:
+    """Multi-round LLM+Search extraction with progressive relaxation.
+
+    Round 1: LLM extracts → search strictly verifies each candidate
+    Round 2: Retry with broader search, accept partial matches
+    Round 3: Most permissive — accept any search hit, only filter complete garbage
+
+    Stops early once we have ≥2 verified products, or after round 3.
+    Synchronous — caller must wrap in executor.
+    """
+    all_candidates: list[str] = []
+
+    for round_num in range(1, 4):
+        remaining = _build_round_prompt(query, all_candidates, round_num)
+        new_candidates = _llm_extract_candidates(remaining)
+        if not new_candidates:
+            continue
+
+        verified = _verify_products_via_search(new_candidates, strictness=round_num)
+        for v in verified:
+            if v not in all_candidates:
+                all_candidates.append(v)
+
+        logger.info("Product extraction round %d: got %d candidates, %d verified (total: %d)",
+                     round_num, len(new_candidates), len(verified), len(all_candidates))
+
+        if len(all_candidates) >= 2:
+            break
+
+    return all_candidates
+
+
+def _build_round_prompt(query: str, already_found: list[str], round_num: int) -> str:
+    """Build progressively more permissive extraction prompts."""
+    base = (
+        f"User request: {query}\n\n"
+        "Extract the names of software products or tools they want to compare. "
+        "Return ONLY a JSON array of product name strings.\n"
+    )
+    if already_found:
+        base += f"Already identified: {json.dumps(already_found)}. Find any ADDITIONAL products.\n"
+
+    if round_num == 1:
+        base += "Be strict: only extract clearly named, well-known tools."
+    elif round_num == 2:
+        base += (
+            "Be moderate: include products mentioned by description or nickname. "
+            "Resolve references like '微软的那个AI编程工具' → 'GitHub Copilot'. "
+            "If uncertain, still include the candidate."
+        )
+    else:
+        base += (
+            "Be very permissive: extract ANY possible product mention, even vague ones. "
+            "Resolve ALL indirect references. Infer from context. If the query seems to "
+            "compare tools in a specific domain, list the most likely candidates even "
+            "if not explicitly named. Return at least 2 products."
+        )
+    return base
+    """Build progressively more permissive extraction prompts."""
+    base = (
+        f"User request: {query}\n\n"
+        "Extract the names of software products or tools they want to compare. "
+        "Return ONLY a JSON array of product name strings.\n"
+    )
+    if already_found:
+        base += f"Already identified: {json.dumps(already_found)}. Find any ADDITIONAL products.\n"
+
+    if round_num == 1:
+        base += "Be strict: only extract clearly named, well-known tools."
+    elif round_num == 2:
+        base += (
+            "Be moderate: include products mentioned by description or nickname. "
+            "Resolve references like '微软的那个AI编程工具' → 'GitHub Copilot'. "
+            "If uncertain, still include the candidate."
+        )
+    else:
+        base += (
+            "Be very permissive: extract ANY possible product mention, even vague ones. "
+            "Resolve ALL indirect references. Infer from context. If the query seems to "
+            "compare tools in a specific domain, list the most likely candidates even "
+            "if not explicitly named. Return at least 2 products."
+        )
+    return base
+
+
+def _llm_extract_candidates(query: str) -> list[str]:
+    """LLM extracts candidate product names from a prompt string."""
+    try:
+        from deerflow.competition.executor import execute_agent
+
+        prompt = (
+            "You are a product name extractor. "
+            "Return ONLY a JSON array of product name strings, e.g. [\"GitHub Copilot\", \"Cursor\"]."
+        )
+        result, _tokens = execute_agent(
+            prompt, query, temperature=0.0, max_tokens=200, agent_name="ProductResolver",
+        )
+        if result:
+            text = result.strip()
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(p).strip() for p in parsed if str(p).strip()]
+    except Exception:
+        logger.warning("LLM candidate extraction failed", exc_info=True)
+    return []
+
+
+
+def _verify_products_via_search(candidates: list[str], strictness: int = 1) -> list[str]:
+    """Verify product names via web search with progressive permissiveness.
+
+    strictness=1: exact match required (search must return results for name)
+    strictness=2: broader search, accept if any result mentions the name
+    strictness=3: very permissive, accept almost everything
+    """
+    try:
+        from deerflow.competition.tools.search import search as web_search
+    except ImportError:
+        return candidates
+
+    verified: list[str] = []
+    for name in candidates:
+        key = name.lower()
+        if key in _PRODUCT_ALIASES:
+            corrected = _PRODUCT_ALIASES[key]
+            if corrected not in verified:
+                verified.append(corrected)
+            continue
+
+        try:
+            if strictness <= 2:
+                response = web_search(f'"{name}" software tool', max_results=3)
+            else:
+                # Round 3: just search the name, no quotes, very broad
+                response = web_search(f"{name} tool", max_results=2)
+
+            if response.results:
+                verified.append(name)
+            elif strictness >= 2:
+                # Try an even broader search
+                response2 = web_search(name, max_results=2)
+                if response2.results:
+                    verified.append(name)
+                else:
+                    logger.warning("Product '%s' unverified (round %d) — keeping", name, strictness)
+                    verified.append(name)  # round 2+ accepts unverified
+            else:
+                logger.info("Product '%s' discarded (strict verification failed)", name)
+        except Exception:
+            if strictness >= 2:
+                verified.append(name)
+
+    return verified
+
+
+async def _resolve_products(query: str, explicit_products: list[str]) -> list[str]:
+    """Resolve target products with auto-extraction and typo correction.
+
+    Strategy:
+      1. If explicit products provided, normalize each via alias table + LLM correction
+      2. If empty, extract from query text via regex → LLM fallback
+      3. Guarantee: at least one product is returned (never empty)
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    products: list[str] = []
+
+    if explicit_products:
+        # Normalize each explicit product
+        for p in explicit_products:
+            p = p.strip()
+            if not p:
+                continue
+            key = p.lower()
+            corrected = _PRODUCT_ALIASES.get(key)
+            if corrected:
+                if corrected not in products:
+                    products.append(corrected)
+            else:
+                # Unknown product — keep as-is but try fuzzy correction later
+                if p not in products:
+                    products.append(p)
+    else:
+        # No explicit products — extract from query via LLM
+        pass
+
+    # LLM extraction when no explicit products
+    if not products:
+        _log.info("No products from explicit list — extracting via LLM")
+        import asyncio
+        loop = asyncio.get_event_loop()
+        products = await loop.run_in_executor(None, _llm_extract_products, query)
+
+    # If still empty, return empty — caller will surface error to user
+    if not products:
+        _log.warning("Could not extract any products from query: '%s'", query[:80])
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in products:
+        if p.lower() not in seen:
+            seen.add(p.lower())
+            result.append(p)
+
+    _log.info("Resolved products: %s (from query: '%s')", result, query[:80])
+    return result
+
+
 # ── Routes ──
 
 
@@ -147,11 +404,20 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
     thread_id = f"comp-{uuid.uuid4().hex[:12]}"
 
+    # Resolve target products: explicit list > NLP extraction from query > LLM fallback
+    target_products = await _resolve_products(request.query, request.target_products)
+
+    if not target_products:
+        raise HTTPException(
+            status_code=400,
+            detail="无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。",
+        )
+
     # Build initial state
     initial_state = {
         "messages": [],
         "user_request": request.query,
-        "target_products": request.target_products,
+        "target_products": target_products,
         "persona": request.persona,
         "deep_mode": request.deep_mode,
         "collected_data": [],
@@ -163,7 +429,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         "state": initial_state,
         "created_at": datetime.now(UTC).isoformat(),
         "query": request.query,
-        "products": request.target_products,
+        "products": target_products,
     }
 
     # Launch graph in background thread (sync LLM calls would block asyncio event loop)

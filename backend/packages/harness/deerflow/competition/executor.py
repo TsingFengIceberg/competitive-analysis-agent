@@ -43,10 +43,11 @@ def execute_agent(
     max_tokens: int = 4096,
     agent_name: str = "",
 ) -> tuple[str | None, int]:
-    """Execute a single LLM call with system_prompt + task, return (content, token_count).
+    """Execute a single LLM call, returning (content, token_count).
 
-    This is a lightweight alternative to SubagentExecutor that works without
-    the full DF sandbox runtime. Used for competition demo.
+    Handles thinking models transparently: if LangChain returns empty content
+    (common with Doubao seed thinking mode), falls back to raw HTTP parsing
+    that properly extracts reasoning_content.
     """
     try:
         from langchain_openai import ChatOpenAI
@@ -61,22 +62,20 @@ def execute_agent(
             max_retries=2,
         )
 
-        messages = [
+        messages: list = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": task},
         ]
 
         response = llm.invoke(messages)
-        content = response.content if hasattr(response, "content") else str(response)
-        # Extract token usage from response metadata
-        usage = 0
-        meta = getattr(response, "response_metadata", {})
-        token_info = meta.get("token_usage", {})
-        if token_info:
-            usage = token_info.get("total_tokens", 0)
-        elif hasattr(response, "usage_metadata"):
-            u = response.usage_metadata
-            usage = u.get("total_tokens", 0) if u else 0
+        content = _extract_content(response)
+        usage = _extract_usage(response)
+
+        # If LangChain dropped the content (thinking model), retry via raw HTTP
+        if not content:
+            logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
+            content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature)
+
         logger.info("Agent response: %d chars (%d tokens)", len(str(content)), usage)
         global _total_tokens_used
         _total_tokens_used += usage
@@ -87,6 +86,86 @@ def execute_agent(
     except Exception as e:
         logger.exception("LLM call failed: %s", e)
         return (None, 0)
+
+
+def _extract_content(response) -> str:
+    """Extract text content from a LangChain AIMessage, handling thinking models.
+
+    Some providers (Doubao seed) put output in reasoning_content while
+    LangChain's ChatOpenAI strips it. This checks all known locations.
+    """
+    content = getattr(response, "content", None)
+    if content:
+        return str(content)
+
+    # Check content_blocks (newer LangChain format)
+    blocks = getattr(response, "content_blocks", None)
+    if blocks:
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "text":
+                return str(b.get("text", ""))
+
+    # Check additional_kwargs for reasoning_content or similar
+    ak = getattr(response, "additional_kwargs", {}) or {}
+    for key in ("reasoning_content", "content", "text", "reasoning"):
+        val = ak.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val
+
+    return ""
+
+
+def _extract_usage(response) -> int:
+    """Extract token usage from various LangChain response formats."""
+    meta = getattr(response, "response_metadata", {}) or {}
+    token_info = meta.get("token_usage", {}) or {}
+    if token_info:
+        return token_info.get("total_tokens", 0)
+    if hasattr(response, "usage_metadata"):
+        u = response.usage_metadata
+        return u.get("total_tokens", 0) if u else 0
+    return 0
+
+
+def _raw_chat_completion(
+    model: str, api_base: str, api_key: str,
+    messages: list, max_tokens: int, temperature: float,
+) -> tuple[str, int]:
+    """Raw HTTP call to OpenAI-compatible chat completions API.
+
+    Used as fallback when LangChain drops content from thinking models.
+    Properly extracts both content and reasoning_content from the response.
+    """
+    import urllib.request
+
+    payload = json.dumps({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{api_base.rstrip('/')}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        data = json.loads(resp.read())
+
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+
+    # Try content first, then reasoning_content
+    content = msg.get("content", "") or ""
+    if not content:
+        content = msg.get("reasoning_content", "") or ""
+
+    usage = data.get("usage", {}).get("total_tokens", 0)
+    return (str(content) if content else "", usage)
 
 
 def execute_structured_agent(

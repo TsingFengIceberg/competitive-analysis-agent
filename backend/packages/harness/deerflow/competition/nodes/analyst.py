@@ -52,11 +52,60 @@ def analyst_node(state: dict) -> dict:
     errors = self_check(result, target_products)
     if errors:
         logger.warning("Analyst self-check found %d issues: %s", len(errors), errors)
-        if result.get("comparison_matrix", {}).get("summary"):
+
+        # A1 retry: if any target_products are completely missing from matrix, retry once
+        missing_products = [e for e in errors if e.startswith("A1:")]
+        if missing_products:
+            logger.warning("Analyst retrying for missing products: %s", missing_products)
+            task_retry = _build_analyst_task(state)
+            # Add explicit focus on missing products
+            mp_names = [e.split(": ")[1].split(" has ")[0] for e in missing_products]
+            task_retry += (
+                f"\n\n⚠ RETRY — Missing products from matrix: {', '.join(mp_names)}. "
+                "You MUST include cells for these products in ALL dimensions."
+            )
+            try:
+                raw_retry, _retry_tokens = _execute_analyst(task_retry, state)
+                result_retry = _build_analysis_result(raw_retry, state)
+                # Merge: add any missing cells from retry
+                old_cells = result.get("comparison_matrix", {}).get("cells", [])
+                old_products = {c.get("product", "") for c in old_cells if isinstance(c, dict)}
+                for c in result_retry.get("comparison_matrix", {}).get("cells", []):
+                    if isinstance(c, dict) and c.get("product") not in old_products:
+                        old_cells.append(c)
+                result = result_retry
+                result["comparison_matrix"]["cells"] = old_cells
+                errors = self_check(result, target_products)
+            except Exception:
+                logger.exception("Analyst retry failed")
+
+        if errors and result.get("comparison_matrix", {}).get("summary"):
             result["comparison_matrix"]["summary"] += f" (⚠ {len(errors)} self-check warning(s))"
 
     # ── Coverage assessment (no retry — honest gap flagging) ──
     coverage = _validate_matrix_coverage(result, target_products)
+
+    # ── Guarantee: every target_product appears in the matrix at least once ──
+    matrix = result.get("comparison_matrix", {})
+    cells = matrix.get("cells", [])
+    dims = matrix.get("dimensions", [])
+    if not dims:
+        dims = list(MANDATORY_DIMENSIONS)
+    products_in_matrix = {c.get("product", "") for c in cells if isinstance(c, dict)}
+    for product in target_products:
+        if product not in products_in_matrix:
+            logger.warning("Forcing placeholder cells for missing product: %s", product)
+            for dim in dims:
+                cells.append({
+                    "product": product,
+                    "dimension": dim,
+                    "rating": None,
+                    "evidence": "数据不足-系统自动补全占位（搜索和LLM分析均未覆盖该竞品该维度）",
+                    "evidence_source": "insufficient",
+                    "source_data_point_ids": [],
+                })
+    matrix["cells"] = cells
+    result["comparison_matrix"] = matrix
 
     return {
         "analysis_result": result,
@@ -67,17 +116,18 @@ def analyst_node(state: dict) -> dict:
 def _build_analyst_task(state: dict) -> str:
     """Build the task description for the Analyst SubagentExecutor call.
 
-    Three-tier data strategy (hallucination suppression per competition spec):
+    Four-tier evidence strategy (hallucination suppression per competition spec):
     Tier 1 direct_data — rating backed by ≥1 collected data point (citation mandatory)
-    Tier 2 cross_inference — rating derived from OTHER collected data about same product
-      or related competitors (MUST cite the cross-referenced data point IDs)
+    Tier 2 cross_inference — rating derived from OTHER collected data, MUST cite cross-ref IDs
     Tier 3 insufficient — genuinely no data available → honest "数据不足" marker
-      (Reviewer will trigger replan to fill this gap)
+    Tier 4 estimated — ONLY when review_round >= 1 (replan already attempted), use
+      pretraining knowledge as last resort, marked "⚠️预训练推测-未经实时验证"
     """
     user_request = state.get("user_request", "")
     target_products = state.get("target_products", [])
     collected = state.get("collected_data") or []
     persona = state.get("persona", "pm")
+    review_round = state.get("review_round", 0)
 
     products_str = ", ".join(target_products) if target_products else "(unknown)"
     data_count = len(collected)
@@ -87,6 +137,18 @@ def _build_analyst_task(state: dict) -> str:
     for cat, dim in CATEGORY_DIMENSION_MAP.items():
         if cat in categories_present and dim not in dimensions:
             dimensions.append(dim)
+
+    # Tier 4: only available when replan has been attempted (review_round >= 1)
+    tier4_section = ""
+    if review_round >= 1:
+        tier4_section = """
+Tier 4 "estimated" (LAST RESORT — use ONLY after Tier 1/2/3 exhausted):
+  The system has already attempted re-collection for this analysis. When even
+  cross-inference fails, you may use pretraining knowledge as a fallback:
+  → rating: best-guess (1-5), evidence: "⚠️预训练推测-未经实时验证: <specific reasoning>"
+  → evidence_source: "estimated", source_data_point_ids: []
+  → This data is CLEARLY MARKED as unverified.
+"""
 
     return f"""Analyze competitive intelligence data for: {products_str}
 
@@ -99,7 +161,7 @@ OUTPUT JSON WITH THESE SECTIONS:
 1. comparison_matrix — EVERY product × EVERY dimension. Each cell has:
    - rating (1-5): numeric rating, or null only if Tier 3
    - evidence: specific data backing the rating
-   - evidence_source: one of "direct_data" | "cross_inference" | "insufficient"
+   - evidence_source: one of "direct_data" | "cross_inference" | "insufficient"{' | "estimated"' if review_round >= 1 else ''}
    - source_data_point_ids: list of referenced data point IDs from the input
 
 2. swot — per product, ≥2 items: category, statement, evidence, source_data_point_ids (≥1)
@@ -109,7 +171,7 @@ OUTPUT JSON WITH THESE SECTIONS:
 4. forecast (optional) — 6-month and 12-month projections, with disclaimer
 5. visualization_paths — recommended charts (radar, heatmap, bar, line, pie, stacked_bar)
 
-━━━ CRITICAL: THREE-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━
+━━━ FOUR-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━
 
 Tier 1 "direct_data": Use when ≥1 collected data point directly supports the rating.
   → source_data_point_ids MUST list the actual data point IDs.
@@ -127,9 +189,10 @@ Tier 3 "insufficient": Use only when NEITHER direct nor cross-inference is
   → rating: null, evidence: "数据不足-该竞品该维度无可用的直接或间接数据"
   → evidence_source: "insufficient", source_data_point_ids: []
   → This will trigger Reviewer to request targeted re-collection.
-
+{tier4_section}
 ⚠ NEVER:
 - Use open-ended "industry knowledge" or general web knowledge as a source
+  (unless Tier 4 is explicitly permitted above)
 - Cite a source that doesn't exist in the input data point list
 - Use the same evidence text for multiple cells (each must be specific)
 

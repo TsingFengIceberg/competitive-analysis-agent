@@ -1,8 +1,13 @@
 {
   "_comment": "Search backend toggles for competition Collector. Flip to false to disable.",
+  "volcengine": true,
   "tavily": false,
   "ddg": true,
   "jina": false,
-  "fetch_top_n": 3,
-  "fetch_timeout": 15
+  "fetch_top_n": 2,
+  "fetch_timeout": 15,
+  "strategy": {
+    "_comment": "Context budget strategy. mode: 'auto' (detect from model) or 'manual' (use values below)",
+    "mode": "auto"
+  }
 }

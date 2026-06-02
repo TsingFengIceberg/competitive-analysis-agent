@@ -110,7 +110,7 @@ class CollectedDataPoint(BaseModel):
     source_url: str = Field(..., description="Mandatory source URL (§3.15.1 citation enforcement)")
     source_type: Literal[
         "official", "review", "news", "interview", "social",
-        "comparison", "pricing", "stats", "docs", "blog",
+        "comparison", "pricing", "stats", "docs", "blog", "estimated",
     ] = Field(
         ..., description="Source classification"
     )

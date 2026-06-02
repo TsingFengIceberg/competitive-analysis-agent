@@ -36,6 +36,15 @@ def collector_node(state: dict) -> dict:
 
     # Post-processing (§3.4.2-3.4.6)
     data_points = _parse_datapoints(raw_output)
+
+    # Repair: if parsing produced nothing but we have raw output, ask LLM to reformat
+    if not data_points and raw_output and isinstance(raw_output, str) and len(raw_output) > 100:
+        logger.warning("Collector output parse failed — attempting LLM repair")
+        try:
+            raw_output, _repair_tokens = _repair_collector_output(raw_output)
+            data_points = _parse_datapoints(raw_output)
+        except Exception:
+            logger.exception("Collector repair failed")
     data_points = deduplicate_datapoints(data_points)
     summary = build_collection_summary(data_points, state.get("target_products", []))
     summary["search_stats"] = _get_search_info()
@@ -282,6 +291,19 @@ def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
         try:
             if "collected_at" not in item:
                 item["collected_at"] = datetime.now(UTC).isoformat()
+            else:
+                # Validate: if LLM provided a date, check it's reasonable
+                # (not a fabricated identical date for all items)
+                val = str(item["collected_at"])
+                try:
+                    dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                    now = datetime.now(UTC)
+                    # Future dates or unreasonably old → override
+                    if dt > now or dt.year < 2020:
+                        item["collected_at"] = datetime.now(UTC).isoformat()
+                    # Otherwise keep the source publication date
+                except (ValueError, TypeError):
+                    item["collected_at"] = datetime.now(UTC).isoformat()
             # Normalize source_type from real search results to valid schema values
             if "source_type" in item:
                 item["source_type"] = _normalize_source_type(item["source_type"])
@@ -322,9 +344,14 @@ def _normalize_source_type(raw_type: str) -> str:
 
 
 def _run_searches(state: dict) -> str:
-    """Phase 1: Run real web searches for each product × category, return formatted context."""
+    """Phase 1: Run real web searches for each product × category, return formatted context.
+
+    Uses adaptive context budgeting: model context window → available chars → tiered
+    result count & snippet length.
+    """
     from deerflow.competition.tools.search import (
         build_search_queries,
+        calculate_budget,
         format_search_context,
         multi_search,
     )
@@ -339,23 +366,23 @@ def _run_searches(state: dict) -> str:
     if gaps:
         for g in gaps:
             task_text = g.get("target_collect_task", "")
-            # Extract product names from gap task text
             import re as _re
             found = _re.findall(r"Search for.*?: ([A-Za-z][A-Za-z0-9 ]+)", task_text)
             gap_products.extend(found)
     if gap_products:
         target_products = list(set(target_products + gap_products))
 
-    # Handle category-specific search for "features", etc.
-    gap_category = None  # When Collector is retargeted by Reviewer, search more broadly
+    # Calculate adaptive context budget
+    budget = calculate_budget()
 
-    queries = build_search_queries(target_products, gap_category)
-    logger.warning("═══ 🦆 DUCKDUCKGO SEARCH: %d queries for %d products ═══", len(queries), len(target_products))
+    queries = build_search_queries(target_products)
+    logger.warning("═══ 🦆 DUCKDUCKGO SEARCH: %d queries for %d products (budget: %s, %dK tokens) ═══",
+                   len(queries), len(target_products), budget.tier, budget.tokens // 1000)
     for i, q in enumerate(queries):
         logger.warning("  [%d/%d] %s", i + 1, len(queries), q)
 
     try:
-        results = multi_search(queries, max_results=5, fetch_top=2)
+        results = multi_search(queries, max_results=5, fetch_top=budget.fetch_top_n)
     except Exception:
         logger.exception("Collector search failed")
         return ""
@@ -371,7 +398,7 @@ def _run_searches(state: dict) -> str:
     for r in results[:10]:
         logger.warning("  📄 %s | %s", r.title[:80], r.url)
 
-    return format_search_context(results)
+    return format_search_context(results, budget=budget)
 
 
 def _get_search_info() -> dict:
@@ -384,6 +411,23 @@ def _get_search_info() -> dict:
         "total_results": stats.get("total_results", 0),
         "queries": stats.get("queries", []),
     }
+
+
+def _repair_collector_output(raw_text: str) -> str | None:
+    """Send broken output back to LLM for reformatting into valid JSON."""
+    from deerflow.competition.executor import execute_agent
+
+    snippet = raw_text[:8000]
+    repair_prompt = (
+        "The following text should be a JSON array of competitive data points "
+        "but failed to parse. Reformat it into a valid JSON array. "
+        "Each object must have: id, product, category, label, value, confidence, "
+        "source_url, source_type, collected_at. Output ONLY the JSON array."
+    )
+    result, _tokens = execute_agent(
+        repair_prompt, snippet, temperature=0.0, max_tokens=4096, agent_name="Collector",
+    )
+    return result
 
 
 def _execute_collector(task: str, state: dict) -> tuple[str | None, int]:

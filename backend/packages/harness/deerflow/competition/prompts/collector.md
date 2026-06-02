@@ -33,10 +33,8 @@
 - `value`: 数值或字符串
 - `confidence`: 0.0-1.0（你自己评估的可信度）
 - `source_url`: **必填**（引用强制，无来源不入库）
-- `source_type`: one of "official" | "review" | "news" | "interview" | "social" | "comparison" | "pricing" | "stats" | "docs" | "blog"
-  - "official" — 官网/官方文档 | "review" — 用户评价/评测 | "news" — 新闻报道
-  - "comparison" — 竞品对比文章 | "pricing" — 定价页面 | "stats" — 行业统计/数据报告
-  - "docs" — 技术文档/API文档 | "blog" — 博客/技术文章 | "social" — 社交媒体
+- `source_type`: one of ... (as above)
+- `collected_at`: ISO 8601 时间戳。**必须从搜索结果的网页发布日期提取**，如果搜索结果中没有显示发布日期则用今天的日期（2026-06-02）。不要编造统一日期。
   - "interview" — 采访/访谈
 - `collected_at`: ISO 8601 时间戳
 
