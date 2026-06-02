@@ -28,6 +28,7 @@ def reviewer_node(state: dict) -> dict:
     gaps.extend(check_multi_source_consistency(collected)) # G2
     gaps.extend(check_data_freshness(collected))           # G3
     gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
+    gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
     gaps.extend(check_source_diversity(collected))         # G5
     gaps.extend(check_statistical_outliers(collected))     # G6
 
@@ -186,6 +187,55 @@ def check_dimension_coverage(analysis: dict, target_products: list[str]) -> list
                     evidence=f"comparison_matrix missing cell: {product}/{dim}",
                     task=f"Search for {dim} data on {product}",
                     severity="major",
+                    related_ids=[],
+                ))
+    return gaps
+
+
+# ── G4.5: All-NA Competitor (§3.6.1) ──
+
+
+def check_all_na_competitor(analysis: dict, target_products: list[str]) -> list[dict]:
+    """G4.5: Flag any competitor with N/A ratings across ALL dimensions.
+
+    An all-N/A row means the competitor was listed but no data was collected or
+    analyzed for it. This is a critical gap — forces a targeted re-collect for
+    that specific competitor.
+    """
+    matrix = analysis.get("comparison_matrix", {})
+    cells = matrix.get("cells", [])
+    if not cells or not target_products:
+        return []
+
+    # Build per-product rating set: {product: {True if has non-null rating}}
+    product_has_rating: dict[str, bool] = {p: False for p in target_products}
+    for c in cells:
+        if not isinstance(c, dict):
+            continue
+        product = c.get("product", "")
+        rating = c.get("rating")
+        # Treat null/None/0/"N/A" strings as absent
+        is_na = rating is None or rating == 0 or str(rating).strip().upper() == "N/A"
+        if not is_na:
+            product_has_rating[product] = True
+
+    gaps = []
+    for product, has_rating in product_has_rating.items():
+        if not has_rating:
+            # Check if the product appears at all in cells (vs completely absent)
+            in_matrix = any(
+                isinstance(c, dict) and c.get("product") == product
+                for c in cells
+            )
+            if in_matrix:
+                gaps.append(_make_gap(
+                    gid=f"gap-g4_5-{product}",
+                    gap_type="missing_data",
+                    method="all_na_competitor",
+                    desc=f"Competitor '{product}' has N/A ratings across ALL dimensions — no usable comparison data",
+                    evidence=f"comparison_matrix cells for {product}: all ratings are null",
+                    task=f"Re-search for any data on: {product}. Focus on basic facts: features, pricing, users.",
+                    severity="critical",
                     related_ids=[],
                 ))
     return gaps

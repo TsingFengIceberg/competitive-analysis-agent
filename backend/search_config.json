@@ -1,0 +1,8 @@
+{
+  "_comment": "Search backend toggles for competition Collector. Flip to false to disable.",
+  "tavily": false,
+  "ddg": true,
+  "jina": false,
+  "fetch_top_n": 3,
+  "fetch_timeout": 15
+}

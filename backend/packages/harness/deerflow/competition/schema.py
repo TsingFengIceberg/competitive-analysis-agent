@@ -108,7 +108,10 @@ class CollectedDataPoint(BaseModel):
     value: str | float = Field(..., description="The actual data value")
     confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="LLM or API confidence score")
     source_url: str = Field(..., description="Mandatory source URL (§3.15.1 citation enforcement)")
-    source_type: Literal["official", "review", "news", "interview", "social"] = Field(
+    source_type: Literal[
+        "official", "review", "news", "interview", "social",
+        "comparison", "pricing", "stats", "docs", "blog",
+    ] = Field(
         ..., description="Source classification"
     )
     collected_at: str = Field(..., description="ISO 8601 timestamp")

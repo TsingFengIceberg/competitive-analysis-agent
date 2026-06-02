@@ -19,20 +19,31 @@ logger = logging.getLogger(__name__)
 
 
 def collector_node(state: dict) -> dict:
-    """Graph node: execute Collector via SubagentExecutor, apply post-processing rules.
+    """Graph node: execute Collector with real web search, then structured LLM extraction.
 
-    Returns partial state update. LangGraph auto-merges collected_data via op_add reducer.
+    Two-phase collection:
+      Phase 1: Run real web searches (Tavily/DDG) + deep-fetch top results
+      Phase 2: LLM extracts structured CollectedDataPoints from raw search text
     """
     task = _build_collector_task(state)
-    # In production, this calls SubagentExecutor(config, tools, sandbox).execute(task).
-    # For now, placeholder — real executor wired in after SubagentExecutor integration.
+
+    # Phase 1: Real web search
+    search_context = _run_searches(state)
+    if search_context:
+        task += "\n\nREAL-TIME SEARCH RESULTS — extract data points from these:\n" + search_context
+
     raw_output, _tokens = _execute_collector(task, state)
 
     # Post-processing (§3.4.2-3.4.6)
     data_points = _parse_datapoints(raw_output)
     data_points = deduplicate_datapoints(data_points)
     summary = build_collection_summary(data_points, state.get("target_products", []))
+    summary["search_stats"] = _get_search_info()
 
+    return {
+        "collected_data": [dp.model_dump() for dp in data_points],
+        "collection_summary": summary,
+    }
     return {
         "collected_data": [dp.model_dump() for dp in data_points],
         "collection_summary": summary,
@@ -271,10 +282,108 @@ def _parse_datapoints(raw: str | list | None) -> list[CollectedDataPoint]:
         try:
             if "collected_at" not in item:
                 item["collected_at"] = datetime.now(UTC).isoformat()
+            # Normalize source_type from real search results to valid schema values
+            if "source_type" in item:
+                item["source_type"] = _normalize_source_type(item["source_type"])
             points.append(CollectedDataPoint.model_validate(item))
         except Exception as e:
             logger.warning("Failed to parse data point: %s — %s", item.get("id", "?"), e)
     return points
+
+
+_SOURCE_TYPE_MAP: dict[str, str] = {
+    "comparison_article": "comparison",
+    "industry_statistics": "stats",
+    "industry_report": "stats",
+    "pricing_guide": "pricing",
+    "pricing_page": "pricing",
+    "documentation": "docs",
+    "technical_docs": "docs",
+    "api_docs": "docs",
+    "blog_post": "blog",
+    "tutorial": "blog",
+    "user_review": "review",
+    "customer_review": "review",
+    "press_release": "news",
+    "market_report": "stats",
+    "market_research": "stats",
+    "social_media": "social",
+    "forum": "social",
+    "community": "social",
+}
+
+
+def _normalize_source_type(raw_type: str) -> str:
+    """Map free-form source_type from LLM to a valid schema value."""
+    normalized = raw_type.strip().lower().replace(" ", "_").replace("-", "_")
+    if normalized in {"official", "review", "news", "interview", "social", "comparison", "pricing", "stats", "docs", "blog"}:
+        return normalized
+    return _SOURCE_TYPE_MAP.get(normalized, "news")  # fallback to "news"
+
+
+def _run_searches(state: dict) -> str:
+    """Phase 1: Run real web searches for each product × category, return formatted context."""
+    from deerflow.competition.tools.search import (
+        build_search_queries,
+        format_search_context,
+        multi_search,
+    )
+
+    target_products: list[str] = state.get("target_products", [])
+    if not target_products:
+        return ""
+
+    # Also include gap-related products for replan rounds
+    gaps = state.get("knowledge_gaps") or []
+    gap_products: list[str] = []
+    if gaps:
+        for g in gaps:
+            task_text = g.get("target_collect_task", "")
+            # Extract product names from gap task text
+            import re as _re
+            found = _re.findall(r"Search for.*?: ([A-Za-z][A-Za-z0-9 ]+)", task_text)
+            gap_products.extend(found)
+    if gap_products:
+        target_products = list(set(target_products + gap_products))
+
+    # Handle category-specific search for "features", etc.
+    gap_category = None  # When Collector is retargeted by Reviewer, search more broadly
+
+    queries = build_search_queries(target_products, gap_category)
+    logger.warning("═══ 🦆 DUCKDUCKGO SEARCH: %d queries for %d products ═══", len(queries), len(target_products))
+    for i, q in enumerate(queries):
+        logger.warning("  [%d/%d] %s", i + 1, len(queries), q)
+
+    try:
+        results = multi_search(queries, max_results=5, fetch_top=2)
+    except Exception:
+        logger.exception("Collector search failed")
+        return ""
+
+    if not results:
+        logger.warning("🦆 DDG search returned ZERO results")
+        return ""
+
+    # Log what we found
+    with_content = sum(1 for r in results if r.raw_content)
+    logger.warning("═══ 🦆 DDG DONE: %d unique URLs (%d fetched) ═══",
+                   len(results), with_content)
+    for r in results[:10]:
+        logger.warning("  📄 %s | %s", r.title[:80], r.url)
+
+    return format_search_context(results)
+
+
+def _get_search_info() -> dict:
+    """Build search visibility info for the UI."""
+    from deerflow.competition.tools.search import get_search_stats
+    stats = get_search_stats()
+    return {
+        "backend": stats.get("backend", "none"),
+        "total_queries": stats.get("total_queries", 0),
+        "total_results": stats.get("total_results", 0),
+        "queries": stats.get("queries", []),
+    }
 
 
 def _execute_collector(task: str, state: dict) -> tuple[str | None, int]:

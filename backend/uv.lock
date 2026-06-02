@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -745,6 +745,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "bcrypt" },
+    { name = "ddgs" },
     { name = "deerflow-harness" },
     { name = "dingtalk-stream" },
     { name = "email-validator" },
@@ -758,6 +759,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "slack-sdk" },
     { name = "sse-starlette" },
+    { name = "tavily-python" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "wecom-aibot-python-sdk" },
 ]
@@ -781,6 +783,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bcrypt", specifier = ">=4.0.0" },
+    { name = "ddgs" },
     { name = "deerflow-harness", editable = "packages/harness" },
     { name = "deerflow-harness", extras = ["postgres"], marker = "extra == 'postgres'", editable = "packages/harness" },
     { name = "dingtalk-stream", specifier = ">=0.24.3" },
@@ -796,6 +799,7 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=21.0" },
     { name = "slack-sdk", specifier = ">=3.33.0" },
     { name = "sse-starlette", specifier = ">=2.1.0" },
+    { name = "tavily-python" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "wecom-aibot-python-sdk", specifier = ">=0.1.6" },
 ]

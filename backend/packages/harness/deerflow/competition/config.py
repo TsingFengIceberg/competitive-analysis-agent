@@ -121,6 +121,20 @@ class DeepModeConfig(BaseModel):
     )
 
 
+class SearchBackendConfig(BaseModel):
+    """Real web search backend toggles — controls which APIs Collector actually calls.
+
+    Flip a backend to false to disable it without removing its API key from .env.
+    At least one backend must be enabled; falls back to DDG if all are off.
+    """
+
+    tavily: bool = Field(default=True, description="Tavily AI search (needs TAVILY_API_KEY)")
+    ddg: bool = Field(default=True, description="DuckDuckGo free search (no key needed)")
+    jina: bool = Field(default=False, description="Jina AI reader for page extraction (needs JINA_API_KEY)")
+    fetch_timeout: int = Field(default=15, description="Per-fetch timeout in seconds")
+    fetch_top_n: int = Field(default=3, description="How many search results to deep-fetch per query batch")
+
+
 class CompetitionConfig(BaseModel):
     """Root configuration for the competition module.
 
@@ -135,6 +149,7 @@ class CompetitionConfig(BaseModel):
     hitl: HitlConfig = Field(default_factory=HitlConfig)
     data_sources: DataSourceRoutingConfig = Field(default_factory=DataSourceRoutingConfig)
     deep_mode: DeepModeConfig = Field(default_factory=DeepModeConfig)
+    search: SearchBackendConfig = Field(default_factory=SearchBackendConfig)
 
     # Top-level defaults
     default_model: str = Field(default="doubao-seed-2-0-lite-260215")

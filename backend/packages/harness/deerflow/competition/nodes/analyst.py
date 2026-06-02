@@ -26,27 +26,54 @@ CATEGORY_DIMENSION_MAP = {
 def analyst_node(state: dict) -> dict:
     """Graph node: execute Analyst via SubagentExecutor, validate output structure.
 
-    Returns partial state update with analysis_result.
+    Three-tier hallucination suppression + degradation (§COMPETITION_PLAN):
+    1. Prompt enforces cross-inference with collected-data citations only (no open-ended hallucination)
+    2. Self-check verifies citation integrity; coverage gaps → honest "不足" markers
+    3. Reviewer G4.5 catches all-NA competitors → replan → Collector re-targeted search
+
+    Returns partial state update with analysis_result + optional coverage_warning.
     """
-    task = _build_analyst_task(state)
-    raw_output, _tokens = _execute_analyst(task, state)
+    target_products = state.get("target_products", [])
+
+    # ── Primary analysis ──
+    try:
+        task = _build_analyst_task(state)
+        raw_output, _tokens = _execute_analyst(task, state)
+    except Exception:
+        logger.exception("Analyst execute_structured_agent failed, using empty result")
+        return {"analysis_result": _empty_analysis_result(state),
+                "coverage_warning": None}
+
     result = _build_analysis_result(raw_output, state)
     if not result.get("comparison_matrix", {}).get("cells"):
         logger.warning("Analyst produced empty comparison_matrix — raw output type=%s, sample=%s",
                        type(raw_output).__name__, str(raw_output)[:200] if raw_output else "None")
-    errors = self_check(result, state.get("target_products", []))
 
+    errors = self_check(result, target_products)
     if errors:
         logger.warning("Analyst self-check found %d issues: %s", len(errors), errors)
-        # §3.5.5: annotate result with self-check warnings
         if result.get("comparison_matrix", {}).get("summary"):
             result["comparison_matrix"]["summary"] += f" (⚠ {len(errors)} self-check warning(s))"
 
-    return {"analysis_result": result}
+    # ── Coverage assessment (no retry — honest gap flagging) ──
+    coverage = _validate_matrix_coverage(result, target_products)
+
+    return {
+        "analysis_result": result,
+        "coverage_warning": coverage if coverage["na_products"] or coverage.get("low_coverage_products") else None,
+    }
 
 
 def _build_analyst_task(state: dict) -> str:
-    """Build the task description for the Analyst SubagentExecutor call."""
+    """Build the task description for the Analyst SubagentExecutor call.
+
+    Three-tier data strategy (hallucination suppression per competition spec):
+    Tier 1 direct_data — rating backed by ≥1 collected data point (citation mandatory)
+    Tier 2 cross_inference — rating derived from OTHER collected data about same product
+      or related competitors (MUST cite the cross-referenced data point IDs)
+    Tier 3 insufficient — genuinely no data available → honest "数据不足" marker
+      (Reviewer will trigger replan to fill this gap)
+    """
     user_request = state.get("user_request", "")
     target_products = state.get("target_products", [])
     collected = state.get("collected_data") or []
@@ -55,7 +82,6 @@ def _build_analyst_task(state: dict) -> str:
     products_str = ", ".join(target_products) if target_products else "(unknown)"
     data_count = len(collected)
 
-    # Determine available dimensions from collected data
     categories_present = {dp.get("category", "") for dp in collected if isinstance(dp, dict)}
     dimensions = list(MANDATORY_DIMENSIONS)
     for cat, dim in CATEGORY_DIMENSION_MAP.items():
@@ -68,42 +94,49 @@ User request: {user_request}
 Persona: {persona}
 Available data points: {data_count}
 
-CRITICAL: You MUST produce ratings for EVERY product listed below, for EVERY dimension:
+OUTPUT JSON WITH THESE SECTIONS:
+
+1. comparison_matrix — EVERY product × EVERY dimension. Each cell has:
+   - rating (1-5): numeric rating, or null only if Tier 3
+   - evidence: specific data backing the rating
+   - evidence_source: one of "direct_data" | "cross_inference" | "insufficient"
+   - source_data_point_ids: list of referenced data point IDs from the input
+
+2. swot — per product, ≥2 items: category, statement, evidence, source_data_point_ids (≥1)
+
+3. trends — dimension, direction (up/down/stable/unclear), confidence, evidence
+
+4. forecast (optional) — 6-month and 12-month projections, with disclaimer
+5. visualization_paths — recommended charts (radar, heatmap, bar, line, pie, stacked_bar)
+
+━━━ CRITICAL: THREE-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━
+
+Tier 1 "direct_data": Use when ≥1 collected data point directly supports the rating.
+  → source_data_point_ids MUST list the actual data point IDs.
+
+Tier 2 "cross_inference": Use when NO direct data exists but you can infer from
+  OTHER collected data points about the SAME product in different dimensions,
+  or from the SAME dimension of OTHER products. Example:
+  "Product A定价数据(来源dp-12): $29/月; Product B被描述为'更亲民的价格'(来源dp-7)
+  → 推断 Product B 定价大约在 $15-20/月，评分 4"
+  → source_data_point_ids MUST list the cross-referenced IDs (dp-12, dp-7).
+  → evidence MUST explain the inference chain.
+
+Tier 3 "insufficient": Use only when NEITHER direct nor cross-inference is
+  possible for this product×dimension. This is an honest gap statement:
+  → rating: null, evidence: "数据不足-该竞品该维度无可用的直接或间接数据"
+  → evidence_source: "insufficient", source_data_point_ids: []
+  → This will trigger Reviewer to request targeted re-collection.
+
+⚠ NEVER:
+- Use open-ended "industry knowledge" or general web knowledge as a source
+- Cite a source that doesn't exist in the input data point list
+- Use the same evidence text for multiple cells (each must be specific)
+
 Products: {products_str}
 Dimensions: {", ".join(dimensions)}
 
-If collected data lacks direct evidence for a product×dimension, still produce a best-estimate rating (1-5) based on indirect evidence or industry knowledge, and mark evidence as "间接推断" (indirect inference). Never skip a product.
-
-Required analysis dimensions: {", ".join(dimensions)}
-
-Output a JSON object with these sections:
-
-1. comparison_matrix — MUST include EVERY product ({products_str}) × EVERY dimension ({", ".join(dimensions)}). For each cell:
-   - rating (1-5): use quantile mapping for quantitative data, LLM judgment for qualitative. NEVER omit any product×dimension pair.
-   - evidence: specific data supporting the rating (use "间接推断" if no direct data)
-   - source_data_point_ids: list of referenced data point IDs
-
-2. swot — MUST include EVERY product ({products_str}). For each product, provide at least 2 SWOT items with:
-   - category: "strength" / "weakness" / "opportunity" / "threat"
-   - statement, evidence, source_data_point_ids (≥1 required per §3.5.3)
-
-3. trends — list trend findings with dimension, direction (up/down/stable/unclear), confidence, evidence
-
-4. forecast (optional, only if trend data sufficient):
-   - Include 6-month and 12-month projections per product × dimension
-   - disclaimer: "以下预测基于公开数据趋势外推，不构成投资建议"
-
-5. visualization_paths — list of chart files to generate (radar, heatmap, bar, line, pie, stacked_bar)
-
-Scoring rules (§3.5.2):
-- Quantitative data → quantile_to_rating(value, all_values, lower_is_better)
-- Qualitative data → LLM judgment with ≥1 source_data_point_id
-- No data for dimension → rating = null, label "无数据"
-
-Self-check before output (§3.5.5):
-- Every product has ≥1 rating in comparison_matrix (A1)
-- Every SWOT item has source_data_point_ids (A2)
-- All referenced data point IDs exist in the input
+Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with citation
 """
 
 
@@ -281,12 +314,68 @@ def self_check(result: dict, target_products: list[str]) -> list[str]:
     # A3: All referenced data point IDs can be traced — skipped (needs actual data points)
     # A4: Quantitative ratings annotated — checked at Review stage
     # A5: Summary includes data coverage
+    # A6: Cross-inference cells MUST cite cross-referenced data point IDs
+    for c in cells:
+        if not isinstance(c, dict):
+            continue
+        src = c.get("evidence_source", "")
+        ids = c.get("source_data_point_ids", [])
+        if src == "cross_inference" and (not ids or len(ids) < 1):
+            issues.append(f"A6: cross_inference cell {c.get('product')}/{c.get('dimension')} has no source_data_point_ids — citation required")
 
     summary = matrix.get("summary", "")
     if summary and "coverage" not in summary.lower() and "覆盖" not in summary:
         issues.append("A5: comparison_matrix.summary should mention data coverage")
 
     return issues
+
+
+def _validate_matrix_coverage(result: dict, target_products: list[str]) -> dict:
+    """Check N/A + insufficient ratio per product in comparison matrix.
+
+    Returns {"na_products": [...], "low_coverage_products": [...]}.
+    na_products = products where EVERY dimension is null/"N/A" (Reviewer-critical).
+    low_coverage_products = products where >40% dimensions are insufficient (warning).
+    """
+    matrix = result.get("comparison_matrix", {})
+    cells = matrix.get("cells", [])
+    dimensions = matrix.get("dimensions", [])
+    if not cells or not target_products:
+        return {"na_products": [], "low_coverage_products": []}
+
+    dim_count = len(dimensions) if dimensions else 1
+
+    product_rated: dict[str, int] = {p: 0 for p in target_products}
+    product_total: dict[str, int] = {p: 0 for p in target_products}
+    for c in cells:
+        if not isinstance(c, dict):
+            continue
+        product = c.get("product", "")
+        if product not in product_total:
+            continue
+        product_total[product] += 1
+        rating = c.get("rating")
+        src = c.get("evidence_source", "")
+        is_absent = rating is None or str(rating).strip().upper() == "N/A" or src == "insufficient"
+        if not is_absent:
+            product_rated[product] += 1
+
+    na_products: list[str] = []
+    low_products: list[str] = []
+    for product in target_products:
+        total = product_total[product]
+        rated = product_rated[product]
+        if total == 0:
+            # Product completely missing from matrix
+            na_products.append(product)
+            continue
+        ratio = rated / max(total, dim_count)
+        if ratio <= 0:
+            na_products.append(product)
+        elif ratio < 0.6:
+            low_products.append(product)
+
+    return {"na_products": na_products, "low_coverage_products": low_products}
 
 
 # ── Visualization Triggers (§3.5.4) ──
