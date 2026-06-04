@@ -525,5 +525,176 @@
 
 ---
 
+## 十五、Orchestrator Agent — Query-Driven 动态 Pipeline 升级 `**[v4 核心架构重构 P0]**`
+
+> **动机**（2026-06-05 讨论）：
+> 1. 当前 `_assess_complexity()` 用关键词匹配判定复杂度，无法理解语义意图
+> 2. 产品名解析（提取 + 搜索验证 + LLM 纠错）是 2-3 次分散的 LLM 调用
+> 3. 未来 query 信号越来越多（单产品补全竞品、维度强调、Schema 裁剪、pipeline 变体路由）——如果各加 LLM 调用是灾难
+> 4. **解决方案**：引入 **Orchestrator Agent**，单次 LLM 调用统一完成意图解析 + 产品名解析 + 复杂度判定 + 路由决策
+>
+> 详见 PLAN §3.18 和 [memory: query-driven-dynamic-pipeline](../.claude/projects/-root-Projects-deer-flow/memory/query-driven-dynamic-pipeline.md)
+
+### 15.1 PLAN 文档修改（13 处）
+
+- [ ] **PLAN §3.1 架构图更新**：新增 Orchestrator 预处理阶段
+  → 原：`Collector → Analyst → Reviewer → Writer → HITL`
+  → 新：`Orchestrator → Collector → Analyst → Reviewer → Writer → HITL`（Orchestrator 输出 `OrchestrationResult` 注入 State）
+- [ ] **PLAN §3.3 角色定义更新**：新增第 5 个 Agent — Orchestrator
+  → 职责：意图解析 / 产品名提取+纠错 / 竞品自动补全 / 复杂度判定 / 维度权重分配 / Schema 裁剪 / pipeline 变体路由
+  → 与其他 4 Agent 的关系：Orchestrator 只做意图→结构化指令，不做数据操作
+- [ ] **PLAN §3.4 Collector 规范更新**：搜索维度、预算、类别不再从固定 `COMPLEXITY_CONFIG` 取
+  → 改为从 `state["orchestration_result"].dimension_weights` 动态取
+  → 保留 `COMPLEXITY_CONFIG` 作为 fallback（Orchestrator 失败时降级）
+- [ ] **PLAN §3.5 Analyst 规范更新**：强制对比维度不再硬编码 4-6 维
+  → 改为从 `state["orchestration_result"].dimension_weights` 动态取
+  → 保留默认维度集作为 fallback
+- [ ] **PLAN §3.7 Writer 报告规范更新**：`REQUIRED_SECTIONS` 不再硬编码
+  → 改为从 `state["orchestration_result"].schema_profile` 动态生成
+  → 保留默认 section 集作为 fallback
+- [ ] **PLAN §3.10 State 更新**：新增 `orchestration_result: OrchestrationResult | None` + `complexity: str` 字段
+- [ ] **PLAN §3.13 路由逻辑更新**：新增 `route_after_orchestrator()` 函数
+  → Orchestrator 成功后固定进 Collector；失败则根据 `pipeline_variant` 做条件路由
+- [ ] **PLAN §3.14 通信协议更新**：新增 **边 0：Orchestrator → Collector（OrchestrationResult）**
+  → 通信契约总览从"6 边"更新为"7 边"
+  → OrchestrationResult 作为后续所有节点的路由指令来源
+- [ ] **PLAN §3.16.5 超时重试更新**：新增 Orchestrator 超时配置
+  → 建议 60s（单次 LLM 调用，远短于 Collector 的 600s）
+- [ ] **PLAN §3.17.1 自适应任务拆分更新**：标注复杂度判定已升级
+  → 原：关键词匹配 `_assess_complexity()` → 现：Orchestrator LLM 语义判定
+  → 旧实现保留作为降级 fallback
+- [ ] **PLAN §7 答辩呈现更新**：新增 Orchestrator 详情面板描述
+  → DAG 图第一个节点 → 展开显示意图解析结果 / 产品置信度 / 维度权重分布
+- [ ] **PLAN §8 开发计划更新**：新增 Orchestrator 相关 Week 分配
+- [ ] **PLAN §6 差异化创新更新**：新增 Query-Driven Dynamic Orchestration 差异化点
+  → 核心论点：传统 Agent 系统 pipeline 固定，我们引入 Orchestrator 实现 query 语义→pipeline 动态塑形
+
+### 15.2 新代码：Orchestrator Agent
+
+- [ ] **`deerflow/competition/nodes/orchestrator.py`**：Orchestrator 节点实现
+  → 函数签名：`def orchestrator_node(state: CompetitionState) -> dict`
+  → 内部流程：
+    1. 构造 Orchestrator system prompt（意图解析 + 产品名提取 + 竞品补全 + 维度权重 + Schema 裁剪）
+    2. 调用 `execute_agent()` 单次 LLM
+    3. 解析输出为 `OrchestrationResult` Pydantic
+    4. 如果产品名低置信度 → 触发 search 验证（复用现有 `_verify_products_via_search`）
+    5. 如果单产品 → 自动补全竞品（search + LLM sub-step）
+    6. `model_validate()` 失败 → 降级为默认 pipeline
+- [ ] **`deerflow/competition/schema.py`**：新增 `OrchestrationResult` Pydantic Schema
+  ```python
+  class DimensionWeight(BaseModel):
+      dimension: str           # "features" | "pricing" | "users" | "market" | "technology"
+      weight: float            # 0.0-1.0, 各维度权重总和不一定为 1（控制搜索预算分配）
+      reason: str              # 为什么这个维度权重高/低
+
+  class OrchestrationResult(BaseModel):
+      products: list[str]                     # 最终确认的产品名列表
+      product_confidence: dict[str, str]       # 每个产品的置信度 high/medium/low
+      complexity: Literal["quick", "standard", "deep"]
+      complexity_reason: str                  # 为什么判定这个复杂度
+      dimension_weights: list[DimensionWeight] # 各维度分析权重
+      schema_profile: Literal["full", "feature_only", "pricing_only", "no_swot", "minimal"]
+      emphasized_aspects: list[str]           # 用户强调的分析方面
+      pipeline_variant: Literal["full", "collect_write_only", "skip_reviewer"]
+      auto_discovered_competitors: list[str]  # 自动发现的竞品（单产品场景）
+      summary: str                            # 意图解析的一句话摘要
+  ```
+- [ ] **`deerflow/competition/prompts/orchestrator.md`**：Orchestrator system prompt
+  → 角色定位 + 输出格式 + 决策规则 + 降级行为
+
+### 15.3 修改现有代码（13 个文件）
+
+- [ ] **`competition.py` 重构 `_resolve_and_run_graph()`**：
+  → 删除分散的 `_llm_extract_products()` + `_verify_products_via_search()` + `_assess_complexity()` 调用
+  → 改为：构建初始 State → Orchestrator 节点一次完成所有意图解析
+  → 保留 `_llm_extract_products()` 和 `_llm_judge_and_correct()` 作为 Orchestrator 内部的 fallback 子步骤
+  → 保留 `_assess_complexity()` 作为纯降级兜底（Orchestrator 失败时）
+- [ ] **`competition.py` `AnalyzeRequest` 修改**：`target_products` 从 `list[str]` 改为 `Optional[list[str]]`
+  → 允许用户留空，由 Orchestrator 从自然语言 query 自动提取
+- [ ] **`competition.py` `_add_token_entry()` 修改**：记录 Orchestrator token 消耗
+- [ ] **`graph.py` 修改**：
+  → `SET_ENTRY_POINT` 从 `"collector"` 改为 `"orchestrator"`
+  → 新增 `builder.add_node("orchestrator", orchestrator_node)` + 对应 deep mode 的 deep_orchestrator
+  → `add_conditional_edges("orchestrator", route_after_orchestrator, ...)`
+  → 根据 `pipeline_variant` 做条件边（如 `collect_write_only` → 跳过 Analyst+Reviewer，直接到 Writer）
+- [ ] **`state.py` 修改**：
+  → 新增 `orchestration_result: NotRequired[dict | None]` 字段
+  → 新增 `complexity: NotRequired[str | None]` 字段（Orchestrator 失败时作为 fallback 值）
+- [ ] **`router.py` 修改**：新增 `route_after_orchestrator()` 函数
+  → 成功 → `"collector"`（默认）/ 或根据 `pipeline_variant` 跳过节点
+  → 失败/error → `"error_handler"`
+- [ ] **`collector.py` 修改**：
+  → `_run_searches()` 优先从 `state["orchestration_result"].dimension_weights` 读取维度权重
+  → 权重高的维度分配更多搜索词 + 更高 fetch_top_n
+  → `COMPLEXITY_CONFIG` 作为 fallback
+- [ ] **`analyst.py` 修改**：
+  → `analyst_node()` 读取 `orchestration_result.dimension_weights` 注入 Analyst system prompt
+  → emphasized_aspects 作为 prompt 重点标注
+- [ ] **`writer.py` 修改**：
+  → `writer_node()` 读取 `orchestration_result.schema_profile` 决定生成哪些 sections
+  → 例如 `feature_only` → 只生成 sec-comparison-matrix + sec-sources，跳过 SWOT/trends
+- [ ] **`reviewer.py` 修改**：
+  → `reviewer_node()` 读取 `orchestration_result.dimension_weights` 调整 G4（维度覆盖）校验标准
+  → 如果 schema_profile 裁剪了某 section，对应维度的 G4 检查应放宽或跳过
+- [ ] **`dag.py` 修改（6 处）**：
+  → `DAG_TOPOLOGY["nodes"]`：新增 Orchestrator 节点定义
+  → `DAG_TOPOLOGY["edges"]`：新增 Orchestrator→Collector 边
+  → `_NODE_ORDER`：插入 Orchestrator 为首节点
+  → `_infer_current_node()`：新增 Orchestrator 状态推断（无 orchestration_result → active）
+  → `_compute_node_status()`：新增 Orchestrator 状态逻辑
+  → `_compute_node_annotation()` + `_get_self_assessment()`：新增 Orchestrator 映射
+- [ ] **`observability.py` 修改（5 处）**：
+  → `NODE_INPUT_FIELDS`：新增 Orchestrator 输入字段（user_request / target_products）
+  → `NODE_OUTPUT_FIELDS`：新增 Orchestrator 输出字段（orchestration_result）
+  → `get_all_agent_details()`：循环从 5 节点扩展为 6 节点
+  → `_node_label()`：新增 Orchestrator label
+  → `_infer_tools()`：新增 Orchestrator 工具列表
+- [ ] **`config.py` 修改**：新增 `OrchestratorConfig(BaseModel)` 配置类
+  → timeout_seconds: int = 60 / model: str = "doubao-seed-2-0-lite" / temperature: float = 0.0 / max_tokens: int = 800
+
+### 15.4 前端（7 项）
+
+- [ ] **Orchestrator 详情面板**：DAG 图中 Orchestrator 节点可展开
+  → 显示：意图解析摘要 / 产品置信度 / 维度权重 / Schema 裁剪决策 / pipeline 变体
+- [ ] **Orchestrator 自评估**：`_build_orchestrator_self_assessment()`
+  → 指标：产品置信度均值 / 竞品自动补全率 / 意图解析确定性
+- [ ] **DAG 图更新**：新增 Orchestrator 节点（5 节点 → 6 节点）
+  → 节点颜色：紫色（区别于其他 4 个 Agent 的蓝色）
+- [ ] **`page.tsx` 输入区域修改**：`target_products` 输入框标记为可选
+  → placeholder 改为 "可选：逗号分隔，留空由 AI 自动识别（如 Cursor, Copilot, Windsurf）"
+  → label 改为 "竞品名称（可选）"
+- [ ] **`api-client.ts` 类型修改**：`AnalyzeRequest.target_products` → `string[] | undefined`
+- [ ] **SSE 流处理**：新增 Orchestrator 节点事件处理（`node_start` / `node_end`）
+- [ ] **query 输入框提示文案更新**：
+  → placeholder: "例如：对比 Slack、飞书和钉钉的协作能力，重点分析定价策略（竞品名称可留空）"
+
+### 15.5 测试（5 项）
+
+- [ ] **`test_competition_orchestrator.py`**：Orchestrator 单元测试
+  → 测试场景：正常多产品 / 单产品自动补全 / 维度强调 / 低置信度降级 / Schema 裁剪 / pipeline_variant 路由
+- [ ] **现有测试回归**：`test_competition_nodes.py` / `test_competition_graph.py` / `test_competition_state.py` 确保向后兼容
+- [ ] **`test_competition_dag.py` 扩展**：新增 Orchestrator 节点的 DAG 状态测试
+  → 验证：无 orchestration_result → Orchestrator 为 active / 有 orchestration_result → done
+- [ ] **`test_competition_observability.py` 扩展**：新增 Orchestrator 可观测性测试
+  → 验证：`get_agent_detail(state, "orchestrator")` 返回正确的 input/output 摘要
+- [ ] **`test_competition_router.py` 扩展**：新增 `route_after_orchestrator` 测试
+  → 验证：成功 → collector / error → error_handler / collect_write_only → writer
+
+### 15.6 降级与兼容（3 项）
+
+- [ ] **Orchestrator 失败降级**：Orchestrator LLM 调用失败 / JSON parse 失败 / model_validate 失败
+  → 降级为当前默认 pipeline（`complexity="standard"`, `schema_profile="full"`, `pipeline_variant="full"`）
+  → 产品名解析降级为当前 `_llm_extract_products()` + `_verify_products_via_search()`
+- [ ] **向后兼容**：`orchestration_result` 为 None 时，所有下游节点按当前默认行为运行
+- [ ] **Token 成本控制**：Orchestrator 单次调用预期 ~500-800 tokens（对比当前分散调用总和 ~1000-1500 tokens，实际节省 30-50%）
+
+### 15.7 后续清理（Orchestrator 稳定运行后）
+
+- [ ] **降级 `_assess_complexity()`**：从主路径移除，保留为 Orchestrator 失败时的纯降级 fallback
+  → 理由：关键词匹配虽粗糙但零成本，作为兜底优于直接报错
+- [ ] **降级 `_llm_extract_products()`**：提取+纠错归入 Orchestrator 内部，旧函数保留为 Orchestrator 失败时的独立 fallback 路径
+- [ ] **冻结 `COMPLEXITY_CONFIG` 搜索参数**：不再作为主路径配置源，保留 label/description 用于 fallback 模式
+
+
 > **使用方式**：编码时对照此 TODO，每完成一项标记 `[x]`。每个条目后的链接指向 COMPETITION_PLAN.md 对应设计章节。
 > 状态：`[ ]` 待完成 | `[x]` 已完成
