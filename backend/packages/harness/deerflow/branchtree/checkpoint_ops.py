@@ -100,7 +100,12 @@ class CheckpointOps:
 
     @staticmethod
     def _make_config(thread_id: str, checkpoint_id: str | None = None) -> dict:
-        config: dict = {"configurable": {"thread_id": thread_id}}
+        config: dict = {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": "",
+            }
+        }
         if checkpoint_id:
             config["configurable"]["checkpoint_id"] = checkpoint_id
         return config
@@ -209,9 +214,11 @@ class CheckpointOps:
         裸调：200 步深度 = 200 次 SQLite 查询。
         """
         self._ensure_cache(thread_id)
+        parent_of = self._parent_of[thread_id]
+        if checkpoint_id not in parent_of:
+            return []  # checkpoint not found — empty lineage
         chain = []
         cur: str | None = checkpoint_id
-        parent_of = self._parent_of[thread_id]
         while cur is not None:
             chain.append(cur)
             cur = parent_of.get(cur)
@@ -311,3 +318,350 @@ class CheckpointOps:
             if label in tags:
                 return self.get_state(thread_id, cid)
         raise ValueError(f"Tag not found: {label}")
+
+
+# ── Agent 执行层扩展 ────────────────────────────────────────────
+#
+# AgentBranchOps 在 CheckpointOps 上增加 Agent 执行层的操作语义：
+#   自动分支探索 / A/B 测试 / 分支对比与择优 / cherry-pick。
+# 这是 Agent Git 论文理念的实现层 — Agent 可自主操作 checkpoint tree，
+# 类似 git branch / git merge / git cherry-pick，但由 LLM 驱动决策。
+#
+# 定位：CheckpointOps 是原子操作层（CRUD），AgentBranchOps 是策略层（智能决策）。
+
+
+class AgentBranchOps:
+    """Agent 执行层分支操作 — 自动化分支探索与择优。
+
+    依赖注入 CheckpointOps（依赖倒置），不直接调 LangGraph API。
+    所有策略方法返回结构化结果，由调用方（Agent/LLM）做最终决策。
+
+    Usage::
+
+        ck = CheckpointOps(saver, graph=graph)
+        agent = AgentBranchOps(ck, graph)
+
+        # A/B test: try two Collector strategies, pick winner
+        result = agent.a_b_test(
+            thread_id="t1",
+            base_checkpoint=latest_id,
+            branch_a={"collected_data": strategy_a_results},
+            branch_b={"collected_data": strategy_b_results},
+            evaluator=lambda state: state.get("coverage", 0),
+        )
+
+        # Explore: fork N branches, run graph on each, compare
+        variants = agent.explore_branches(
+            thread_id="t1",
+            base_checkpoint=latest_id,
+            variants=[
+                {"label": "aggressive", "state_update": {"deep_mode": True}},
+                {"label": "conservative", "state_update": {"deep_mode": False}},
+            ],
+        )
+        best = agent.compare_branches(thread_id, variants, key="coverage")
+    """
+
+    def __init__(
+        self,
+        checkpoint_ops: CheckpointOps,
+        graph: CompiledStateGraph | None = None,
+    ) -> None:
+        self._ck = checkpoint_ops
+        self._graph = graph or checkpoint_ops._graph
+
+    # ── 分支探索 ──────────────────────────────────────────────────
+
+    def explore_branches(
+        self,
+        thread_id: str,
+        base_checkpoint: str,
+        variants: list[dict],
+    ) -> list[dict]:
+        """从 base_checkpoint fork 出多个分支，每个分支写入不同 state。
+
+        Args:
+            thread_id: 线程 ID。
+            base_checkpoint: 分叉起点 checkpoint_id。
+            variants: [{"label": str, "state_update": dict}, ...]
+                      每个 variant 的 state_update 会被写入新分支。
+
+        Returns:
+            [{"label": str, "checkpoint_id": str, "parent": str}, ...]
+            每个 variant 的标签和新 checkpoint_id。
+
+        典型场景：
+            Agent 决定尝试 3 种不同分析聚焦方向 → fork 3 个分支 →
+            各自运行 analyst + writer → 对比择优。
+        """
+        results: list[dict] = []
+        for v in variants:
+            label = v.get("label", f"branch-{len(results)}")
+            try:
+                new_id = self._ck.fork(
+                    thread_id, base_checkpoint, v.get("state_update", {})
+                )
+                self._ck.tag(thread_id, new_id, label)
+                results.append({
+                    "label": label,
+                    "checkpoint_id": new_id,
+                    "parent": base_checkpoint,
+                })
+                logger.info(
+                    "AgentBranchOps: explored branch '%s' → %s", label, new_id[:12]
+                )
+            except Exception:
+                logger.exception("AgentBranchOps: failed to explore branch '%s'", label)
+        return results
+
+    # ── A/B 测试 ──────────────────────────────────────────────────
+
+    def a_b_test(
+        self,
+        thread_id: str,
+        base_checkpoint: str,
+        branch_a: dict,
+        branch_b: dict,
+        evaluator: callable,
+    ) -> dict:
+        """A/B 测试：创建两个分支，评估后返回优胜者。
+
+        Args:
+            thread_id: 线程 ID。
+            base_checkpoint: 分叉起点。
+            branch_a: {"state_update": dict} — A 方案的 state 变更。
+            branch_b: {"state_update": dict} — B 方案的 state 变更。
+            evaluator: StateSnapshot → float — 评分函数，高分者胜出。
+
+        Returns:
+            {"winner": "a"|"b"|"tie", "score_a": float, "score_b": float,
+             "checkpoint_a": str, "checkpoint_b": str,
+             "parent": str}
+
+        典型场景：
+            Agent 不确定用"激进"还是"保守"的采集策略 →
+            A/B test 两种策略 → 选覆盖率高的一方。
+        """
+        # Fork both
+        a_id = self._ck.fork(thread_id, base_checkpoint, branch_a.get("state_update", {}))
+        b_id = self._ck.fork(thread_id, base_checkpoint, branch_b.get("state_update", {}))
+
+        self._ck.tag(thread_id, a_id, "a/b-test-a")
+        self._ck.tag(thread_id, b_id, "a/b-test-b")
+
+        # Evaluate
+        state_a = self._ck.get_state(thread_id, a_id)
+        state_b = self._ck.get_state(thread_id, b_id)
+
+        score_a = evaluator(state_a)
+        score_b = evaluator(state_b)
+
+        if score_a > score_b:
+            winner = "a"
+        elif score_b > score_a:
+            winner = "b"
+        else:
+            winner = "tie"
+
+        logger.info(
+            "AgentBranchOps: A/B test result — A=%.3f, B=%.3f → winner=%s",
+            score_a, score_b, winner,
+        )
+
+        return {
+            "winner": winner,
+            "score_a": score_a,
+            "score_b": score_b,
+            "checkpoint_a": a_id,
+            "checkpoint_b": b_id,
+            "parent": base_checkpoint,
+        }
+
+    # ── 分支对比 ──────────────────────────────────────────────────
+
+    def compare_branches(
+        self,
+        thread_id: str,
+        variants: list[dict],
+        key: str = "coverage",
+    ) -> dict:
+        """对比多个分支，返回按评分排序的结果。
+
+        Args:
+            thread_id: 线程 ID。
+            variants: [{"checkpoint_id": str, "label": str}, ...] — 分支列表。
+            key: 在 state.values 中查找的评分字段名。
+
+        Returns:
+            {"best": {"checkpoint_id": str, "label": str, "score": float},
+             "rankings": [{"checkpoint_id": str, "label": str, "score": float}, ...],
+             "all_tied": bool}
+
+        典型场景：
+            explore_branches() 后 → 每个分支跑了 full pipeline →
+            compare 各分支的 coverage/cross_validation_rate → 选最优。
+        """
+        scored: list[dict] = []
+        for v in variants:
+            cid = v.get("checkpoint_id", "")
+            label = v.get("label", cid[:8])
+            try:
+                state = self._ck.get_state(thread_id, cid)
+                values = state.values if hasattr(state, "values") else state
+                # Navigate nested: try state → metrics[key], then flat key
+                metrics = values.get("metrics", {}) if isinstance(values, dict) else {}
+                score = float(
+                    metrics.get(key)
+                    or values.get(key, 0) if isinstance(values, dict) else 0
+                )
+            except Exception:
+                score = 0.0
+            scored.append({"checkpoint_id": cid, "label": label, "score": score})
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+
+        return {
+            "best": scored[0] if scored else None,
+            "rankings": scored,
+            "all_tied": len(set(s["score"] for s in scored)) <= 1 if scored else True,
+        }
+
+    # ── Cherry-pick ───────────────────────────────────────────────
+
+    def cherry_pick(
+        self,
+        thread_id: str,
+        target_checkpoint: str,
+        source_checkpoint: str,
+        fields: list[str],
+    ) -> str:
+        """从 source 分支 cherry-pick 指定字段到 target 分支。
+
+        类似 git cherry-pick：只复制选中的字段，不影响 target 其他 state。
+
+        Args:
+            thread_id: 线程 ID。
+            target_checkpoint: 目标分支 checkpoint（接收变更）。
+            source_checkpoint: 源分支 checkpoint（提供值）。
+            fields: 要复制的 state 字段名列表。
+
+        Returns:
+            新 checkpoint_id（在 target 分支上）。
+
+        典型场景：
+            分支 B 的"用户画像分析"做得更好，cherry-pick 这个章节
+            到主分支，而不覆盖主分支的其他内容。
+        """
+        source_state = self._ck.get_state(thread_id, source_checkpoint)
+        source_values = source_state.values if hasattr(source_state, "values") else source_state
+
+        if not isinstance(source_values, dict):
+            raise ValueError("Source state values must be dict-like for cherry-pick")
+
+        picked: dict = {}
+        for field in fields:
+            if field in source_values:
+                picked[field] = source_values[field]
+            else:
+                logger.warning(
+                    "AgentBranchOps: cherry-pick field '%s' not found in source %s",
+                    field, source_checkpoint[:12],
+                )
+
+        new_id = self._ck.fork(thread_id, target_checkpoint, picked)
+        self._ck.tag(thread_id, new_id, f"cherry-pick:{','.join(fields)}")
+        logger.info(
+            "AgentBranchOps: cherry-picked %s from %s → %s",
+            fields, source_checkpoint[:12], new_id[:12],
+        )
+        return new_id
+
+    # ── 自动择优合并 ──────────────────────────────────────────────
+
+    def auto_merge(
+        self,
+        thread_id: str,
+        branch_checkpoints: list[str],
+        strategy: str = "best_per_field",
+        field_scorer: callable | None = None,
+    ) -> str:
+        """从多个分支中择优合并，创建最优合成版本。
+
+        Args:
+            thread_id: 线程 ID。
+            branch_checkpoints: 候选分支 checkpoint_id 列表。
+            strategy: 合并策略。
+                - "best_overall": 选评分最高的分支（不合并字段）。
+                - "best_per_field": 每个字段从表现最好的分支取（需 field_scorer）。
+            field_scorer: (field_name, checkpoint_id) → float，
+                          仅在 best_per_field 策略时需要。
+
+        Returns:
+            合并后的新 checkpoint_id。
+
+        典型场景：
+            3 个探索分支各有优势 → auto_merge 取各自最强字段 →
+            合成一个综合最优版本。
+        """
+        if strategy == "best_overall":
+            # 使用 compare 选最高分
+            variants = [{"checkpoint_id": cid} for cid in branch_checkpoints]
+            result = self.compare_branches(thread_id, variants)
+            if result["best"] is None:
+                raise ValueError("No valid branches to merge")
+            best_id = result["best"]["checkpoint_id"]
+            new_id = self._ck.fork(thread_id, best_id, {})
+            self._ck.tag(thread_id, new_id, "auto-merge:best-overall")
+            return new_id
+
+        elif strategy == "best_per_field":
+            if field_scorer is None:
+                raise ValueError("field_scorer is required for best_per_field strategy")
+
+            # 对每个字段找最优分支
+            best_per_field: dict[str, tuple[str, float]] = {}
+            for field in self._discover_fields(thread_id, branch_checkpoints):
+                best_cid = None
+                best_score = float("-inf")
+                for cid in branch_checkpoints:
+                    score = field_scorer(field, cid)
+                    if score > best_score:
+                        best_score = score
+                        best_cid = cid
+                if best_cid:
+                    best_per_field[field] = (best_cid, best_score)
+
+            # 从各分支 cherry-pick 最优字段
+            base = branch_checkpoints[0]
+            merged_id = base
+            for field, (source_cid, _score) in best_per_field.items():
+                if source_cid != merged_id:
+                    try:
+                        merged_id = self.cherry_pick(
+                            thread_id, merged_id, source_cid, [field]
+                        )
+                    except Exception:
+                        logger.warning(
+                            "AgentBranchOps: failed to cherry-pick '%s' from %s",
+                            field, source_cid[:12],
+                        )
+
+            self._ck.tag(thread_id, merged_id, "auto-merge:best-per-field")
+            return merged_id
+
+        raise ValueError(f"Unknown merge strategy: {strategy}")
+
+    def _discover_fields(
+        self, thread_id: str, checkpoint_ids: list[str]
+    ) -> list[str]:
+        """发现所有分支共有的 top-level state 字段。"""
+        all_fields: set[str] = set()
+        for cid in checkpoint_ids:
+            try:
+                state = self._ck.get_state(thread_id, cid)
+                values = state.values if hasattr(state, "values") else state
+                if isinstance(values, dict):
+                    all_fields.update(values.keys())
+            except Exception:
+                pass
+        return sorted(all_fields)

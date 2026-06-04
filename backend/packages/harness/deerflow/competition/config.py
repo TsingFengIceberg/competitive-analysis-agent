@@ -135,6 +135,34 @@ class SearchBackendConfig(BaseModel):
     fetch_top_n: int = Field(default=3, description="How many search results to deep-fetch per query batch")
 
 
+class BranchExplorationConfig(BaseModel):
+    """Agent branch exploration configuration — AgentBranchOps toggle.
+
+    **IMPORTANT**: AgentBranchOps itself performs ZERO LLM calls.
+    All operations (explore/fork/cherry-pick/compare/merge) are pure
+    checkpoint data manipulation. Token consumption comes from RUNNING
+    the graph on each branch, which is triggered by the CALLER, not by
+    AgentBranchOps.
+
+    This toggle controls whether the Agent is ALLOWED to use multi-branch
+    strategies at all. When disabled, the Agent is limited to a single
+    linear execution path.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Allow Agent to use multi-branch strategies (A/B test, explore, auto-merge)",
+    )
+    max_branches: int = Field(
+        default=3, ge=1, le=8,
+        description="Hard cap on number of concurrent branches to prevent runaway cost",
+    )
+    strategy: str = Field(
+        default="manual",
+        description="Branch strategy: 'manual' (user triggers) / 'auto-explore' (Agent auto-explores N variants) / 'a-b' (Agent A/B tests conflicting strategies)",
+    )
+
+
 class CompetitionConfig(BaseModel):
     """Root configuration for the competition module.
 
@@ -150,6 +178,7 @@ class CompetitionConfig(BaseModel):
     data_sources: DataSourceRoutingConfig = Field(default_factory=DataSourceRoutingConfig)
     deep_mode: DeepModeConfig = Field(default_factory=DeepModeConfig)
     search: SearchBackendConfig = Field(default_factory=SearchBackendConfig)
+    branch_exploration: BranchExplorationConfig = Field(default_factory=BranchExplorationConfig)
 
     # Top-level defaults
     default_model: str = Field(default="doubao-seed-2-0-lite-260215")

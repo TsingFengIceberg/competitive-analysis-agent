@@ -14,6 +14,7 @@ import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
 import MessageFlowPanel from "@/components/competition/message-flow-timeline";
 import ReplaySlider from "@/components/competition/replay-slider";
+import { SourceCard, type SourceInfo } from "@/components/competition/source-card";
 import TokenPanel from "@/components/competition/token-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -78,6 +79,29 @@ function VersionTree({
 }) {
   const tree = buildTree(entries);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [hoveredEntry, setHoveredEntry] = useState<ReportHistoryItem | null>(null);
+  const [popupPos, setPopupPos] = useState<{ top: number; left: number } | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleMouseEnter(e: React.MouseEvent, entry: ReportHistoryItem) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setHoveredEntry(entry);
+      setPopupPos({
+        top: rect.top + window.scrollY,
+        left: rect.right + 8,
+      });
+    }, 300);
+  }
+
+  function handleMouseLeave() {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setHoveredEntry(null);
+      setPopupPos(null);
+    }, 150);
+  }
 
   function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
     const { entry } = node;
@@ -120,14 +144,8 @@ function VersionTree({
           )}
           <button
             onClick={() => onSelect(entry.version)}
-            onMouseEnter={(e) => {
-              const el = e.currentTarget;
-              el.title = [
-                `v${entry.version} · ${actionIcon || "初始"}`,
-                entry.hitl_decision?.comment ? `备注: ${entry.hitl_decision.comment.slice(0, 80)}` : "",
-                entry.created_at ? `时间: ${entry.created_at.slice(0, 19)}` : entry.timestamp ? `时间: ${entry.timestamp.slice(0, 19)}` : "",
-              ].filter(Boolean).join("\n");
-            }}
+            onMouseEnter={(e) => handleMouseEnter(e, entry)}
+            onMouseLeave={handleMouseLeave}
             className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted"}`}
           >
             {actionIcon || "📋初始"} v{entry.version}
@@ -170,6 +188,99 @@ function VersionTree({
           return renderNode(root, 0, ancestors);
         })}
       </div>
+
+      {/* Hover preview popup */}
+      {hoveredEntry && popupPos && (
+        <div
+          className="fixed z-50 w-72 rounded-lg border border-border bg-card p-3 shadow-lg"
+          style={{ top: popupPos.top, left: popupPos.left }}
+          onMouseEnter={() => {
+            if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+          }}
+          onMouseLeave={() => {
+            setHoveredEntry(null);
+            setPopupPos(null);
+          }}
+        >
+          {_renderPreviewCard(hoveredEntry)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function _renderPreviewCard(entry: ReportHistoryItem) {
+  const rd = entry.report_data;
+  const isApproved = entry.is_approved === true;
+  const actionIcon = entry.action
+    ? ACTION_LABELS[entry.action] ?? ""
+    : entry.hitl_decision?.action
+      ? ACTION_LABELS[entry.hitl_decision.action] ?? ""
+      : "";
+  const ts = entry.created_at || entry.timestamp || "";
+
+  return (
+    <div className="space-y-2 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-border pb-1.5">
+        <span className="font-semibold text-sm">
+          {actionIcon || "📋"} v{entry.version}
+          {isApproved && <span className="ml-1 text-green-500">✓ 已批准</span>}
+        </span>
+        {entry.parent_version != null && (
+          <span className="text-muted-foreground">← v{entry.parent_version}</span>
+        )}
+      </div>
+
+      {/* Report info */}
+      {rd ? (
+        <>
+          <div>
+            <span className="font-medium text-foreground">{rd.title}</span>
+            <span className="ml-1 text-muted-foreground">· {rd.persona === "entrepreneur" ? "创业" : "PM"}视角</span>
+          </div>
+          {rd.products?.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {rd.products.map((p) => (
+                <span key={p} className="rounded bg-muted px-1.5 py-px text-[11px]">{p}</span>
+              ))}
+            </div>
+          )}
+          {/* Key metrics */}
+          {rd.metrics && Object.keys(rd.metrics).length > 0 && (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 rounded bg-muted/50 p-1.5 text-[11px]">
+              {rd.metrics.coverage != null && (
+                <div>覆盖率 <span className="font-mono">{(rd.metrics.coverage * 100).toFixed(0)}%</span></div>
+              )}
+              {rd.metrics.cross_validation_rate != null && (
+                <div>交叉验证 <span className="font-mono">{(rd.metrics.cross_validation_rate * 100).toFixed(0)}%</span></div>
+              )}
+              {rd.metrics.trace_completeness != null && (
+                <div>溯源 <span className="font-mono">{(rd.metrics.trace_completeness * 100).toFixed(0)}%</span></div>
+              )}
+              {rd.metrics.human_correction_rate != null && (
+                <div>人工修正 <span className="font-mono">{(rd.metrics.human_correction_rate * 100).toFixed(0)}%</span></div>
+              )}
+            </div>
+          )}
+          {/* Section count */}
+          <div className="text-muted-foreground">
+            {rd.sections?.length ?? 0} 章节
+            {rd.sections?.filter((s) => s.content_type === "what-if-form").length ? " · 含 What-if" : ""}
+          </div>
+        </>
+      ) : (
+        <div className="text-muted-foreground italic">
+          {entry.hitl_decision?.comment?.slice(0, 60) || "无报告数据" + (entry.action ? ` (${entry.action})` : "")}
+        </div>
+      )}
+
+      {/* Timestamp */}
+      {ts && (
+        <div className="border-t border-border pt-1.5 text-[11px] text-muted-foreground/70">
+          {new Date(ts).toLocaleString("zh-CN")}
+        </div>
+      )}
     </div>
   );
 }
@@ -200,6 +311,8 @@ export default function CompetitionPage() {
   const [dbRecords, setDbRecords] = useState<Array<{thread_id: string; query: string; products: string[]; persona: string; created_at: string; key_findings: string[]; metrics: Record<string,number>}>>([]);
   const [dbLoadedReport, setDbLoadedReport] = useState<ReportData | null>(null);
   const [dbLoadedThreadId, setDbLoadedThreadId] = useState<string | null>(null);
+  const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
+  const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
@@ -330,22 +443,48 @@ export default function CompetitionPage() {
     }
   }, [threadId, reportData, query, deepMode, api]);
 
-  /** Convert [n] references to HTML sup links before passing to react-markdown. */
+/** Escape string for insertion into an HTML data-* attribute value. */
+function escapeAttr(s: string): string {
+  return s.replace(/"/g, "&quot;").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+/** Convert [n] references to HTML sup links with data-trace-id for hover preview. */
   const preprocessContent = useCallback((content: string): string => {
-    return content
-      .replace(
-        /\[(\d+)\] (https?:\/\/[^\s—]+)/g,
-        (_, id, url) => `<sup class="ref-link"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup> <a href="${url}" target="_blank" rel="noopener">${url}</a>`,
-      )
-      .replace(/\[(\d+)\]/g, (_, id) => {
-        const trace = displayReport?.traceability_map?.[id];
-        const url = typeof trace === "object" ? trace.url : String(trace ?? "");
-        if (url) {
-          return `<sup class="ref-link"><a href="${url}" target="_blank" rel="noopener" title="${url}">[${id}]</a></sup>`;
-        }
-        return `<sup class="ref-link">[${id}]</sup>`;
-      });
+    return content.replace(/\[(\d+)\]/g, (_, id) => {
+      const trace = displayReport?.traceability_map?.[id];
+      const url = typeof trace === "object" ? trace.url : String(trace ?? "");
+      if (url) {
+        return `<sup class="ref-link" data-trace-id="${id}" data-trace-url="${url}" data-trace-snippet="${escapeAttr(typeof trace === "object" ? (trace.snippet ?? "") : "")}" data-trace-confidence="${typeof trace === "object" ? (trace.confidence ?? "") : ""}" data-trace-verified="${typeof trace === "object" ? (trace.verified ?? "") : ""}" data-trace-timestamp="${typeof trace === "object" ? (trace.timestamp ?? "") : ""}"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup>`;
+      }
+      return `<sup class="ref-link" data-trace-id="${id}">[${id}]</sup>`;
+    });
   }, [displayReport]);
+
+  /** Delegated hover handler: show SourceCard popup on .ref-link hover. */
+  const handleReportHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
+    if (!target) {
+      setHoveredSource(null);
+      setSourcePos(null);
+      return;
+    }
+    const traceId = target.dataset.traceId;
+    const traceUrl = target.dataset.traceUrl;
+    if (!traceId || !traceUrl) return;
+    const rect = target.getBoundingClientRect();
+    setHoveredSource({
+      id: traceId,
+      url: traceUrl,
+      snippet: target.dataset.traceSnippet || undefined,
+      confidence: target.dataset.traceConfidence ? parseFloat(target.dataset.traceConfidence) : undefined,
+      verified: target.dataset.traceVerified === "" ? undefined : target.dataset.traceVerified === "true",
+      timestamp: target.dataset.traceTimestamp || undefined,
+    });
+    setSourcePos({
+      top: rect.bottom + window.scrollY + 4,
+      left: rect.left + window.scrollX,
+    });
+  }, []);
 
   const renderSection = (section: ReportSection, depth = 0) => (
     <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
@@ -361,7 +500,11 @@ export default function CompetitionPage() {
           }} />
         </div>
       ) : (
-        <div className="prose prose-sm max-w-none text-xs leading-relaxed [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600">
+        <div
+          className="prose prose-sm max-w-none text-xs leading-relaxed [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
+          onMouseOver={handleReportHover}
+          onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}
+        >
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkBreaks]}
             rehypePlugins={[rehypeRaw]}
@@ -551,6 +694,14 @@ export default function CompetitionPage() {
                 )}
                 <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
                 {displayReport.sections.map((s) => renderSection(s))}
+                {/* Source hover card */}
+                {hoveredSource && sourcePos && (
+                  <SourceCard
+                    source={hoveredSource}
+                    position={sourcePos}
+                    onClose={() => { setHoveredSource(null); setSourcePos(null); }}
+                  />
+                )}
                 {/* HITL Approval Card — shown on completed for current; export buttons on approved */}
                 {hitlVisible && status === "approved" && !viewingHistory && (
                   <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">

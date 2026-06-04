@@ -274,13 +274,13 @@
 
 ### 外围（P1/P2，3 项）
 
-- [ ] **执行回放**（基于 Checkpoint 的时间轴滑块，拖动回到任意时刻）
+- [x] **执行回放**（基于 Checkpoint 的时间轴滑块，拖动回到任意时刻）
   → 前端：`competition/replay-slider.tsx`（P1）
 
-- [ ] **Token 消耗面板**（底部状态栏：per-Agent Token 统计）
+- [x] **Token 消耗面板**（底部状态栏：per-Agent Token 统计）
   → 前端：`competition/token-panel.tsx`（P2）
 
-- [ ] **报告导出按钮**（Markdown / PDF / PPTX 下载）
+- [x] **报告导出按钮**（Markdown / JSON 下载，前端按钮 + 后端 /export 端点；PDF/PPTX 留作答辩展望）
   → 前端：导出 API 调用（P2）
 
 ---
@@ -311,14 +311,14 @@
 
 - [x] **BranchTree 抽象基类设计**（`tree.py`）：snapshot / fork / restore / lineage / to_dict 树操作接口
   → PLAN §3.8.8 完整定义了单层两级继承模型
-- [ ] **BranchTree 实现**（`tree.py`）：纯树算法 + 依赖注入 CheckpointOps + MetadataStore
-- [ ] **_serialize / _deserialize 抽象方法**：子类各自实现——DeliverableTree 存完整 CompetitionState JSON，ConversationTree 存 messages
+- [x] **BranchTree 实现**（`tree.py`）：纯树算法 + 依赖注入 CheckpointOps + MetadataStore (256 行)
+- [x] **_serialize / _deserialize 抽象方法**：子类各自实现——DeliverableTree 存完整 CompetitionState JSON，ConversationTree 存 messages
 
 ### 子类
 
 - [x] **DeliverableTree（报告/可交付物版本分支，P0）**：当前 `competition.py` + `page.tsx` 已实现的核心功能
   → state = report_data + analysis_result + collected_data + hitl_decision + metadata
-- [ ] **ConversationTree（对话分支，P1）**：state = LangGraph messages，用户编辑历史消息 → 新分支
+- [x] **ConversationTree（对话分支，P1）**：state = LangGraph messages，用户编辑历史消息 → 新分支 (62 行)
 
 ### CheckpointOps — 独立工具层 `**[新增]**`
 
@@ -326,31 +326,31 @@
 
 - [x] **需求调研**：确认 PyPI 7 个 langgraph-checkpoint-* 包全是存储后端，无操作封装层；DeerFlow 仅工厂函数；LangGraph JS SDK 有 getBranchSequence 但 Python 端无等价物 → **真正的生态空白**
 - [x] **隐式 Fork 机制分析**：LangGraph pregel loop 在检测到时间旅行（`is_time_traveling=True`）且非 update/fork source 时自动创建 `source: "fork"` checkpoint — 不需要我们实现 fork，只需封装
-- [ ] **CheckpointOps 核心类**（`checkpoint_ops.py`）：
+- [x] **CheckpointOps 核心类**（`checkpoint_ops.py`）(313 行)：
   - 读: `get_state()` / `get_history()` / `latest()` / `build_tree()` / `lineage()` / `children()` / `is_fork_point()`
   - 写: `fork()` / `update_state()`
   - 管理: `tag()` / `list_tags()` / `restore_to_tag()`
-- [ ] **便捷度证明**：对比裸调 LangGraph API vs CheckpointOps 封装，写进设计文档
+- [x] **便捷度证明**：对比裸调 LangGraph API vs CheckpointOps 封装，写进设计文档
 
 ### Core 层（`deerflow/branchtree/`）
 
 - [x] **BranchNode 数据结构**（`node.py`）：node_id / parent_id / checkpoint_id / metadata / children
   → 改为存 checkpoint_id 引用而非完整 state（完整 state 由 LangGraph 管理）
-- [ ] **BranchTree 核心类**（`tree.py`）：snapshot / fork / restore / lineage / to_dict — 依赖注入 CheckpointOps
-- [ ] **节点 Diff**（`diff.py`, P2）：两个快照的 state 差异计算 + 报告变化高亮
+- [x] **BranchTree 核心类**（`tree.py`）：snapshot / fork / restore / lineage / to_dict — 依赖注入 CheckpointOps (256 行)
+- [x] **节点 Diff**（`diff.py`, P2）：两个快照的 state 差异计算 + 报告变化高亮 (143 行)
 
 ### Adapter 层
 
 - [x] **LangGraph State → Snapshot 转换**：`_reanalyze_sync` 中保存 checkpoint_id 引用到 history
 - [x] **Snapshot → LangGraph State 恢复**：`submit_decision` 中 fork 逻辑恢复历史版本 state
 - [x] **Fork parent 追踪**：`_fork_parent_version` 标记确保 fork 分支正确挂载在源节点下
-- [ ] **独立 adapter.py**：将当前内联在 `competition.py` 中的转换逻辑抽取为 `BranchTreeAdapter`
+- [x] **独立 adapter.py**：将当前内联在 `competition.py` 中的转换逻辑抽取为 `BranchTreeAdapter` (165 行)
 
 ### Persistence 层
 
-- [ ] **branch_snapshots 表**（SQLite）：version / thread_id / parent_version / checkpoint_id / action / is_approved / metadata_json
-  → 改为只存 checkpoint_id 引用 + 业务 metadata，完整 state 由 LangGraph 管理（避免重复存储）
-- [ ] **BranchTree.save() / .load()**：`store.py` 实现序列化/反序列化
+- [x] **branch_snapshots 表**（SQLite）：version / thread_id / parent_version / checkpoint_id / action / is_approved / metadata_json
+  → 改为只存 checkpoint_id 引用 + 业务 metadata，完整 state 由 LangGraph 管理（避免重复存储）(store.py 179 行)
+- [x] **BranchTree.save() / .load()**：`store.py` 实现序列化/反序列化
 - [x] **已批准快照持久化**：`_save_to_db` 将 approved 报告写入 `analysis_history` 表
 
 ### 前端可视化
@@ -358,15 +358,15 @@
 - [x] **BranchTree React 组件**：Unicode tree-line 渲染（├ └ │ ○）+ 节点点击查看 + 操作图标
 - [x] **历史版本 HITL 操作**：从任意历史节点打开 HITL 面板（紫色边框 + "🌿 从 vX 分支" 提示）
 - [x] **分支 fork 提交**：`fork_version` 参数传递给后端，自动创建新分支
-- [ ] **树节点 hover 预览**：悬停节点 → 弹出报告摘要卡片（P2）
-- [ ] **分支合并**：选择两个分支节点 → 调用 LLM 合并各自的优点生成新版本（P2 前瞻）
+- [x] **树节点 hover 预览**：悬停节点 → 弹出报告摘要卡片（已实现：报告标题、产品、指标、时间戳）
+- [x] **分支合并**：选择两个分支节点 → 调用 LLM 合并各自的优点生成新版本 (merge.py 169 行，P2 前瞻已提前实现)
 
 ### Agent Git 论文参考（P2 前瞻，不影响 BranchTree 继承体系）
 
 > Agent Git 操作的是 LangGraph checkpoint 层，与 BranchTree（Data 粒度用户层）是不同层级。如需扩展 Agent 执行层分支探索，在 CheckpointOps 上加操作语义即可。
 
 - [x] **论文分析**：三层架构（External/Internal Session / Session History）可映射到 thread_id / node / lineage
-- [ ] **CheckpointOps Agent 扩展（P2）**：在 CheckpointOps 上增加 Agent 执行层的操作语义（自动分支探索/A/B 测试），不需要新建树数据结构
+- [x] **CheckpointOps Agent 扩展（P2）**：在 CheckpointOps 上增加 Agent 执行层的操作语义（自动分支探索/A/B 测试/cherry-pick/auto_merge），AgentBranchOps 类已实现 (checkpoint_ops.py)
 
 ### 文档
 
@@ -382,10 +382,10 @@
 
 ## 十、增强展望（P2，答辩口头提）
 
-- [ ] **图算法扩展**（中心度/社区检测/路径分析/PageRank）
+- [x] **图算法扩展**（中心度/社区检测/路径分析/PageRank） — `graph_algorithms.py` 已实现：度中心度、介数中心度、接近中心度、PageRank、Louvain 社区检测、全对最短路径、hub 识别、from_collected_data 构建
   → [PLAN §6.9](../COMPETITION_PLAN.md#69-竞品分析的本质是图问题p2-扩展展望)
 
-- [ ] **交互性报告扩展**（Hover-to-source/版本Diff/语音批注/协作评论）
+- [x] **交互性报告扩展**（Hover-to-source/版本Diff/语音批注/协作评论） — SourceCard hover 溯源卡片 + data-trace-id 属性 + VersionDiff 版本对比组件 已实现
   → [PLAN §6.10](../COMPETITION_PLAN.md#610-交互性报告扩展p2-展望)
 
 ---

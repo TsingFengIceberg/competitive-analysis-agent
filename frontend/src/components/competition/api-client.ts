@@ -77,7 +77,14 @@ export interface ReportData {
   generated_at: string;
   products: string[];
   sections: ReportSection[];
-  traceability_map: Record<string, { url: string; timestamp: string; confidence: number }>;
+  traceability_map: Record<string, {
+      url: string;
+      timestamp: string;
+      confidence: number;
+      title?: string;
+      snippet?: string;
+      verified?: boolean;
+    }>;
   quality_summary: Record<string, unknown>;
   forecast: unknown;
   metrics: Record<string, number>;
