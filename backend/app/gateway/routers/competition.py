@@ -69,6 +69,7 @@ class ReportResponse(BaseModel):
     error: str | None = None
     history_count: int = 0
     token_usage: list[dict] = []
+    created_at: str | None = None
 
 
 class StreamEvent(BaseModel):
@@ -138,50 +139,6 @@ def _current_db_version(thread_id: str) -> int | None:
 
 # ── Product name extraction & correction ──
 
-# Known product aliases for quick correction (avoid LLM call for common cases)
-_PRODUCT_ALIASES: dict[str, str] = {
-    "copilot": "GitHub Copilot",
-    "github copilot": "GitHub Copilot",
-    "gh copilot": "GitHub Copilot",
-    "cursor": "Cursor",
-    "cursor ai": "Cursor",
-    "cursor ide": "Cursor",
-    "windsurf": "Windsurf",
-    "windsurf ide": "Windsurf",
-    "codeium": "Codeium",
-    "codeium windsurf": "Windsurf",
-    "claude": "Claude",
-    "claude code": "Claude Code",
-    "claude ai": "Claude",
-    "chatgpt": "ChatGPT",
-    "gpt": "ChatGPT",
-    "copilot x": "GitHub Copilot",
-    "tabnine": "TabNine",
-    "kite": "Kite",
-    "jetbrains ai": "JetBrains AI",
-    "aws codewhisperer": "Amazon CodeWhisperer",
-    "codewhisperer": "Amazon CodeWhisperer",
-    "qwen": "Qwen",
-    "tongyi": "Tongyi Lingma",
-    "lingma": "Tongyi Lingma",
-    "codex": "OpenAI Codex",
-    "replit": "Replit",
-    "replit ghostwriter": "Replit",
-    "v0": "Vercel v0",
-    "vercel": "Vercel v0",
-    "bolt": "Bolt.new",
-    "lovable": "Lovable",
-    "devin": "Devin",
-    "cognition": "Devin",
-    "sourcegraph": "Sourcegraph Cody",
-    "cody": "Sourcegraph Cody",
-    "augment": "Augment Code",
-    "augment code": "Augment Code",
-    "super maven": "Supermaven",
-    "supermaven": "Supermaven",
-}
-
-
 def _llm_extract_products(query: str) -> list[str]:
     """Multi-round LLM+Search extraction with progressive relaxation.
 
@@ -200,7 +157,7 @@ def _llm_extract_products(query: str) -> list[str]:
         if not new_candidates:
             continue
 
-        verified = _verify_products_via_search(new_candidates, strictness=round_num)
+        verified = _verify_products_via_search(new_candidates, strictness=round_num, query_hint=query)
         for v in verified:
             if v not in all_candidates:
                 all_candidates.append(v)
@@ -215,31 +172,6 @@ def _llm_extract_products(query: str) -> list[str]:
 
 
 def _build_round_prompt(query: str, already_found: list[str], round_num: int) -> str:
-    """Build progressively more permissive extraction prompts."""
-    base = (
-        f"User request: {query}\n\n"
-        "Extract the names of software products or tools they want to compare. "
-        "Return ONLY a JSON array of product name strings.\n"
-    )
-    if already_found:
-        base += f"Already identified: {json.dumps(already_found)}. Find any ADDITIONAL products.\n"
-
-    if round_num == 1:
-        base += "Be strict: only extract clearly named, well-known tools."
-    elif round_num == 2:
-        base += (
-            "Be moderate: include products mentioned by description or nickname. "
-            "Resolve references like '微软的那个AI编程工具' → 'GitHub Copilot'. "
-            "If uncertain, still include the candidate."
-        )
-    else:
-        base += (
-            "Be very permissive: extract ANY possible product mention, even vague ones. "
-            "Resolve ALL indirect references. Infer from context. If the query seems to "
-            "compare tools in a specific domain, list the most likely candidates even "
-            "if not explicitly named. Return at least 2 products."
-        )
-    return base
     """Build progressively more permissive extraction prompts."""
     base = (
         f"User request: {query}\n\n"
@@ -291,106 +223,266 @@ def _llm_extract_candidates(query: str) -> list[str]:
 
 
 
-def _verify_products_via_search(candidates: list[str], strictness: int = 1) -> list[str]:
-    """Verify product names via web search with progressive permissiveness.
+def _verify_products_via_search(candidates: list[str], strictness: int = 1, query_hint: str = "") -> list[str]:
+    """Verify & correct product names: search for ground truth, then LLM judges.
 
-    strictness=1: exact match required (search must return results for name)
-    strictness=2: broader search, accept if any result mentions the name
-    strictness=3: very permissive, accept almost everything
+    Step 2-3 of the resolution pipeline:
+      Step 2: Search each candidate (no judgment — just collect titles).
+      Step 3: Single LLM call judges all candidates against search titles + query context.
+              Corrects typos, expands partial names, keeps confirmed names.
+
+    Deleted: alias table triage (C1/C2/C3), canonical name extraction, all string-matching rules.
+    Reason: hardcoded rules can't understand domain context (e.g. "Power" + "数据分析工具" = "Power BI").
     """
     try:
         from deerflow.competition.tools.search import search as web_search
     except ImportError:
         return candidates
 
-    verified: list[str] = []
-    for name in candidates:
-        key = name.lower()
-        if key in _PRODUCT_ALIASES:
-            corrected = _PRODUCT_ALIASES[key]
-            if corrected not in verified:
-                verified.append(corrected)
-            continue
+    # ── Step 2: Search each candidate (parallel, collect titles only, no judgment) ──
+    # Strategy: dual queries per candidate:
+    #   1. Context search (quoted): candidate + co-competitor → competitive landscape
+    #   2. Independent search (UNquoted): candidate alone → search engine auto-corrects typos
+    # Quoted search ("Noton") forces exact-match, blocking auto-correction.
+    # Unquoted search (Noton product) lets the engine suggest "Notion" in results.
+    search_titles: dict[str, list[str]] = {}
 
+    def _search_one(name: str) -> tuple[str, list[str]] | None:
+        """Search for a single candidate. Returns (name, titles) or None if discarded."""
+        all_titles: list[str] = []
         try:
+            other_names = [c for c in candidates if c.lower() != name.lower()]
+            context = other_names[0] if other_names else None
+
             if strictness <= 2:
-                response = web_search(f'"{name}" software tool', max_results=3)
-            else:
-                # Round 3: just search the name, no quotes, very broad
-                response = web_search(f"{name} tool", max_results=2)
+                # Context search: quoted for precision (find co-mentioned pages)
+                if context:
+                    resp = web_search(f'"{name}" "{context}"', max_results=5)
+                    if resp and resp.results:
+                        t = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp.results]
+                        all_titles.extend(t)
 
-            if response.results:
-                verified.append(name)
-            elif strictness >= 2:
-                # Try an even broader search
-                response2 = web_search(name, max_results=2)
-                if response2.results:
-                    verified.append(name)
+                # Independent search: UNquoted — lets search engine auto-correct typos
+                resp2 = web_search(f'{name} product', max_results=5)
+                if resp2 and resp2.results:
+                    t2 = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp2.results]
+                    for title in t2:
+                        if title not in all_titles:
+                            all_titles.append(title)
+            else:
+                resp = web_search(f"{name} product review", max_results=3)
+                if resp and resp.results:
+                    all_titles = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp.results]
+
+            all_titles = all_titles[:8]
+
+            if not all_titles and strictness >= 2:
+                resp3 = web_search(name, max_results=3)
+                if resp3 and resp3.results:
+                    all_titles = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp3.results]
+                    logger.info("Product '%s' — fallback search found %d results", name, len(all_titles))
                 else:
-                    logger.warning("Product '%s' unverified (round %d) — keeping", name, strictness)
-                    verified.append(name)  # round 2+ accepts unverified
-            else:
-                logger.info("Product '%s' discarded (strict verification failed)", name)
+                    logger.warning("Product '%s' — no search results, keeping as-is", name)
+            elif not all_titles:
+                logger.info("Product '%s' discarded (no search results)", name)
+                return None
         except Exception:
-            if strictness >= 2:
-                verified.append(name)
+            if strictness < 2:
+                return None
+            logger.warning("Search failed for '%s' — keeping", name)
 
-    return verified
+        return (name, all_titles)
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-async def _resolve_products(query: str, explicit_products: list[str]) -> list[str]:
-    """Resolve target products with auto-extraction and typo correction.
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 8)) as executor:
+        futures = {executor.submit(_search_one, name): name for name in candidates}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if result is not None:
+                    search_titles[result[0]] = result[1]
+            except Exception:
+                logger.warning("Search task failed for '%s'", futures[future], exc_info=True)
 
-    Strategy:
-      1. If explicit products provided, normalize each via alias table + LLM correction
-      2. If empty, extract from query text via regex → LLM fallback
-      3. Guarantee: at least one product is returned (never empty)
-    """
-    import logging
-    _log = logging.getLogger(__name__)
+    if not search_titles:
+        return []
 
-    products: list[str] = []
+    # ── Step 3: LLM judges all candidates at once ──
+    resolved = _llm_judge_and_correct(search_titles, query_hint)
 
-    if explicit_products:
-        # Normalize each explicit product
-        for p in explicit_products:
-            p = p.strip()
-            if not p:
-                continue
-            key = p.lower()
-            corrected = _PRODUCT_ALIASES.get(key)
-            if corrected:
-                if corrected not in products:
-                    products.append(corrected)
-            else:
-                # Unknown product — keep as-is but try fuzzy correction later
-                if p not in products:
-                    products.append(p)
-    else:
-        # No explicit products — extract from query via LLM
-        pass
-
-    # LLM extraction when no explicit products
-    if not products:
-        _log.info("No products from explicit list — extracting via LLM")
-        import asyncio
-        loop = asyncio.get_event_loop()
-        products = await loop.run_in_executor(None, _llm_extract_products, query)
-
-    # If still empty, return empty — caller will surface error to user
-    if not products:
-        _log.warning("Could not extract any products from query: '%s'", query[:80])
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
+    # Merge: LLM output drives, fall back to originals for anything missing
     result: list[str] = []
-    for p in products:
-        if p.lower() not in seen:
-            seen.add(p.lower())
-            result.append(p)
+    for name in candidates:
+        if name in resolved:
+            corrected = resolved[name]
+            if corrected != name:
+                logger.info("LLM judge: '%s' → '%s'", name, corrected)
+            else:
+                logger.info("LLM judge: '%s' confirmed", name)
+            result.append(corrected)
+        else:
+            logger.info("LLM judge: '%s' not in response — keeping original", name)
+            result.append(name)
 
-    _log.info("Resolved products: %s (from query: '%s')", result, query[:80])
     return result
+
+
+def _llm_judge_and_correct(
+    search_titles: dict[str, list[str]],
+    query_hint: str = "",
+) -> dict[str, str]:
+    """Single LLM call: judge all candidates against search titles + query context.
+
+    Replaces the old Phase 2 batch LLM + all C1/C2/C3 rules. The LLM sees:
+      - The user's original query (domain context)
+      - Each candidate name
+      - Search result titles for that candidate (ground truth)
+
+    Returns a mapping of original_name → resolved_name.
+    Candidates not in the returned dict are kept as-is by the caller.
+    """
+    try:
+        from deerflow.competition.executor import execute_agent
+    except ImportError:
+        return {}
+
+    if not search_titles:
+        return {}
+
+    # ── Build the task prompt ──
+    parts: list[str] = []
+
+    if query_hint:
+        parts.append(f"User query: \"{query_hint}\"\n")
+
+    parts.append("Candidates to resolve:\n")
+    for name, titles in search_titles.items():
+        if titles:
+            lines = "\n".join(f"      {i+1}. {t}" for i, t in enumerate(titles[:5]))
+            parts.append(f'  - "{name}" → search titles:\n{lines}\n')
+        else:
+            parts.append(f'  - "{name}" → search titles: (no results)\n')
+
+    task = "\n".join(parts)
+    task += (
+        "\nFor each candidate, determine the canonical product name. Use these rules:\n"
+        "\n"
+        "1. **Search titles are ground truth.** If titles consistently show a different "
+        "but related name (e.g. \"Notion\" when candidate is \"Noton\"), the titles are correct.\n"
+        "2. **Query context is critical for disambiguation.** The user's query tells you "
+        "the product domain. Use it to expand common words and abbreviations:\n"
+        '   - "Power" + "数据分析" → "Power BI" (data analytics domain)\n'
+        '   - "Tab" + "数据分析" → "Tableau" (data analytics domain)\n'
+        '   - "force" + "CRM" → "Salesforce" (CRM domain)\n'
+        '   - "spot" + "CRM" → "HubSpot" (CRM domain)\n'
+        '   - "DD" + "监控" → "Datadog" (monitoring domain)\n'
+        '   - "SF" + "CRM" → "Salesforce" (CRM domain)\n'
+        "3. **Correct typos aggressively.** Common misspellings of well-known products "
+        "should be corrected even when search titles are sparse or mixed. "
+        "Examples: Noton→Notion, MonngoDB→MongoDB, Githbu→GitHub, Postgre→PostgreSQL. "
+        "The independent search is unquoted so the search engine may auto-correct; "
+        "if even ONE title shows the corrected name, that's strong evidence.\n"
+        "4. **Be concise.** \"Power BI\" not \"Microsoft Power BI Desktop\". "
+        "\"Salesforce\" not \"Salesforce CRM Platform\".\n"
+        "5. **Don't hallucinate.** If search titles don't clearly support a correction, "
+        "keep the original name. Do NOT guess based on domain alone — there must be "
+        "evidence in the search titles.\n"
+        "6. **Proper nouns stay proper.** Respect original capitalization: \"MongoDB\", \"GitHub\", \"iOS\".\n"
+        "7. **Each candidate is independent.** Don't change candidate A because candidate B's "
+        "search results are about a different product. Judge each candidate on its OWN titles.\n"
+        "\n"
+        "Return ONLY a JSON array. Each entry must have three fields:\n"
+        '  {"original": "<candidate>", "resolved": "<canonical name>", "confidence": "<high|medium|low>"}\n'
+        "\n"
+        "- **high**: Search titles overwhelmingly confirm the resolved name.\n"
+        "- **medium**: Reasonable inference from query context + partial title evidence.\n"
+        "- **low**: Sparse results, keeping original as best guess.\n"
+        "\n"
+        "Include EVERY candidate in the output.\n"
+    )
+
+    try:
+        raw, tokens = execute_agent(
+            (
+                "You are a product name resolver. Your job: determine the canonical "
+                "product name for each candidate by cross-referencing search titles "
+                "with the user's original query context.\n"
+                "\n"
+                "CRITICAL: The user's query tells you the product DOMAIN. "
+                "Common English words in a tech context are almost always partial names:\n"
+                "  - CRM context: force→Salesforce, spot→HubSpot, sugar→SugarCRM\n"
+                "  - Data analytics: power→Power BI, tab→Tableau, looker→Looker\n"
+                "  - Monitoring: dd→Datadog, pd→PagerDuty\n"
+                "  - Design: figma→Figma, sketch→Sketch, xd→Adobe XD\n"
+                "\n"
+                "TYPO CORRECTION: The independent search for each candidate is UNQUOTED, "
+                "so the search engine may auto-correct typos (e.g. searching 'Noton product' "
+                "may return titles about 'Notion'). When you see a candidate that looks like "
+                "a misspelling of a well-known product AND the independent search titles "
+                "mention that product, correct it. Common typos:\n"
+                "  - Noton → Notion, MonngoDB → MongoDB, Githbu → GitHub\n"
+                "  - Postgre → PostgreSQL, Doker → Docker, Kubernets → Kubernetes\n"
+                "  - Figam → Figma, Sktech → Sketch, Obisidian → Obsidian\n"
+                "\n"
+                "Use search titles as evidence to support or refine these expansions. "
+                "A candidate with 0 search results should still be expanded if the "
+                "query context is clear (use medium confidence). "
+                "Return ONLY valid JSON array."
+            ),
+            task,
+            temperature=0.0,
+            max_tokens=500,
+            agent_name="ProductJudge",
+        )
+        if not raw:
+            logger.warning("LLM judge returned empty — keeping %d candidates as-is", len(search_titles))
+            return {}
+
+        parsed = _parse_json_safe(raw)
+        if not isinstance(parsed, list):
+            logger.warning("LLM judge returned non-array: %s", str(parsed)[:100])
+            return {}
+
+        # Convert to {original: resolved} mapping with validation
+        result: dict[str, str] = {}
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            orig = entry.get("original", "")
+            resolved = entry.get("resolved", "")
+            confidence = entry.get("confidence", "medium")
+            if not orig or not resolved:
+                continue
+            # Length guard: reject overly long / descriptive names
+            if len(resolved) > 50:
+                logger.warning("LLM judge returned overly long name for '%s': '%s' — keeping original",
+                             orig, resolved[:80])
+                result[orig] = orig
+            else:
+                result[orig] = resolved
+                logger.debug("LLM judge: '%s' → '%s' [%s]", orig, resolved, confidence)
+
+        corrected = sum(1 for k, v in result.items() if v.lower() != k.lower())
+        logger.info("LLM judge: %d/%d candidates corrected (%d tokens)",
+                    corrected, len(result), tokens)
+        return result
+
+    except Exception:
+        logger.warning("LLM judge failed — keeping all candidates as-is", exc_info=True)
+        return {}
+
+
+def _parse_json_safe(raw: str) -> dict | list | None:
+    """Extract JSON from LLM output, handling markdown code blocks."""
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
 
 
 # ── Routes ──
@@ -398,42 +490,39 @@ async def _resolve_products(query: str, explicit_products: list[str]) -> list[st
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
-    """Start a competitive analysis. Returns thread_id for polling/streaming."""
+    """Start a competitive analysis. Returns thread_id immediately.
+
+    Product resolution (LLM + search, ~2min) runs in background thread,
+    then graph execution starts automatically once products are resolved.
+    Frontend polls /report/{thread_id} for status updates.
+    """
     import uuid
     from datetime import UTC, datetime
 
     thread_id = f"comp-{uuid.uuid4().hex[:12]}"
 
-    # Resolve target products: explicit list > NLP extraction from query > LLM fallback
-    target_products = await _resolve_products(request.query, request.target_products)
-
-    if not target_products:
-        raise HTTPException(
-            status_code=400,
-            detail="无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。",
-        )
-
-    # Build initial state
-    initial_state = {
-        "messages": [],
-        "user_request": request.query,
-        "target_products": target_products,
-        "persona": request.persona,
-        "deep_mode": request.deep_mode,
-        "collected_data": [],
-        "context_report": request.context_report,
-    }
-
+    # Store entry immediately — frontend can start polling right away
     _store[thread_id] = {
         "status": "running",
-        "state": initial_state,
+        "state": {
+            "messages": [],
+            "user_request": request.query,
+            "target_products": request.target_products or [],
+            "persona": request.persona,
+            "deep_mode": request.deep_mode,
+            "collected_data": [],
+            "context_report": request.context_report,
+        },
         "created_at": datetime.now(UTC).isoformat(),
         "query": request.query,
-        "products": target_products,
+        "products": [],
     }
 
-    # Launch graph in background thread (sync LLM calls would block asyncio event loop)
-    asyncio.get_event_loop().run_in_executor(None, _run_graph_sync, thread_id)
+    # Resolve products + run graph entirely in background thread
+    # (sync LLM + search calls take ~2min and would block the event loop)
+    asyncio.get_event_loop().run_in_executor(
+        None, _resolve_and_run_graph, thread_id, request.query, request.target_products,
+    )
 
     return AnalyzeResponse(thread_id=thread_id, status="running")
 
@@ -460,6 +549,7 @@ async def get_report(thread_id: str) -> ReportResponse:
         error=error,
         history_count=len(history),
         token_usage=token_usage_list,
+        created_at=entry.get("created_at"),
     )
 
 
@@ -857,6 +947,73 @@ def _add_token_entry(thread_id: str, label: str) -> None:
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     })
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
+
+
+def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str]) -> None:
+    """Resolve products then run graph — all synchronous, called from thread executor.
+
+    Runs in background thread because:
+      1. _llm_extract_products() makes LLM calls (~20-30s)
+      2. _verify_products_via_search() makes search + LLM calls (~60-120s)
+      3. _run_graph_sync() runs the full graph (~5-10min)
+    Total: 5-10 minutes of synchronous LLM calls that would block the event loop.
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    try:
+        # ── Step 1: Resolve products ──
+        products: list[str] = []
+
+        if explicit_products:
+            for p in explicit_products:
+                p = p.strip()
+                if p and p not in products:
+                    products.append(p)
+
+        if products:
+            # Verify/correct explicit products via search + LLM judge
+            products = _verify_products_via_search(products, 1, query)
+
+        if not products:
+            # No explicit products — extract from query via LLM
+            _log.info("No products from explicit list — extracting via LLM")
+            products = _llm_extract_products(query)
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        resolved: list[str] = []
+        for p in products:
+            if p.lower() not in seen:
+                seen.add(p.lower())
+                resolved.append(p)
+        products = resolved
+
+        _log.info("Resolved products: %s (from query: '%s')", products, query[:80])
+
+        if not products:
+            _log.warning("Could not resolve any products — marking as failed")
+            if thread_id in _store:
+                _store[thread_id]["status"] = "failed"
+                _store[thread_id]["state"]["error"] = (
+                    "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
+                )
+            return
+
+        # Update store with resolved products
+        if thread_id in _store:
+            _store[thread_id]["products"] = products
+            _store[thread_id]["status"] = "running"
+            _store[thread_id]["state"]["target_products"] = products
+
+        # ── Step 2: Run the graph ──
+        _run_graph_sync(thread_id)
+
+    except Exception as e:
+        _log.exception("Resolution+graph failed for %s: %s", thread_id, e)
+        if thread_id in _store:
+            _store[thread_id]["status"] = "failed"
+            _store[thread_id]["state"]["error"] = str(e)
 
 
 def _run_graph_sync(thread_id: str) -> None:

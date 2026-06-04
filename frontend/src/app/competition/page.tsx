@@ -186,6 +186,8 @@ export default function CompetitionPage() {
   const [status, setStatus] = useState<string>("idle");
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenEntry[]>([]);
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [dagState, setDagState] = useState<DagState | null>(null);
   const [activePanel, setActivePanel] = useState<string>("dag");
@@ -217,10 +219,22 @@ export default function CompetitionPage() {
     }
   }, [status]);
 
+  // Elapsed-time timer — ticks every second while running
+  useEffect(() => {
+    if (status !== "running" || !createdAt) {
+      if (status !== "running") setElapsedSeconds(0);
+      return;
+    }
+    const start = new Date(createdAt).getTime();
+    const tick = () => setElapsedSeconds(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [status, createdAt]);
+
   const handleStart = useCallback(async () => {
-    if (!query.trim() || !products.trim()) return;
+    if (!query.trim()) return;
     const productList = products.split(",").map((p) => p.trim()).filter(Boolean);
-    if (productList.length === 0) return;
 
     setStatus("running");
     setReportData(null);
@@ -266,7 +280,7 @@ export default function CompetitionPage() {
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
-        setStatus(report.status);
+        if (report.created_at) setCreatedAt(report.created_at);
         setStatus(report.status);
       } catch { /* retry on transient errors */ }
     };
@@ -366,12 +380,26 @@ export default function CompetitionPage() {
     : status === "approved" ? <Badge variant="secondary">✅ 已批准</Badge>
     : <Badge variant="destructive">❌ 失败</Badge>;
 
+  const formatElapsed = (s: number): string => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}h ${m}m ${sec}s`;
+    if (m > 0) return `${m}m ${sec}s`;
+    return `${sec}s`;
+  };
+
+  const elapsedBadge = (status === "running" && elapsedSeconds > 0)
+    ? <span className="font-mono text-xs text-muted-foreground">{formatElapsed(elapsedSeconds)}</span>
+    : null;
+
   return (
     <div className="flex h-screen flex-col bg-background">
       {/* Header */}
       <div className="flex items-center gap-4 border-b px-6 py-3">
         <h1 className="text-lg font-bold">CI-Agent 竞品分析</h1>
         {statusBadge}
+        {elapsedBadge}
         <Button variant="ghost" size="sm" onClick={async () => {
           setShowDbHistory(true);
           try {
@@ -425,7 +453,7 @@ export default function CompetitionPage() {
             <Switch checked={deepMode} onCheckedChange={setDeepMode} disabled={status === "running"} />
             <span className="text-xs">深度</span>
           </div>
-          <Button onClick={handleStart} disabled={status === "running" || !query.trim() || !products.trim()}>
+          <Button onClick={handleStart} disabled={status === "running" || !query.trim()}>
             {status === "running" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
             {status === "running" ? "分析中…" : "开始分析"}
           </Button>
@@ -591,7 +619,8 @@ export default function CompetitionPage() {
                             }).catch((err) => {
                               console.error("HITL submit failed:", err);
                               setHitlSubmitting(false);
-                              setStatus("completed");
+                              // Don't touch status — polling is the source of truth.
+                              // A 409 (still running) means the previous action is in progress.
                             });
                           }
                         }

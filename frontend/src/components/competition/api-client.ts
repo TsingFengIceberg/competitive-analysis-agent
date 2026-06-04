@@ -45,6 +45,7 @@ export interface ReportResponse {
   error: string | null;
   history_count: number;
   token_usage: TokenEntry[];
+  created_at: string | null;
 }
 
 export interface TokenEntry {

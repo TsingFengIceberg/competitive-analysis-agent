@@ -42,25 +42,32 @@ def execute_agent(
     temperature: float = 0.3,
     max_tokens: int = 4096,
     agent_name: str = "",
+    disable_thinking: bool = False,
 ) -> tuple[str | None, int]:
     """Execute a single LLM call, returning (content, token_count).
 
     Handles thinking models transparently: if LangChain returns empty content
     (common with Doubao seed thinking mode), falls back to raw HTTP parsing
     that properly extracts reasoning_content.
+
+    Set disable_thinking=True to use non-thinking mode (faster, for simple tasks).
     """
     try:
         from langchain_openai import ChatOpenAI
 
-        llm = ChatOpenAI(
-            model=model,
-            base_url=api_base,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=300,
-            max_retries=2,
-        )
+        llm_kwargs: dict = {
+            "model": model,
+            "base_url": api_base,
+            "api_key": api_key,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "timeout": 300,
+            "max_retries": 2,
+        }
+        if disable_thinking:
+            llm_kwargs["model_kwargs"] = {"thinking": {"type": "disabled"}}
+
+        llm = ChatOpenAI(**llm_kwargs)
 
         messages: list = [
             {"role": "system", "content": system_prompt},
@@ -74,7 +81,7 @@ def execute_agent(
         # If LangChain dropped the content (thinking model), retry via raw HTTP
         if not content:
             logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
-            content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature)
+            content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
 
         logger.info("Agent response: %d chars (%d tokens)", len(str(content)), usage)
         global _total_tokens_used
@@ -130,6 +137,7 @@ def _extract_usage(response) -> int:
 def _raw_chat_completion(
     model: str, api_base: str, api_key: str,
     messages: list, max_tokens: int, temperature: float,
+    disable_thinking: bool = False,
 ) -> tuple[str, int]:
     """Raw HTTP call to OpenAI-compatible chat completions API.
 
@@ -138,12 +146,16 @@ def _raw_chat_completion(
     """
     import urllib.request
 
-    payload = json.dumps({
+    payload_dict: dict = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
-    }).encode()
+    }
+    if disable_thinking:
+        payload_dict["thinking"] = {"type": "disabled"}
+
+    payload = json.dumps(payload_dict).encode()
 
     req = urllib.request.Request(
         f"{api_base.rstrip('/')}/chat/completions",
@@ -173,10 +185,11 @@ def execute_structured_agent(
     task: str,
     output_schema_desc: str = "JSON",
     agent_name: str = "",
+    disable_thinking: bool = False,
     **kwargs,
 ) -> tuple[dict | list | str | None, int]:
     """Execute LLM call and attempt to parse the output as JSON. Returns (result, token_count)."""
-    raw, tokens = execute_agent(system_prompt, task, agent_name=agent_name, **kwargs)
+    raw, tokens = execute_agent(system_prompt, task, agent_name=agent_name, disable_thinking=disable_thinking, **kwargs)
     if raw is None:
         return (None, tokens)
 

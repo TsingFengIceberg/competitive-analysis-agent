@@ -2377,20 +2377,133 @@ rewrite   + target_focus = ["创业者视角"]  → Writer 只重写创业者视
 | 飞书审批推送失败 | auto-approve + warning 日志 | HITL 是增强，不是必须阻塞点 |
 | 用户选 replan/reanalyze/rewrite 但未填 comment | 正常路由，目标节点 prompt 追加 "用户未指定具体修改方向，请重新生成" | 降低使用门槛 |
 
-### 5.3 竞品变更检测 + 飞书通知（P1 — 新增）
+### 5.3 竞品变更检测 + 飞书通知（P1）
 
-对关键竞品页面做定期快照，检测到变更时主动推送：
+> **设计原则**：低成本、低误报、定向精准。不做全量重跑，做字段级对账。
 
-**场景**：
-- Cursor 更新了定价页 → 飞书通知 "Cursor Pro 从 $20 涨到 $30"
-- Copilot 发布了新功能 → 飞书通知 + 变更摘要
-- Windsurf 被收购 → 飞书通知 + 行业影响分析
+#### 5.3.1 核心认知：我们没有固定 URL
 
-**技术实现**：
-- 对目标 URL 做 hash 快照（存 SQLite）
-- 定时任务（或手动触发）对比当前页面
-- 变更检测 → LLM 生成变更摘要 → 飞书 Bot 推送
-- 报告中标注："数据采集于 5/21，Cursor 定价页在 5/25 检测到变更"
+电商可以对已知 SKU 页 URL 做 HEAD/ETag/hash——但我们不知道信息会出现在哪个 URL。所以入口不是"URL 快照"，而是**可重放的结构化基线条目**。
+
+#### 5.3.2 基线存什么（`product_baseline` 表）
+
+每次分析完成后，从 `collected_data` 中自动提取"可定量追踪的事实"：
+
+```
+{
+  product: "Cursor",
+  attribute: "pricing_pro_monthly_usd",
+  value: "20",
+  value_type: "numeric",                        // numeric | semver | boolean | enum
+  search_query: '"Cursor" Pro monthly price USD cost',
+  evidence_urls: ["cursor.com/pricing", "..."],
+  evidence_snippet: "...Pro plan is $20/month...",
+  confidence: 0.95,
+  etag: "abc123",                                // 可选：URL 存活时的 HEAD 结果
+  recorded_at: "2026-06-04",
+}
+```
+
+关键设计：
+- **每个基线条目自带精准 search_query**——当初采集时验证过"用这个词能搜到答案"
+- **value_type 标注**——numeric 做数值对比，semver 做版本对比，boolean 做真值翻转，enum 做选项变更
+- **evidence_snippet** 保留原文——人可审计，不用打开链接
+
+#### 5.3.3 检测流程：四步漏斗
+
+```
+Step 1: URL 存活检查        成本: 0 token, ~0.5s
+  HEAD evidence_urls → ETag / Last-Modified / Content-Length 没变 → 跳过
+  此步过滤 70-80% 检测点（页面根本没变）
+
+Step 2: 定向字段提取        成本: ~200 token, ~3s
+  用存储的 search_query 重新搜 5 条 → LLM 只提取这一个字段的值
+  max_tokens=50，提示词要求返回 UNCHANGED / 新值 / UNKNOWN（三选一）
+  此步过滤剩余 95%（页面可能变了但数字没变）
+
+Step 3: 交叉验证            成本: ~300 token, ~5s（仅 Step 2 发现变化时）
+  换一个 search query（同义改写）再查 → 两轮结果一致才确认变更
+  过滤：单次搜索偶然性（缓存旧页、SEO 垃圾、搜索排名波动）
+
+Step 4: 持久性确认          成本: ~200 token（仅 Step 3 确认变化后）
+  标记 "pending_confirmed"，24h 后重检 → 仍一致才推送
+  过滤：限时促销、A/B 测试临时变体、24h 内撤销的价格失误
+```
+
+**LLM 为什么只有 50 token**：提示词不给 LLM 全文，不给自由发挥空间，只让它从 5 条标题里判断一个数字有没有变。不确定就说 UNKNOWN，不强答。
+
+#### 5.3.4 关键设计决策
+
+**为什么用"字段提取"而非"语义差异"做判断**
+
+```
+✗ 语义对比（高成本、高误报）：
+  "对比这两段文字，Cursor 的定价有什么变化？" 
+  → LLM 可能说"定价策略从激进转向保守"（幻觉/过度解读）
+  → token 消耗 ~500，且无法验证真假
+
+✓ 字段提取（低成本、低误报）：
+  "Extract Cursor Pro monthly USD price. Old: $20. Return NUMBER / UNCHANGED / UNKNOWN"
+  → LLM 只能返回 "30" 或 "UNCHANGED" 或 "UNKNOWN"
+  → token 消耗 ~200，输出可精确对账
+```
+
+**为什么需要 Step 4 持久性确认**
+
+一个价格变更出现了 5 分钟又消失了——是促销还是数据错误？24h 再确认一次，真正的战略调价不会 24h 后恢复。这道防线把误报率压到接近零。
+
+**批量检测**
+
+15 个检测点可一次 LLM 调用完成：
+
+```
+"For each of the 15 monitoring items below, extract the current value.
+ Previous values are given. Return ONLY a JSON array of {attribute, value, status}.
+ Status must be: UNCHANGED / CHANGED / UNKNOWN."
+
+批量 15 字段一次提取 → ~500 token → 比 15 次独立调用便宜 ~60%
+```
+
+#### 5.3.5 成本精算
+
+假设监控 3 竞品 × 5 关键属性 = 15 检测点，每天 1 次：
+
+| Step | 触发率 | 每次 token | 日总 token |
+|------|--------|------------|-----------|
+| Step 1 HEAD | 100% | 0 | 0 |
+| Step 2 字段提取（批量） | 100% | ~500 | 500 |
+| Step 3 交叉验证 | ~5% | ~300 | ~225 |
+| Step 4 重检 | ~3% | ~200 | ~90 |
+| **合计** | | | **~815 token/天** |
+
+对比一次完整分析 115K token：**每天监控 15 个检测点的成本 ≈ 一次完整分析的 0.7%**。
+
+#### 5.3.6 降本补充手段
+
+| 手段 | 效果 |
+|------|------|
+| **事件触发优先** | GitHub Release / 竞品 Blog RSS 有新条目 → 立即触发（比定时盲扫更精准，零成本） |
+| **夜间降频** | 周末/夜间 SaaS 基本不更新 → 降为 1 次/天；工作日白天 → 2 次/天 |
+| **高频属性筛选** | 只监控 numeric/semver 类（定价/版本号），enum/boolean 类降频或跳过 |
+| **URL 长缓存** | HEAD 请求中 `etag` 不变的条目 → 标记 `stale`，拉长检测间隔到 3 天 |
+
+#### 5.3.7 场景示例
+
+- Cursor 更新了定价页 → Step 2 检测到 `pro_monthly: 20 → 30` → Step 3 交叉验证一致 → 24h 后 Step 4 确认 → 飞书通知："Cursor Pro 从 $20/月 涨至 $30/月（+50%）"，附带变更前后的 evidence_snippet
+- Copilot 发布了新功能 → GitHub Release RSS 触发 → 功能列表 enum 字段变更 → 飞书通知 + 变更摘要
+- Windsurf 定价页临时挂了 503 → Step 2 返回 UNKNOWN → 不推送
+- Cursor 首页改了个 CSS → Step 1 ETag 变了但 Step 2 字段提取 `pricing_pro: UNCHANGED` → 不推送
+
+#### 5.3.8 对现有架构的关系
+
+```
+product_baseline 表（已有设计，§3.15.3）
+  + 新增字段: search_query, evidence_snippet, value_type, etag
+  + 新增函数: _check_for_changes() 四步漏斗
+  + 通知出口: 飞书 Bot（已有，DF 通道层 §5.1）
+```
+
+不需要新的存储层或新的 Agent，在现有 Collector + product_baseline 基础上加一个定时检测函数即可。
 
 ### 5.4 可视化增强（P0 — 报告差异化关键）
 
@@ -3011,6 +3124,9 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 | 报告导出（Markdown/PDF/PPTX 下载按钮） | 前端调用导出 API | P2 |
 | 飞书 Bot 配置 + 联通测试（DF 已有通道） | `config.yaml` channels.feishu | P1 |
 | Gateway API（POST /analyze, SS /stream, GET /report） | `app/gateway/routers/competition.py`（✅ 已就绪） | P0 |
+| **v3 产品名称解析管道**（LLM 语义提取 + Search 验证 + LLM Judge 纠错） | `competition.py` `_llm_extract_products` / `_verify_products_via_search` / `_llm_judge_and_correct` | P0 |
+| **解析性能优化**（并行搜索 ThreadPoolExecutor + ProductJudge 禁用 thinking） | 搜索 ~80s→~20s，裁决 ~50s→~10s | P0 |
+| **前端体验优化**（竞品名自动提取 + 后台线程解析 + 耗时计时器） | `page.tsx` 可选输入框 + `created_at` 字段 | P0 |
 | 集成测试 | `tests/test_competition_e2e.py` | P0 |
 
 ### Week 3 (6/3 - 6/10): 打磨 + 答辩准备

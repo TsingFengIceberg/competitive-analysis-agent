@@ -390,5 +390,66 @@
 
 ---
 
+## 十一、产品名称解析 v3 管道 + 前端优化（2026-06-03）
+
+### 11.1 v3 语义提取管道
+
+- [x] **LLM 语义提取优先**（唯一语义步骤）：`_llm_extract_products()` 多轮 LLM 提取竞品名
+  → [competition.py](../backend/app/gateway/routers/competition.py#L141-L170)
+- [x] **Search 搜索验证兜底**：`_verify_products_via_search()` 并行搜索 + LLM 语义裁决
+  → [competition.py](../backend/app/gateway/routers/competition.py#L225-L317)
+- [x] **LLM Judge 一次裁决所有候选**：`_llm_judge_and_correct()` 综合 query 上下文 + 搜索标题
+  → [competition.py](../backend/app/gateway/routers/competition.py#L320-L463)
+- [x] **删除别名表 + 所有硬编码规则**：C1/C2/C3, alias table, canonical name extraction, string matching
+- [x] **双重搜索策略**：引号上下文搜索 + 无引号独立搜索（搜索引擎自动纠错 Noton→Notion）
+
+### 11.2 性能优化
+
+- [x] **并行搜索**：`ThreadPoolExecutor` 并发搜索所有候选，4 候选 ~80s→~20s
+  → [competition.py](../backend/app/gateway/routers/competition.py#L225)
+- [x] **ProductJudge 保持 thinking 模式**：尝试 `disable_thinking` 导致 Doubao 返回空内容，回退
+
+### 11.3 前端体验优化
+
+- [x] **竞品名自动提取**：前端输入框改为可选，LLM 从自然语言 query 提取
+- [x] **后端立即响应**：`/analyze` 立即返回 thread_id，解析+运行在后台线程
+- [x] **前端耗时计时器**：Header 显示实时已用时间（每秒刷新），读取 `created_at`
+
+---
+
+## 十二、竞品变更检测：字段级四步漏斗（2026-06-04）
+
+> 设计原则：低成本、低误报、定向精准。不做全量重跑，做字段级对账。
+> 详细设计见 [PLAN §5.3](../COMPETITION_PLAN.md#53-竞品变更检测--飞书通知p1)
+
+### 12.1 `product_baseline` 表扩展
+
+- [ ] **扩展基线条目字段**：`search_query`、`evidence_snippet`、`value_type`（numeric/semver/boolean/enum）、`etag`
+  → 每个条目录入时自带可重放的精准搜索词
+- [ ] **自动入库**：分析完成后从 `collected_data` 提取可定量追踪的事实写入 baseline
+
+### 12.2 四步漏斗检测流程
+
+- [ ] **Step 1 URL 存活检查**：HEAD `evidence_urls` → ETag/Last-Modified/Content-Length 对比 → 不变则跳过（0 token）
+- [ ] **Step 2 定向字段提取**：用存储的 `search_query` 搜 5 条 → LLM 只提取目标字段（max_tokens=50，~200 token）
+  → 提示词三选一：UNCHANGED / 新值 / UNKNOWN
+- [ ] **Step 3 交叉验证**：换同义 search query 重查 → 两轮一致才确认（仅 Step 2 发现变化时触发，~300 token）
+- [ ] **Step 4 持久性确认**：标记 pending，24h 后重检 → 仍一致才推送（过滤促销/A/B 测试临时变体）
+
+### 12.3 通知 + 降本
+
+- [ ] **飞书 Bot 推送**：变更摘要 + evidence_snippet 前后对比 + 一键重分析入口
+- [ ] **批量检测**：15 个检测点一次 LLM 调用完成（~500 token vs. 15 次 × 200）
+- [ ] **事件触发优先**：GitHub Release / Blog RSS 有新条目 → 立即触发（零成本，比定时盲扫精准）
+- [ ] **夜间降频**：周末/夜间 1 次/天，工作日白天 2 次/天
+- [ ] **URL 长缓存**：etag 不变 → 标记 stale → 检测间隔拉长到 3 天
+
+### 12.4 成本基线
+
+- [ ] **日成本 ~815 token**（3 竞品 × 5 属性 = 15 检测点，对比单次完整分析 115K token = 0.7%）
+- [ ] **误报率目标 <5%**（四道防线：URL 未变 / 字段未改 / 单次搜索偶然性 / 临时变体）
+
+---
+
 > **使用方式**：编码时对照此 TODO，每完成一项标记 `[x]`。每个条目后的链接指向 COMPETITION_PLAN.md 对应设计章节。
 > 状态：`[ ]` 待完成 | `[x]` 已完成
