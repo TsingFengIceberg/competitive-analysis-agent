@@ -80,10 +80,12 @@ def get_dag_state(state: dict) -> dict:
         nid = node["id"]
         status = _compute_node_status(nid, state, current_node, error)
         annotation = _compute_node_annotation(nid, state)
+        self_assessment = _get_self_assessment(nid, state)
         node_states[nid] = {
             **node,
             "status": status,
             "annotation": annotation,
+            "self_assessment": self_assessment,
             "style": _node_style(status),
         }
 
@@ -255,6 +257,54 @@ def _node_style(status: NodeStatus) -> dict:
         "hitl_pending": {"color": "#FF9800", "icon": "🟡", "animation": "blink"},
     }
     return styles.get(status, styles["waiting"])
+
+
+def _get_self_assessment(node_id: str, state: dict) -> dict | None:
+    """Extract self-assessment data for a node from the state.
+
+    Returns a dict with 'score' (0.0-1.0) and 'label' for frontend display,
+    or None if self-assessment is not yet computed for this node.
+    """
+    assessment_map = {
+        "collector": "collector_self_assessment",
+        "analyst": "analyst_self_assessment",
+        "writer": "writer_self_assessment",
+    }
+
+    key = assessment_map.get(node_id)
+    if not key:
+        return None
+
+    data = state.get(key)
+    if not data:
+        return None
+
+    # Extract the primary score based on node type
+    if node_id == "collector":
+        score = data.get("coverage_score", 0)
+    elif node_id == "analyst":
+        score = data.get("cross_validated_ratio", 0)
+    elif node_id == "writer":
+        score = data.get("overall_score", data.get("section_completeness", 0))
+    else:
+        return None
+
+    # Determine color tier
+    if score >= 0.8:
+        tier = "green"
+    elif score >= 0.6:
+        tier = "yellow"
+    else:
+        tier = "red"
+
+    return {
+        "score": score,
+        "tier": tier,
+        "details": {
+            k: v for k, v in data.items()
+            if k not in ("section_status", "product_mention_check", "missing_required")
+        },
+    }
 
 
 def _build_summary(state: dict) -> dict:

@@ -118,6 +118,11 @@ export interface DagNode {
   status: "waiting" | "active" | "done" | "error" | "hitl_pending";
   annotation: string | null;
   style: { color: string; icon: string; animation: string | null };
+  self_assessment?: {
+    score: number;
+    tier: "green" | "yellow" | "red";
+    details: Record<string, unknown>;
+  } | null;
 }
 
 export interface DagEdge {

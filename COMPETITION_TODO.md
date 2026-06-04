@@ -417,8 +417,9 @@
 
 ---
 
-## 十二、竞品变更检测：字段级四步漏斗（2026-06-04）
+## 十二、竞品变更检测：字段级四步漏斗（2026-06-04）`[延后]`
 
+> ⚠️ **暂缓实施**。答辩前优先补前瞻性技术方向和问卷/访谈能力。答辩后如有时间再启动。
 > 设计原则：低成本、低误报、定向精准。不做全量重跑，做字段级对账。
 > 详细设计见 [PLAN §5.3](../COMPETITION_PLAN.md#53-竞品变更检测--飞书通知p1)
 
@@ -448,6 +449,79 @@
 
 - [ ] **日成本 ~815 token**（3 竞品 × 5 属性 = 15 检测点，对比单次完整分析 115K token = 0.7%）
 - [ ] **误报率目标 <5%**（四道防线：URL 未变 / 字段未改 / 单次搜索偶然性 / 临时变体）
+
+---
+
+## 十三、前瞻性技术方向（2026-06-04，源自开题材料评分维度二 25%）
+
+> 开题材料原文：「技术方案有独特或前瞻性思考（如自适应任务拆分、Agent 自评估、动态 Schema 演化）」
+> 三个方向我们目前均未覆盖，答辩前至少各落地一个可演示的最小版本。
+
+### 13.1 自适应任务拆分
+
+- [x] **Query 复杂度评估**：根据 query 中的竞品数量、关键词（深度/全面/预测/战略）、长度自动判定 quick/standard/deep
+  → 位置：`competition.py:155` `_assess_complexity()` — 启发式评估，零额外 LLM 调用
+  → 例："对比 Slack 和 飞书" → quick 模式；"分析全球 CRM 市场 Top 5" → deep 模式
+- [x] **动态搜索预算分配**：Collector 根据 complexity 调整搜索词数、fetch 深度、结果数
+  → quick: 2 类别(功能+定价) × 1 fetch, ~15K tokens
+  → standard: 4 类别 × 2 fetch, ~30K tokens
+  → deep: 4 类别 + 3 额外深度查询/产品 × 3 fetch, ~60K tokens
+  → 位置：`collector.py:468` `COMPLEXITY_CONFIG` + `search.py:707` `build_search_queries(complexity=)`
+- [ ] **增量 vs 全量判断**：如果 7 天内已有同产品分析 → 增量更新而非全量重跑（需要跨 session 历史查询，暂延后）
+
+### 13.2 Agent 自评估
+
+- [x] **Collector 自评估**：采集完成后自评覆盖率（每个产品 × 每个维度是否都有数据）
+  → 输出 `collector_self_assessment: {coverage_score, gaps, per_product, avg_confidence}`
+  → 位置：`collector.py:256` `_build_collector_self_assessment()`
+- [ ] **Collector 自动补采**：coverage < 0.7 时自动触发补采（需要图级路由变更，暂延后）
+- [x] **Analyst 自评估**：分析完成后自评一致性（交叉验证率 + 单源结论 + confidence breakdown）
+  → 输出 `analyst_self_assessment: {cross_validated_ratio, single_source_claims, confidence_breakdown}`
+  → 位置：`analyst.py:452` `_build_analyst_self_assessment()`
+- [x] **Writer 自评估**：生成后自检章节完整性、Schema 合规性、来源标注率
+  → 输出 `writer_self_assessment: {schema_compliance, section_completeness, source_annotation_rate, overall_score}`
+  → 位置：`writer.py:398` `_build_writer_self_assessment()`
+- [ ] **Writer 自动回退修正**：发现问题自动回退修正不等 Reviewer 触发（需要图级路由变更，暂延后）
+- [x] **自评估结果可视化**：DAG 图中 Collector/Analyst/Writer 节点旁显示自评分数圆点（绿≥0.8/黄≥0.6/红<0.6）
+  → 后端：`dag.py:272` `_get_self_assessment()` 提取分数和 tier
+  → 前端：`dag-graph.tsx` 节点标签内嵌彩色圆点 + hover title 显示百分比
+
+### 13.3 动态 Schema 演化
+
+- [x] **领域自适应 Schema 扩展**：`AnalysisResult` + `ReportData` 增加 `extra_fields: dict[str, Any]`，Analyst LLM 根据行业自动识别特有维度
+  → 位置：`schema.py` AnalysisResult/ReportData 新增字段；`analyst.py` prompt 引导 LLM 输出 SaaS/硬件/游戏等行业维度
+  → `writer.py` 报告增加「附录 B: 行业特有维度」section
+- [x] **Reviewer G9 校验**：extra_fields 每项必须有 source_data_point_ids，无引用标记为 minor gap
+  → 位置：`reviewer.py:313` `_check_extra_fields_sources()`
+- [x] **Schema 版本管理**：`FeatureTree` + `PricingModel` 增加 `schema_version: int = 1`，旧版报告兼容读取
+  → 位置：`schema.py`
+- [ ] **用户自定义 Schema**：前端 Schema 模板编辑器（P2，答辩口头提）
+
+---
+
+## 十四、Collector 问卷/访谈能力（2026-06-04，源自开题材料核心功能）
+
+> 开题材料原文：「支持信息采集 Agent（包括问卷设计，问卷调研，用户访谈等）」
+> 会议纪要未强调为硬性要求，但原文明确列入核心功能。至少做问卷生成 + 模板导出，访谈做设计文档即可。
+
+### 14.1 问卷设计
+
+- [ ] **LLM 自动生成问卷**：基于 query + 分析目标，自动生成结构化问卷（选择题 + 开放题 + 评分题）
+  → 输出 `Questionnaire` Pydantic Schema：标题/说明/题目列表（类型/选项/是否必答）
+- [ ] **问卷模板库**：预设 3-5 套行业模板（SaaS 产品满意度 / 功能优先级排序 / 用户画像调研）
+- [ ] **问卷导出**：支持导出为飞书表单链接、Markdown 表格、Google Form CSV
+
+### 14.2 问卷调研
+
+- [ ] **飞书表单集成**：通过 lark-cli 在飞书创建表单并收集回复，自动拉取结果进入 collected_data
+- [ ] **结果结构化解析**：LLM 将问卷自由文本回复提取为结构化数据点
+- [ ] **样本质量评估**：自动检测无效问卷（全选同一选项/填写时间 <30s），标记排除
+
+### 14.3 用户访谈
+
+- [ ] **访谈提纲自动生成**：基于 query + knowledge_gaps 生成半结构化访谈问题列表
+- [ ] **访谈纪要结构化**：上传访谈录音/文本 → LLM 提取关键结论 → 结构化存入 collected_data
+- [ ] **访谈数据脱敏**：自动识别并替换人名/公司名/联系方式（已有 §3.15.3 数据脱敏基础）
 
 ---
 

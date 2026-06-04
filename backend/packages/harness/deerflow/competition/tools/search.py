@@ -704,18 +704,46 @@ _CATEGORY_QUERY_TEMPLATES = {
 }
 
 
-def build_search_queries(products: list[str], categories: list[str] | None = None) -> list[str]:
+def build_search_queries(products: list[str], categories: list[str] | None = None, complexity: str = "standard") -> list[str]:
     """Generate search queries for each product × category.
 
     Uses 1 query per category (not 2+), since Volcengine web_search returns
     comprehensive results for each query. Also adds a broad per-product query.
+
+    Complexity adjustment (§3.17.1):
+    - quick: only 2 core categories (features + pricing), 1 query per product
+    - standard: all 4 categories (features/pricing/users/market)
+    - deep: all 4 categories + extra deep-dive queries per product
     """
-    cats = categories or list(_CATEGORY_QUERY_TEMPLATES.keys())
+    all_cats = categories or list(_CATEGORY_QUERY_TEMPLATES.keys())
+
+    if complexity == "quick":
+        # Fewer categories for simple comparison
+        cats = [c for c in all_cats if c in ("features", "pricing")]
+        if not cats:
+            cats = all_cats[:2]
+    elif complexity == "deep":
+        cats = all_cats
+    else:
+        cats = all_cats
+
     queries = []
     for product in products:
         for cat in cats:
             tmpl = _CATEGORY_QUERY_TEMPLATES.get(cat, ["{product}"])
             queries.append(tmpl[0].format(product=product))
+
+    # Deep mode: add extra strategic queries per product
+    if complexity == "deep":
+        deep_templates = [
+            "{product} SWOT analysis competitive landscape",
+            "{product} user reviews G2 Capterra rating",
+            "{product} pricing tiers comparison 2026",
+        ]
+        for product in products:
+            for tmpl in deep_templates:
+                queries.append(tmpl.format(product=product))
+
     return queries
 
 

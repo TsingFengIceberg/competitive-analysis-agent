@@ -148,6 +148,42 @@ def _current_db_version(thread_id: str) -> int | None:
     return max(r["version"] for r in rows)
 
 
+def _assess_complexity(query: str, products: list[str]) -> str:
+    """Determine task complexity (quick/standard/deep) based on query + products.
+
+    Heuristic assessment (§3.17.1) — no extra LLM call needed:
+    - quick: 1-2 products, short query, no deep-analysis keywords
+    - standard: 2-4 products, normal query
+    - deep: 5+ products, long query, or contains strategic/forecast keywords
+
+    Stored in state["complexity"] — Collector uses this to adjust search budget.
+    """
+    n_products = len(products)
+    query_lower = query.lower()
+    query_len = len(query)
+
+    # Deep indicators: strategic keywords or explicit depth requests
+    deep_keywords = [
+        "深度", "全面", "预测", "战略", "市场格局", "全景", "详细",
+        "deep", "comprehensive", "strategic", "forecast", "landscape",
+        "详细对比", "完整分析", "竞争格局",
+    ]
+    deep_score = sum(1 for kw in deep_keywords if kw in query_lower)
+
+    # Quick indicators: simple compare/overview
+    quick_keywords = ["对比", "比较", "区别", "vs", "compare", "versus", "diff", "哪个好"]
+    quick_score = sum(1 for kw in quick_keywords if kw in query_lower)
+
+    if n_products >= 5 or deep_score >= 2 or query_len > 200:
+        return "deep"
+    elif n_products >= 3 or query_len > 80 or (deep_score >= 1 and n_products >= 2):
+        return "standard"
+    elif n_products <= 2 and quick_score >= 1 and deep_score == 0:
+        return "quick"
+    else:
+        return "standard"
+
+
 # ── Product name extraction & correction ──
 
 def _llm_extract_products(query: str) -> list[str]:
@@ -1005,6 +1041,9 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
 
         _log.info("Resolved products: %s (from query: '%s')", products, query[:80])
 
+        # ── Assess task complexity (§3.17.1) ──
+        complexity = _assess_complexity(query, products)
+
         if not products:
             _log.warning("Could not resolve any products — marking as failed")
             if thread_id in _store:
@@ -1019,6 +1058,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             _store[thread_id]["products"] = products
             _store[thread_id]["status"] = "running"
             _store[thread_id]["state"]["target_products"] = products
+            _store[thread_id]["state"]["complexity"] = complexity
 
         # ── Step 2: Run the graph ──
         _run_graph_sync(thread_id)

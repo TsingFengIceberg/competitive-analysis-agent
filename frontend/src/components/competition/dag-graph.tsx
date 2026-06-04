@@ -60,6 +60,10 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
       const style = STATUS_STYLES[dn.status] ?? STATUS_STYLES.waiting!;
       const icon = dn.style?.icon ?? "⚪";
       const isDeep = dn.id.startsWith("deep_") || dn.id === "feishu_delivery";
+      const sa = dn.self_assessment;
+
+      // Self-assessment dot color
+      const saDotColor = sa?.tier === "green" ? "#4CAF50" : sa?.tier === "yellow" ? "#FF9800" : "#F44336";
 
       return {
         id: dn.id,
@@ -80,7 +84,16 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
               }}
               onClick={() => onNodeClick?.(dn.id)}
             >
-              <span className="font-semibold">{icon} {dn.label}</span>
+              <span className="font-semibold">
+                {icon} {dn.label}
+                {sa && (
+                  <span
+                    className="ml-1 inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: saDotColor }}
+                    title={`自评: ${(sa.score * 100).toFixed(0)}% (${sa.tier})`}
+                  />
+                )}
+              </span>
               {dn.annotation && (
                 <span className="mt-0.5 text-[10px] opacity-75">{dn.annotation}</span>
               )}

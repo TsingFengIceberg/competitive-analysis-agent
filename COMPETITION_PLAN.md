@@ -449,6 +449,50 @@ Collector 产出不仅是 `list[CollectedDataPoint]`，附带摘要供可观测�
 | 整站爬取（"Cursor 所有文档"） | Firecrawl | 结构化批量抓 |
 | URL 已知（"查 cursor.com/pricing"） | Jina AI Reader | 单页 Markdown 转换，比 web_fetch 更干净 |
 
+#### 3.4.8 Collector 问卷/访谈扩展 `**[竞赛要求 R1, R2 补充]**`
+
+> 开题材料原文：「支持信息采集 Agent（包括问卷设计，问卷调研，用户访谈等）」。
+> 当前 Collector 仅覆盖公开 Web 搜索。问卷/访谈作为补充采集渠道，增强数据多样性。
+
+**问卷设计（Questionnaire Generation）**
+
+Collector 根据 query + 分析目标自动生成结构化问卷，输出 `Questionnaire` Pydantic Schema：
+
+```python
+class Question(BaseModel):
+    id: str
+    type: Literal["single_choice", "multi_choice", "rating", "open"]
+    title: str
+    options: list[str] | None = None  # 选择题选项
+    required: bool = True
+
+class Questionnaire(BaseModel):
+    title: str
+    description: str
+    target_audience: str
+    questions: list[Question]
+    estimated_time_minutes: int
+```
+
+生成策略：
+1. LLM 从 analysis_plan 中识别需要主观判断的维度（用户满意度、功能优先级、痛点排序）
+2. 选择题 + 评分题覆盖可量化维度，开放题覆盖探索性维度
+3. 预设 3-5 套行业模板（SaaS 产品满意度 / 功能优先级排序 / 用户画像调研 / 定价敏感度 / 迁移意愿）
+
+**问卷调研（Survey Distribution & Collection）**
+
+- 飞书表单集成：通过 lark-cli 在飞书创建表单，自动拉取回复
+- 结果结构化：LLM 将自由文本回复提取为 `CollectedDataPoint`
+- 样本质量评估：自动检测无效问卷（全选同一选项 / 填写时间 <30s / 矛盾回答），标记排除
+
+**用户访谈（User Interview）**
+
+- 访谈提纲生成：基于 query + knowledge_gaps 生成半结构化问题列表
+- 纪要结构化：上传访谈录音/文本 → LLM 提取关键结论 → `CollectedDataPoint`
+- 数据脱敏：自动识别并替换 PII（人名/公司名/联系方式），复用 §3.16.3 脱敏管道
+
+**与 Web 搜索的关系**：Web 搜索仍是主采集渠道（自动化、零人工成本）。问卷/访谈作为补充——当 Reviewer 判定 coverage_score 不足时，自动生成问卷供用户分发，结果反哺 analysis。
+
 ### 3.5 Analyst 分析规范
 
 > Analyst 从 `collected_data` 生成 `AnalysisResult`。不是"LLM 想到什么分析什么"——按以下固定规则执行。
@@ -2041,6 +2085,80 @@ def error_handler_node(state: CompetitionState) -> dict:
 
 ---
 
+### 3.17 前瞻性技术方向 `**[源自开题材料评分维度二 25%]**`
+
+> 开题材料原文：「技术方案有独特或前瞻性思考（如自适应任务拆分、Agent 自评估、动态 Schema 演化）」。
+> 三个方向在答辩前至少各落地一个可演示的最小版本，作为差异化加分项。
+
+#### 3.17.1 自适应任务拆分
+
+**目标**：根据 query 复杂度自动判定采集/分析深度，避免"一律全量"的资源浪费。
+
+**Query 复杂度评估**：
+
+| 维度 | 简单 | 标准 | 深度 |
+|------|------|------|------|
+| 竞品数量 | 1-2 | 3-4 | 5+ |
+| 行业跨度 | 单一赛道 | 2 个细分 | 跨行业对比 |
+| 分析意图 | 概览/对比 | SWOT/定价 | 预测/战略 |
+| 搜索预算 | 5 次 | 10 次 | 20 次 |
+
+实现：LLM 在解析阶段输出 `complexity: Literal["quick", "standard", "deep"]`，Collector 据此调整搜索词数量和 fetch 深度。
+
+**动态搜索预算分配**：
+- 头部产品（市场认知度高）→ 搜索长尾关键词 + 社区/评测源
+- 小众产品 → 加 GitHub/ProductHunt/行业报告源
+- 中文市场 → 优先火山引擎；英文市场 → 优先 Tavily
+
+**增量 vs 全量判断**：
+- 7 天内已有同产品分析 → 仅增量更新（搜索 `after:7d` 时间过滤）
+- 与 §十二 变更检测协同，但粒度更粗（段落级 vs 字段级）
+
+#### 3.17.2 Agent 自评估
+
+**目标**：每个 Agent 对自己的输出进行质量评估，发现问题自主修正，减少对 Reviewer 的依赖。
+
+**Collector 自评估**：
+- 采集完成后自评覆盖率：每个产品 × 每个维度是否都有至少 1 条数据
+- 输出 `SelfAssessment { coverage_score: float, gaps: list[str], confidence: float }`
+- 低于阈值（coverage < 0.7）自动触发补采
+
+**Analyst 自评估**：
+- 分析完成后自评一致性：同一结论是否有多个来源交叉验证
+- 标记单源结论为 `confidence: low`，多源交叉验证为 `high`
+- 输出 `SelfAssessment { cross_validated_ratio: float, single_source_claims: list[str] }`
+
+**Writer 自评估**：
+- 生成后自检章节完整性（是否所有必填 section 都有内容）
+- Schema 合规性：`model_validate()` 预检，不通过自动修正
+- 发现问题不等 Reviewer 触发，主动回退（reduce_reviewer_load）
+
+**自评估可视化**：
+- DAG 图中每个 Agent 节点旁边显示自评分数圆点（绿 ≥0.8 / 黄 ≥0.6 / 红 <0.6）
+- 前端点击展开自评详情（gap 列表、confidence breakdown）
+
+#### 3.17.3 动态 Schema 演化
+
+**目标**：Schema 不写死字段，根据分析行业自动扩充，同时保持向后兼容。
+
+**领域自适应 Schema 扩展**：
+- `AnalysisResult` 增加 `extra_fields: dict[str, Any]` 预留字段
+- LLM 在 analysis 阶段识别行业特有维度：
+  - SaaS → 集成生态数量、API 开放度、SLA 保证
+  - 硬件 → 芯片型号、功耗、尺寸重量
+  - 游戏 → 引擎、平台、付费模式
+- Reviewer 校验 extra_fields 合理性后合入最终输出
+
+**Schema 版本管理**：
+- `FeatureTree` / `PricingModel` 带 `schema_version: int`
+- 旧版分析报告兼容读取（missing fields → default None）
+
+**用户自定义 Schema（P2，答辩口头提）**：
+- 前端 Schema 模板编辑器，用户可定义自己关注的维度字段
+- 保存为用户偏好，后续分析自动应用
+
+---
+
 ## 四、数据源矩阵 — Collector 信息采集体系
 
 采集 Agent 是整个系统的"感官"，信息源的丰富度直接决定分析质量。以下按类型分级。
@@ -2867,6 +2985,21 @@ cursor.com                 github.com                 windsuf.com
 | **一键导出幻灯片** | ReportData → PPTX（DF 已有 `ppt-generation` Skill），每章节一页，图表自动嵌入 | PM 拿着报告去汇报，PPT 是硬通货 | P2 |
 | **语音批注** | 飞书 App 长按段落 → 语音输入 → 自动转文字 → 解析为 HITL 指令 | 移动端场景 | P2 |
 | **协作评论线程** | 多人对同一段报告评论、讨论、决议 | 企业真实协作场景 | P2 |
+
+### 6.12 前瞻性技术方向：自适应 + 自评估 + 动态 Schema `**[答辩加分项]**`
+
+> 开题材料评分维度二（25%）明确奖励「技术方案有独特或前瞻性思考」，并举例三个方向。
+> 三个方向均已在 PLAN §3.17 完成设计，答辩前至少各落地一个最小可演示版本。
+
+| 方向 | 一句话 | 差异化价值 | 实现难度 |
+|------|--------|-----------|---------|
+| **自适应任务拆分** | Query → 自动判定分析深度 → 动态分配搜索预算 | 告别"一律全量"的浪费，智能分配 token 预算 | 中 |
+| **Agent 自评估** | 每个 Agent 对自己的输出打分、标记 gap、自主修正 | 减少 Reviewer 负担，形成"内省→改进"的自主循环 | 低 |
+| **动态 Schema 演化** | 分析不同行业时自动扩充领域字段，Schema 版本化 | 真正的"通用竞品分析引擎"，不限于固定维度 | 中 |
+
+**为什么答辩要提？**
+
+评分标准明确把这三个方向作为「前瞻性」的举例——评委写进文档的期望就是看到这些。即使只做了最小版本（如 Collector 自评覆盖率 + 自动补采），也能证明我们理解并实践了"Agent 内省"的理念，比单纯说"未来可以做"更有说服力。
 
 ---
 

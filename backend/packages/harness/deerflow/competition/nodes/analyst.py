@@ -85,6 +85,10 @@ def analyst_node(state: dict) -> dict:
     # ── Coverage assessment (no retry — honest gap flagging) ──
     coverage = _validate_matrix_coverage(result, target_products)
 
+    # ── Self-assessment (§3.17.2) ──
+    collected = state.get("collected_data") or []
+    self_assessment = _build_analyst_self_assessment(result, target_products, collected)
+
     # ── Guarantee: every target_product appears in the matrix at least once ──
     matrix = result.get("comparison_matrix", {})
     cells = matrix.get("cells", [])
@@ -110,6 +114,7 @@ def analyst_node(state: dict) -> dict:
     return {
         "analysis_result": result,
         "coverage_warning": coverage if coverage["na_products"] or coverage.get("low_coverage_products") else None,
+        "analyst_self_assessment": self_assessment,
     }
 
 
@@ -170,6 +175,13 @@ OUTPUT JSON WITH THESE SECTIONS:
 
 4. forecast (optional) — 6-month and 12-month projections, with disclaimer
 5. visualization_paths — recommended charts (radar, heatmap, bar, line, pie, stacked_bar)
+6. extra_fields (OPTIONAL) — domain-specific dimensions beyond the standard 4.
+   Identify dimensions unique to this industry. Each must have source citations:
+   - SaaS: integration_count, api_openness, sla_guarantee
+   - Hardware: chip_model, power_consumption, weight
+   - Gaming: engine, platforms, monetization_model
+   - Format: {"field_name": {"value": ..., "evidence": "...", "source_data_point_ids": [...]}}
+   - If no industry-specific dimensions are clear, use empty object {{}}.
 
 ━━━ FOUR-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━
 
@@ -327,6 +339,7 @@ def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
     raw.setdefault("trends", [])
     raw.setdefault("forecast", None)
     raw.setdefault("visualization_paths", [])
+    raw.setdefault("extra_fields", {})
 
     return raw
 
@@ -439,6 +452,76 @@ def _validate_matrix_coverage(result: dict, target_products: list[str]) -> dict:
             low_products.append(product)
 
     return {"na_products": na_products, "low_coverage_products": low_products}
+
+
+# ── Self-Assessment (§3.17.2) ──
+
+
+def _build_analyst_self_assessment(result: dict, target_products: list[str], collected: list[dict]) -> dict:
+    """Build Analyst self-assessment: cross-validation ratio, single-source claims, confidence.
+
+    Evaluates how many claims in the analysis have ≥2 independent sources backing them.
+    Returns dict suitable for frontend green/yellow/red dot visualization.
+    """
+    matrix = result.get("comparison_matrix", {})
+    cells = matrix.get("cells", [])
+    swot = result.get("swot", {})
+
+    # Count cells with evidence sources
+    total_claims = 0
+    multi_source_claims = 0
+    single_source_claims: list[str] = []
+    insufficient_cells = 0
+
+    for c in cells:
+        if not isinstance(c, dict):
+            continue
+        src_ids = c.get("source_data_point_ids", [])
+        n_sources = len(src_ids) if isinstance(src_ids, list) else 0
+
+        total_claims += 1
+        if c.get("evidence_source") == "insufficient":
+            insufficient_cells += 1
+        elif n_sources >= 2:
+            multi_source_claims += 1
+        elif n_sources == 1:
+            label = f"{c.get('product', '?')}/{c.get('dimension', '?')}"
+            single_source_claims.append(label)
+        # n_sources == 0 but not insufficient → cross_inference or estimated
+
+    # SWOT claims
+    for _product_name, swot_data in swot.items():
+        if not isinstance(swot_data, dict):
+            continue
+        for item in swot_data.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            src_ids = item.get("source_data_point_ids", [])
+            n_sources = len(src_ids) if isinstance(src_ids, list) else 0
+            total_claims += 1
+            if n_sources >= 2:
+                multi_source_claims += 1
+            elif n_sources == 1:
+                statement = item.get("statement", "")[:60]
+                single_source_claims.append(statement)
+
+    # Cross-validation ratio
+    cross_validated_ratio = multi_source_claims / total_claims if total_claims > 0 else 0.0
+
+    # Confidence breakdown: high (≥2 sources), medium (1 source), low (0 sources/insufficient)
+    confidence_breakdown = {
+        "high": multi_source_claims,
+        "medium": len(single_source_claims),
+        "low": insufficient_cells,
+    }
+
+    return {
+        "cross_validated_ratio": round(cross_validated_ratio, 2),
+        "single_source_claims": single_source_claims[:10],  # cap at 10
+        "total_claims": total_claims,
+        "insufficient_cells": insufficient_cells,
+        "confidence_breakdown": confidence_breakdown,
+    }
 
 
 # ── Visualization Triggers (§3.5.4) ──

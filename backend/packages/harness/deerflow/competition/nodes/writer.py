@@ -72,6 +72,7 @@ def writer_node(state: dict) -> dict:
 
     traceability = _build_traceability_map(collected)
     forecast = analysis.get("forecast")
+    extra_fields = analysis.get("extra_fields") or {}
     metrics = _compute_report_metrics(collected, verdict, traceability)
 
     report_data = {
@@ -84,6 +85,7 @@ def writer_node(state: dict) -> dict:
         "quality_summary": quality,
         "forecast": forecast,
         "metrics": metrics,
+        "extra_fields": extra_fields,
     }
 
     # Build ReviewPackage for HITL (§3.13.5)
@@ -94,10 +96,14 @@ def writer_node(state: dict) -> dict:
     if issues:
         logger.warning("Writer self-check found %d issues: %s", len(issues), issues)
 
+    # ── Self-assessment (§3.17.2) ──
+    self_assessment = _build_writer_self_assessment(report_data, target_products)
+
     return {
         "report_data": report_data,
         "traceability_map": traceability,
         "review_package": review_package,
+        "writer_self_assessment": self_assessment,
     }
 
 
@@ -255,6 +261,29 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
         "source_ids": [], "chart_path": None, "subsections": None,
     })
 
+    # 9. Appendix: Domain-specific fields (§3.17.3)
+    extra_fields = analysis.get("extra_fields") or {}
+    if extra_fields:
+        ef_text = ""
+        for field_name, field_data in extra_fields.items():
+            if isinstance(field_data, dict):
+                value = field_data.get("value", "?")
+                evidence = field_data.get("evidence", "")
+                src_ids = field_data.get("source_data_point_ids", [])
+                ef_text += f"- **{field_name}**: {value}"
+                if evidence:
+                    ef_text += f" — {evidence}"
+                if src_ids:
+                    ef_text += f" {_src_ref(src_ids)}"
+                ef_text += "\n"
+            else:
+                ef_text += f"- **{field_name}**: {field_data}\n"
+        sections.append({
+            "id": "appendix-extra-fields", "title": "附录 B: 行业特有维度（动态 Schema）",
+            "content": ef_text or "_无行业特有维度_", "content_type": "text",
+            "source_ids": [], "chart_path": None, "subsections": None,
+        })
+
     return sections
 
 
@@ -386,6 +415,69 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
         issues.append(f"W5: Persona '{persona}' focus not reflected in report")
 
     return issues
+
+
+# ── Self-Assessment (§3.17.2) ──
+
+
+def _build_writer_self_assessment(report_data: dict, target_products: list[str]) -> dict:
+    """Build Writer self-assessment: schema compliance, section completeness, source annotation rate.
+
+    Returns dict suitable for frontend green/yellow/red dot visualization.
+    """
+    sections = report_data.get("sections", [])
+    section_ids = {s.get("id", "") for s in sections}
+
+    # Schema compliance: all required sections present
+    required_present = all(rid in section_ids for rid in REQUIRED_SECTIONS)
+    missing_required = [rid for rid in REQUIRED_SECTIONS if rid not in section_ids]
+
+    # Section completeness: proportion of required sections with non-empty content
+    filled = 0
+    for s in sections:
+        if s.get("id") in REQUIRED_SECTIONS and s.get("content", "").strip():
+            filled += 1
+    section_completeness = filled / len(REQUIRED_SECTIONS) if REQUIRED_SECTIONS else 1.0
+
+    # Source annotation rate: count [n] references in report content
+    all_content = " ".join(s.get("content", "") for s in sections)
+    import re
+    annotation_count = len(re.findall(r"\[\d+\]", all_content))
+
+    # Count total factual claims (heuristic: lines with evidence markers or bullet points)
+    claim_lines = 0
+    for s in sections:
+        content = s.get("content", "")
+        claim_lines += len([line for line in content.split("\n") if line.strip().startswith("-") and len(line) > 20])
+    source_annotation_rate = annotation_count / claim_lines if claim_lines > 0 else 0.0
+
+    # Product mention check
+    product_mention_check = {}
+    for product in target_products:
+        product_mention_check[product] = product in all_content
+
+    # Section list for display
+    section_status = []
+    for rid in REQUIRED_SECTIONS:
+        section_status.append({
+            "id": rid,
+            "present": rid in section_ids,
+            "has_content": bool(next((s.get("content", "").strip() for s in sections if s.get("id") == rid), "")),
+        })
+
+    # Overall score: weighted average
+    schema_score = 1.0 if required_present else 0.0
+    overall_score = (schema_score * 0.4 + section_completeness * 0.3 + min(source_annotation_rate, 1.0) * 0.3)
+
+    return {
+        "schema_compliance": required_present,
+        "missing_required": missing_required,
+        "section_completeness": round(section_completeness, 2),
+        "source_annotation_rate": round(min(source_annotation_rate, 1.0), 2),
+        "product_mention_check": product_mention_check,
+        "section_status": section_status,
+        "overall_score": round(overall_score, 2),
+    }
 
 
 def _llm_generate_section(

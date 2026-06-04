@@ -39,6 +39,9 @@ def reviewer_node(state: dict) -> dict:
         gaps.extend(_g8_verdicts_to_gaps(g8_verdicts, collected))
         state["_g8_verdicts"] = g8_verdicts  # stored for confidence adjustment pass
 
+    # G9: Extra fields validation (§3.17.3) — domain-specific dimensions must have sources
+    gaps.extend(_check_extra_fields_sources(analysis))
+
     # Detect feedback loop (§3.15.6.2): same gap 3x → force close
     gaps = _filter_loop_gaps(gaps, prev_gaps, review_round)
 
@@ -294,6 +297,39 @@ def check_statistical_outliers(points: list[dict]) -> list[dict]:
                 task=f"Verify outlier value: {dp.get('label', '')} = {val}",
                 severity="major" if z > 5 else "minor",
                 related_ids=[dp.get("id", "")],
+            ))
+    return gaps
+
+
+# ── G9: Extra fields source validation (§3.17.3) ──
+
+
+def _check_extra_fields_sources(analysis: dict) -> list[dict]:
+    """G9: Every extra_fields entry must have source_data_point_ids.
+
+    Domain-specific dimensions without citations are flagged as minor gaps.
+    This ensures dynamic schema fields maintain the same traceability standard
+    as the core comparison matrix.
+    """
+    extra = analysis.get("extra_fields") or {}
+    if not extra:
+        return []
+
+    gaps = []
+    for field_name, field_data in extra.items():
+        if not isinstance(field_data, dict):
+            continue
+        src_ids = field_data.get("source_data_point_ids", [])
+        if not src_ids:
+            gaps.append(_make_gap(
+                gid=f"gap-g9-{field_name}",
+                gap_type="missing_data",
+                method="extra_fields_source_check",
+                desc=f"行业特有维度 '{field_name}' 缺少数据来源引用",
+                evidence=f"extra_fields['{field_name}'] has no source_data_point_ids",
+                task=f"Verify or provide source citations for extra field: {field_name}",
+                severity="minor",
+                related_ids=[],
             ))
     return gaps
 

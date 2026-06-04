@@ -48,6 +48,7 @@ class FeatureTree(BaseModel):
     """Complete feature tree for one product."""
 
     product_name: str
+    schema_version: int = Field(default=1, description="Schema version for backward compatibility")
     categories: list[FeatureCategory] = Field(default_factory=list)
 
 
@@ -66,6 +67,7 @@ class PricingModel(BaseModel):
     """Pricing model for one product."""
 
     product_name: str
+    schema_version: int = Field(default=1, description="Schema version for backward compatibility")
     tiers: list[PricingTier] = Field(default_factory=list)
     free_tier_available: bool = False
     pricing_strategy: str = Field(default="", description="'freemium' / 'subscription' / 'usage-based'")
@@ -198,6 +200,12 @@ class AnalysisResult(BaseModel):
     trends: list[TrendFinding] = Field(default_factory=list)
     forecast: ForecastResult | None = None
     visualization_paths: list[str] = Field(default_factory=list)
+    extra_fields: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Domain-adaptive fields (§3.17.3). Analyst identifies industry-specific "
+        "dimensions (e.g. SaaS→integration_count, hardware→chip_model) and stores them here. "
+        "Reviewer validates that extra_fields entries have source citations.",
+    )
 
 
 # ── Edge ③: Reviewer → Writer (§3.13.4) ──
@@ -313,6 +321,11 @@ class ReportData(BaseModel):
     quality_summary: QualitySummary = Field(default_factory=QualitySummary)
     forecast: ForecastResult | None = None
     metrics: dict = Field(default_factory=dict)
+    extra_fields: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Domain-adaptive fields from AnalysisResult (§3.17.3). "
+        "Included in the report as an appendix section.",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

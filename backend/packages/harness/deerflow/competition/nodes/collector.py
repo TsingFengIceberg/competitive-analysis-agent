@@ -48,14 +48,16 @@ def collector_node(state: dict) -> dict:
     data_points = deduplicate_datapoints(data_points)
     summary = build_collection_summary(data_points, state.get("target_products", []))
     summary["search_stats"] = _get_search_info()
+    summary["complexity"] = state.get("complexity", "standard")
+
+    # ── Self-assessment (§3.17.2) ──
+    target_products = state.get("target_products", [])
+    self_assessment = _build_collector_self_assessment(data_points, target_products)
 
     return {
         "collected_data": [dp.model_dump() for dp in data_points],
         "collection_summary": summary,
-    }
-    return {
-        "collected_data": [dp.model_dump() for dp in data_points],
-        "collection_summary": summary,
+        "collector_self_assessment": self_assessment,
     }
 
 
@@ -247,6 +249,68 @@ def build_collection_summary(points: list[CollectedDataPoint], target_products: 
     }
 
 
+# ── Self-Assessment (§3.17.2) ──
+
+COLLECTOR_DIMENSIONS = ["features", "pricing", "users", "market"]
+
+
+def _build_collector_self_assessment(
+    points: list[CollectedDataPoint],
+    target_products: list[str],
+) -> dict:
+    """Build Collector self-assessment: coverage per product×dimension, gaps, confidence.
+
+    Returns dict suitable for frontend visualization (green/yellow/red dot).
+    """
+    if not target_products:
+        return {
+            "coverage_score": 0.0,
+            "gaps": [],
+            "per_product": {},
+            "total_data_points": len(points),
+            "avg_confidence": 0.0,
+        }
+
+    # Count data points per product × dimension
+    covered: dict[str, set[str]] = {p: set() for p in target_products}
+    confidences: dict[str, list[float]] = {p: [] for p in target_products}
+
+    for dp in points:
+        if dp.product in covered:
+            covered[dp.product].add(dp.category)
+            confidences[dp.product].append(dp.confidence)
+
+    # Per-product coverage score
+    per_product: dict[str, float] = {}
+    gaps: list[str] = []
+    total_dimensions = len(COLLECTOR_DIMENSIONS)
+
+    for product in target_products:
+        dims_covered = len(covered.get(product, set()))
+        per_product[product] = dims_covered / total_dimensions if total_dimensions > 0 else 0.0
+        missing = [d for d in COLLECTOR_DIMENSIONS if d not in covered.get(product, set())]
+        for dim in missing:
+            gaps.append(f"{product}-{dim}")
+
+    # Overall coverage score
+    if target_products:
+        coverage_score = sum(per_product.values()) / len(target_products)
+    else:
+        coverage_score = 0.0
+
+    # Average confidence
+    all_confs = [c for clist in confidences.values() for c in clist]
+    avg_conf = sum(all_confs) / len(all_confs) if all_confs else 0.0
+
+    return {
+        "coverage_score": round(coverage_score, 2),
+        "gaps": gaps,
+        "per_product": per_product,
+        "total_data_points": len(points),
+        "avg_confidence": round(avg_conf, 2),
+    }
+
+
 # ── Internal helpers ──
 
 
@@ -347,7 +411,7 @@ def _run_searches(state: dict) -> str:
     """Phase 1: Run real web searches for each product × category, return formatted context.
 
     Uses adaptive context budgeting: model context window → available chars → tiered
-    result count & snippet length.
+    result count & snippet length. Task complexity (§3.17.1) adjusts search depth.
     """
     from deerflow.competition.tools.search import (
         build_search_queries,
@@ -372,17 +436,25 @@ def _run_searches(state: dict) -> str:
     if gap_products:
         target_products = list(set(target_products + gap_products))
 
+    # ── Task complexity adjustment (§3.17.1) ──
+    complexity = state.get("complexity", "standard")
+    complexity_config = _get_complexity_config(complexity)
+
     # Calculate adaptive context budget
     budget = calculate_budget()
 
-    queries = build_search_queries(target_products)
-    logger.warning("═══ 🦆 DUCKDUCKGO SEARCH: %d queries for %d products (budget: %s, %dK tokens) ═══",
-                   len(queries), len(target_products), budget.tier, budget.tokens // 1000)
+    # Apply complexity overrides to budget
+    budget.fetch_top_n = complexity_config["fetch_top_n"]
+    budget.max_results = complexity_config["max_results"]
+
+    queries = build_search_queries(target_products, complexity=complexity)
+    logger.warning("═══ 🦆 DDG SEARCH: %d queries for %d products (complexity=%s, budget=%s, %dK tokens) ═══",
+                   len(queries), len(target_products), complexity, budget.tier, budget.tokens // 1000)
     for i, q in enumerate(queries):
         logger.warning("  [%d/%d] %s", i + 1, len(queries), q)
 
     try:
-        results = multi_search(queries, max_results=5, fetch_top=budget.fetch_top_n)
+        results = multi_search(queries, max_results=complexity_config["max_results_per_query"], fetch_top=budget.fetch_top_n)
     except Exception:
         logger.exception("Collector search failed")
         return ""
@@ -411,6 +483,38 @@ def _get_search_info() -> dict:
         "total_results": stats.get("total_results", 0),
         "queries": stats.get("queries", []),
     }
+
+
+# ── Task complexity (§3.17.1) ──
+
+COMPLEXITY_CONFIG = {
+    "quick": {
+        "fetch_top_n": 1,
+        "max_results": 12,
+        "max_results_per_query": 3,
+        "label": "快速模式",
+        "description": "1-2 竞品简单对比，搜索预算 ~15K tokens",
+    },
+    "standard": {
+        "fetch_top_n": 2,
+        "max_results": 20,
+        "max_results_per_query": 5,
+        "label": "标准模式",
+        "description": "2-4 竞品多维对比，搜索预算 ~30K tokens",
+    },
+    "deep": {
+        "fetch_top_n": 3,
+        "max_results": 30,
+        "max_results_per_query": 8,
+        "label": "深度模式",
+        "description": "5+ 竞品战略分析或含预测/全景关键词，搜索预算 ~60K tokens",
+    },
+}
+
+
+def _get_complexity_config(complexity: str) -> dict:
+    """Get search configuration for the given complexity level."""
+    return COMPLEXITY_CONFIG.get(complexity, COMPLEXITY_CONFIG["standard"])
 
 
 def _repair_collector_output(raw_text: str) -> str | None:
