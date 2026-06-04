@@ -14,7 +14,7 @@ import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
 import MessageFlowPanel from "@/components/competition/message-flow-timeline";
 import ReplaySlider from "@/components/competition/replay-slider";
-import { SourceCard, type SourceInfo } from "@/components/competition/source-card";
+import { SourceCard, VersionDiff, type SourceInfo } from "@/components/competition/source-card";
 import TokenPanel from "@/components/competition/token-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -70,12 +70,18 @@ function VersionTree({
   isViewingLatest,
   onSelect,
   onViewLatest,
+  selectedForDiff,
+  onToggleDiff,
+  onCompare,
 }: {
   entries: ReportHistoryItem[];
   activeVersion: number | null;
   isViewingLatest: boolean;
   onSelect: (v: number) => void;
   onViewLatest: () => void;
+  selectedForDiff: Set<number>;
+  onToggleDiff: (v: number) => void;
+  onCompare: (a: number, b: number) => void;
 }) {
   const tree = buildTree(entries);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
@@ -143,10 +149,16 @@ function VersionTree({
             </button>
           )}
           <button
-            onClick={() => onSelect(entry.version)}
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) {
+                onToggleDiff(entry.version);
+              } else {
+                onSelect(entry.version);
+              }
+            }}
             onMouseEnter={(e) => handleMouseEnter(e, entry)}
             onMouseLeave={handleMouseLeave}
-            className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted"}`}
+            className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : selectedForDiff.has(entry.version) ? "bg-purple-500/20 ring-1 ring-purple-400 text-purple-700" : "text-muted-foreground hover:bg-muted"}`}
           >
             {actionIcon || "📋初始"} v{entry.version}
             {isApproved && <span className="text-green-500 shrink-0">✓</span>}
@@ -174,7 +186,8 @@ function VersionTree({
   return (
     <div className="mb-3 rounded border border-muted p-2">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">📋 版本树</span>
+        <span className="text-xs font-medium text-muted-foreground">版本树</span>
+        <span className="text-[10px] text-muted-foreground/50">Ctrl+点击 选2个版本对比</span>
         <button
           onClick={onViewLatest}
           className={`rounded px-2 py-0.5 text-xs ${isViewingLatest ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
@@ -188,6 +201,23 @@ function VersionTree({
           return renderNode(root, 0, ancestors);
         })}
       </div>
+
+      {/* Compare button */}
+      {selectedForDiff.size === 2 && (
+        <div className="mt-2 border-t border-muted pt-2">
+          <button
+            onClick={() => {
+              const sorted = [...selectedForDiff].sort((x, y) => x - y);
+              const a = sorted[0]!;
+              const b = sorted[1]!;
+              onCompare(a, b);
+            }}
+            className="w-full rounded bg-purple-100 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-200"
+          >
+            对比 v{[...selectedForDiff].sort((x, y) => x - y)[0]} vs v{[...selectedForDiff].sort((x, y) => x - y)[1]}
+          </button>
+        </div>
+      )}
 
       {/* Hover preview popup */}
       {hoveredEntry && popupPos && (
@@ -217,7 +247,7 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
     : entry.hitl_decision?.action
       ? ACTION_LABELS[entry.hitl_decision.action] ?? ""
       : "";
-  const ts = entry.created_at || entry.timestamp || "";
+  const ts = entry.created_at ?? entry.timestamp ?? "";
 
   return (
     <div className="space-y-2 text-xs">
@@ -271,7 +301,7 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
         </>
       ) : (
         <div className="text-muted-foreground italic">
-          {entry.hitl_decision?.comment?.slice(0, 60) || "无报告数据" + (entry.action ? ` (${entry.action})` : "")}
+          {entry.hitl_decision?.comment?.slice(0, 60) ?? "无报告数据" + (entry.action ? ` (${entry.action})` : "")}
         </div>
       )}
 
@@ -288,8 +318,8 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
 export default function CompetitionPage() {
   const api = useCompetitionAPI();
 
-  const [query, setQuery] = useState("分析Cursor vs Copilot vs Windsurf 的竞争力");
-  const [products, setProducts] = useState("Cursor,Copilot,Windsurf");
+  const [query, setQuery] = useState("对比 Slack 和 飞书");
+  const [products, setProducts] = useState("");
   const [persona, setPersona] = useState<Persona>("pm");
   const [deepMode, setDeepMode] = useState(false);
 
@@ -313,6 +343,8 @@ export default function CompetitionPage() {
   const [dbLoadedThreadId, setDbLoadedThreadId] = useState<string | null>(null);
   const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
   const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
+  const [selectedForDiff, setSelectedForDiff] = useState<Set<number>>(new Set());
+  const [diffVersions, setDiffVersions] = useState<[number, number] | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
@@ -402,6 +434,29 @@ export default function CompetitionPage() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [threadId]);
 
+  const handleToggleDiff = useCallback((version: number) => {
+    setSelectedForDiff((prev) => {
+      const next = new Set(prev);
+      if (next.has(version)) {
+        next.delete(version);
+      } else {
+        // Keep at most 2 selected
+        if (next.size >= 2) {
+          // Remove the oldest and add the new one
+          const first = next.values().next().value;
+          if (first !== undefined) next.delete(first);
+        }
+        next.add(version);
+      }
+      return next;
+    });
+    setDiffVersions(null);
+  }, []);
+
+  const handleCompare = useCallback((vA: number, vB: number) => {
+    setDiffVersions([vA, vB]);
+  }, []);
+
   const handleViewHistory = useCallback(async (version: number | null) => {
     if (!threadId) return;
     if (version === null) { setViewingHistory(null); return; }
@@ -475,10 +530,10 @@ function escapeAttr(s: string): string {
     setHoveredSource({
       id: traceId,
       url: traceUrl,
-      snippet: target.dataset.traceSnippet || undefined,
+      snippet: target.dataset.traceSnippet ?? undefined,
       confidence: target.dataset.traceConfidence ? parseFloat(target.dataset.traceConfidence) : undefined,
       verified: target.dataset.traceVerified === "" ? undefined : target.dataset.traceVerified === "true",
-      timestamp: target.dataset.traceTimestamp || undefined,
+      timestamp: target.dataset.traceTimestamp ?? undefined,
     });
     setSourcePos({
       top: rect.bottom + window.scrollY + 4,
@@ -625,8 +680,34 @@ function escapeAttr(s: string): string {
                     isViewingLatest={!viewingHistory}
                     onSelect={(v) => handleViewHistory(v)}
                     onViewLatest={() => handleViewHistory(null)}
+                    selectedForDiff={selectedForDiff}
+                    onToggleDiff={handleToggleDiff}
+                    onCompare={handleCompare}
                   />
                 )}
+                {/* Version diff panel */}
+                {diffVersions && (() => {
+                  const [vA, vB] = diffVersions;
+                  const entryA = historyEntries.find((e) => e.version === vA);
+                  const entryB = historyEntries.find((e) => e.version === vB);
+                  if (!entryA || !entryB) return null;
+                  return (
+                    <div className="mb-3 rounded border-2 border-purple-300 bg-purple-50/30 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-sm font-semibold text-purple-700">
+                          版本对比: v{vA} vs v{vB}
+                        </span>
+                        <button
+                          onClick={() => { setDiffVersions(null); setSelectedForDiff(new Set()); }}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          关闭
+                        </button>
+                      </div>
+                      <VersionDiff oldEntry={entryA} newEntry={entryB} />
+                    </div>
+                  );
+                })()}
                 {viewingHistory && (
                   <div className="mb-3 rounded border border-amber-300 bg-amber-50/50 p-2 text-xs text-amber-800">
                     <div className="flex items-center justify-between">

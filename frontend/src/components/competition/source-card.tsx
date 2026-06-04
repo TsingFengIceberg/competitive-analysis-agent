@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+
 import type { ReportHistoryItem } from "@/components/competition/api-client";
 
 // ── Source hover card ──────────────────────────────────────────────
@@ -58,7 +59,7 @@ export function SourceCard({
         rel="noopener noreferrer"
         className="mb-2 block truncate text-xs text-blue-600 underline hover:text-blue-800"
       >
-        {source.title || source.url}
+        {source.title ?? source.url}
       </a>
 
       {/* Snippet */}

@@ -6,7 +6,7 @@ Usage:
 
 import pytest
 
-from deerflow.branchtree.checkpoint_ops import CheckpointOps, AgentBranchOps
+from deerflow.branchtree.checkpoint_ops import AgentBranchOps, CheckpointOps
 
 
 @pytest.fixture
@@ -19,9 +19,9 @@ def checkpointer():
 @pytest.fixture
 def graph():
     """Create a minimal CompiledStateGraph for testing write operations."""
-    from typing import Annotated, TypedDict
-    from langgraph.graph import StateGraph, START, END
-    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
 
     class TestState(TypedDict):
         messages: list

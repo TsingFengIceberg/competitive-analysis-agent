@@ -421,7 +421,7 @@ class CompetitiveGraph:
         products: list[str],
         co_mention_matrix: dict[str, dict[str, int]] | None = None,
         feature_overlap: dict[str, dict[str, float]] | None = None,
-    ) -> "CompetitiveGraph":
+    ) -> CompetitiveGraph:
         """从采集数据构建竞品关系图。
 
         Args:

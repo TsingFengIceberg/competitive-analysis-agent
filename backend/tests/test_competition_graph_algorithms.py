@@ -4,7 +4,6 @@ Usage:
     cd backend && PYTHONPATH=packages/harness uv run pytest tests/test_competition_graph_algorithms.py -v
 """
 
-import pytest
 from deerflow.competition.graph_algorithms import CompetitiveGraph
 
 

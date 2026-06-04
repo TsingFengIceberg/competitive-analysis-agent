@@ -93,13 +93,19 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
         return None
     entry = _store.get(thread_id, {})
     state = entry.get("state", {})
+    # Prefer report_data from stored metadata (available for all versions)
+    stored_rd = (meta.get("metadata_json") or {}).get("report_data")
+    if stored_rd is None and version == _current_db_version(thread_id):
+        stored_rd = state.get("report_data")
+        if stored_rd is not None and hasattr(stored_rd, "model_dump"):
+            stored_rd = stored_rd.model_dump()
     return {
         "version": version,
         "parent_version": meta.get("parent_version"),
         "action": meta.get("action"),
         "is_approved": meta.get("is_approved"),
         "created_at": meta.get("created_at"),
-        "report_data": state.get("report_data") if version == _current_db_version(thread_id) else None,
+        "report_data": stored_rd,
         "analysis_result": state.get("analysis_result") if version == _current_db_version(thread_id) else None,
         "collected_data": state.get("collected_data") if version == _current_db_version(thread_id) else None,
     }
@@ -114,6 +120,11 @@ def _list_history(thread_id: str) -> list[dict]:
     result = []
     for r in rows:
         is_latest = r["version"] == latest
+        stored_rd = (r.get("metadata_json") or {}).get("report_data")
+        if stored_rd is None and is_latest:
+            rd = state.get("report_data")
+            if rd is not None and hasattr(rd, "model_dump"):
+                stored_rd = rd.model_dump()
         result.append({
             "version": r["version"],
             "parent_version": r["parent_version"],
@@ -122,7 +133,7 @@ def _list_history(thread_id: str) -> list[dict]:
             "is_approved": r["is_approved"],
             "created_at": r["created_at"],
             "metadata": r.get("metadata_json", {}),
-            "report_data": state.get("report_data") if is_latest else None,
+            "report_data": stored_rd,
             "analysis_result": state.get("analysis_result") if is_latest else None,
             "collected_data": state.get("collected_data") if is_latest else None,
         })
@@ -656,7 +667,8 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             _history_store.insert(
                 thread_id, parent, "",
                 action,
-                {"comment": state.get("hitl_decision", {}).get("comment", "")},
+                {"comment": state.get("hitl_decision", {}).get("comment", ""),
+                 "report_data": old_report.model_dump() if hasattr(old_report, "model_dump") else old_report},
             )
             logger.info("Saved report v%d (parent=v%s) to history for %s",
                         _current_db_version(thread_id), parent, thread_id[:12])
@@ -1083,7 +1095,9 @@ def _run_graph_sync(thread_id: str) -> None:
 
         # Record initial version in history store
         if _current_db_version(thread_id) is None and _store[thread_id].get("state", {}).get("report_data"):
-            _history_store.insert(thread_id, None, "", "initial")
+            rd = _store[thread_id]["state"]["report_data"]
+            _history_store.insert(thread_id, None, "", "initial",
+                {"report_data": rd.model_dump() if hasattr(rd, "model_dump") else rd})
 
         logger.info("Analysis %s completed", thread_id)
 
