@@ -659,19 +659,8 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             return
         state = entry["state"]
 
-        # Save current report as a version in history store before overwriting
-        old_report = state.get("report_data")
-        if old_report:
-            fork_parent = state.pop("_fork_parent_version", None)
-            parent = fork_parent if fork_parent is not None else _current_db_version(thread_id)
-            _history_store.insert(
-                thread_id, parent, "",
-                action,
-                {"comment": state.get("hitl_decision", {}).get("comment", ""),
-                 "report_data": old_report.model_dump() if hasattr(old_report, "model_dump") else old_report},
-            )
-            logger.info("Saved report v%d (parent=v%s) to history for %s",
-                        _current_db_version(thread_id), parent, thread_id[:12])
+        # Extract fork parent before processing (set by submit_decision for historical fork)
+        fork_parent = state.pop("_fork_parent_version", None)
 
         # Inject user feedback into user_request for reanalyze/replan
         comment = state.get("hitl_decision", {}).get("comment", "")
@@ -717,6 +706,19 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         _store[thread_id]["state"] = state
         _add_token_entry(thread_id, label)
         _store[thread_id]["status"] = "completed"
+
+        # Save new report as a version after reanalysis completes
+        new_report = state.get("report_data")
+        if new_report:
+            parent = fork_parent if fork_parent is not None else _current_db_version(thread_id)
+            _history_store.insert(
+                thread_id, parent, "",
+                action,
+                {"report_data": new_report.model_dump() if hasattr(new_report, "model_dump") else new_report,
+                 "comment": state.get("hitl_decision", {}).get("comment", "")},
+            )
+            logger.info("Saved post-%s report v%d for %s",
+                        action, _current_db_version(thread_id), thread_id[:12])
     except Exception as e:
         logger.exception("Reanalysis %s failed: %s", thread_id, e)
         if thread_id in _store:

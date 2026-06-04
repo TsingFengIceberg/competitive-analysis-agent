@@ -14,7 +14,7 @@ import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
 import MessageFlowPanel from "@/components/competition/message-flow-timeline";
 import ReplaySlider from "@/components/competition/replay-slider";
-import { SourceCard, VersionDiff, type SourceInfo } from "@/components/competition/source-card";
+import { SourceCard, VersionDiff, SideBySideDiff, type SourceInfo } from "@/components/competition/source-card";
 import TokenPanel from "@/components/competition/token-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -345,6 +345,7 @@ export default function CompetitionPage() {
   const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
   const [selectedForDiff, setSelectedForDiff] = useState<Set<number>>(new Set());
   const [diffVersions, setDiffVersions] = useState<[number, number] | null>(null);
+  const [diffViewMode, setDiffViewMode] = useState<"side-by-side" | "summary">("side-by-side");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
@@ -694,9 +695,23 @@ function escapeAttr(s: string): string {
                   return (
                     <div className="mb-3 rounded border-2 border-purple-300 bg-purple-50/30 p-3">
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-sm font-semibold text-purple-700">
-                          版本对比: v{vA} vs v{vB}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-purple-700">
+                            版本对比: v{vA} vs v{vB}
+                          </span>
+                          <button
+                            onClick={() => setDiffViewMode("side-by-side")}
+                            className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "side-by-side" ? "bg-purple-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+                          >
+                            逐行对比
+                          </button>
+                          <button
+                            onClick={() => setDiffViewMode("summary")}
+                            className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "summary" ? "bg-purple-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+                          >
+                            章节概览
+                          </button>
+                        </div>
                         <button
                           onClick={() => { setDiffVersions(null); setSelectedForDiff(new Set()); }}
                           className="text-xs text-muted-foreground hover:text-foreground"
@@ -704,7 +719,11 @@ function escapeAttr(s: string): string {
                           关闭
                         </button>
                       </div>
-                      <VersionDiff oldEntry={entryA} newEntry={entryB} />
+                      {diffViewMode === "side-by-side" ? (
+                        <SideBySideDiff oldEntry={entryA} newEntry={entryB} />
+                      ) : (
+                        <VersionDiff oldEntry={entryA} newEntry={entryB} />
+                      )}
                     </div>
                   );
                 })()}

@@ -196,6 +196,241 @@ export function VersionDiff({ oldEntry, newEntry }: { oldEntry: ReportHistoryIte
   );
 }
 
+// ── Text diff utility ─────────────────────────────────────────────
+
+interface DiffSegment {
+  type: "same" | "add" | "del";
+  text: string;
+}
+
+/** Compute LCS table for two string arrays. */
+function lcsTable(a: string[], b: string[]): number[][] {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = [];
+  for (let i = 0; i <= m; i++) {
+    const row: number[] = [];
+    for (let j = 0; j <= n; j++) row.push(0);
+    dp.push(row);
+  }
+  for (let i = 1; i <= m; i++) {
+    const di = dp[i]!;
+    const di1 = dp[i - 1]!;
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        di[j] = di1[j - 1]! + 1;
+      } else {
+        di[j] = Math.max(di1[j]!, di[j - 1]!);
+      }
+    }
+  }
+  return dp;
+}
+
+/** Backtrack LCS table to produce diff segments. */
+function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] {
+  const result: DiffSegment[] = [];
+  let i = a.length;
+  let j = b.length;
+  const buf: string[] = [];
+
+  function flushAdd() {
+    if (buf.length) { result.push({ type: "add", text: buf.join("\n") }); buf.length = 0; }
+  }
+  function flushDel() {
+    if (buf.length) { result.push({ type: "del", text: buf.join("\n") }); buf.length = 0; }
+  }
+
+  while (i > 0 || j > 0) {
+    const ai = i > 0 ? a[i - 1]! : "";
+    const bj = j > 0 ? b[j - 1]! : "";
+    if (i > 0 && j > 0 && ai === bj) {
+      flushAdd(); flushDel();
+      buf.unshift(ai);
+      i--; j--;
+    } else if (i > 0 && (j === 0 || dp[i - 1]![j]! >= dp[i]![j - 1]!)) {
+      flushAdd();
+      buf.unshift(ai);
+      i--;
+      flushDel();
+    } else {
+      flushDel();
+      buf.unshift(bj);
+      j--;
+      flushAdd();
+    }
+  }
+  flushAdd(); flushDel();
+
+  // Now merge into proper sequence
+  const merged: DiffSegment[] = [];
+  let sameBuf: string[] = [];
+  for (const seg of result) {
+    if (seg.type === "same") {
+      sameBuf.push(seg.text);
+    } else {
+      if (sameBuf.length) { merged.push({ type: "same", text: sameBuf.join("\n") }); sameBuf.length = 0; }
+      merged.push(seg);
+    }
+  }
+  if (sameBuf.length) merged.push({ type: "same", text: sameBuf.join("\n") });
+  return merged;
+}
+
+function computeTextDiff(oldText: string, newText: string): { oldSegments: DiffSegment[]; newSegments: DiffSegment[] } {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const dp = lcsTable(oldLines, newLines);
+  const raw = backtrackDiff(oldLines, newLines, dp);
+
+  const oldSegments: DiffSegment[] = [];
+  const newSegments: DiffSegment[] = [];
+
+  for (const seg of raw) {
+    if (seg.type === "same") {
+      oldSegments.push({ type: "same", text: seg.text });
+      newSegments.push({ type: "same", text: seg.text });
+    } else if (seg.type === "del") {
+      oldSegments.push({ type: "del", text: seg.text });
+      newSegments.push({ type: "del", text: "" }); // placeholder
+    } else {
+      oldSegments.push({ type: "add", text: "" }); // placeholder
+      newSegments.push({ type: "add", text: seg.text });
+    }
+  }
+
+  // Compact: merge adjacent same-type segments
+  function compact(segs: DiffSegment[]): DiffSegment[] {
+    const out: DiffSegment[] = [];
+    for (const s of segs) {
+      const last = out[out.length - 1];
+      if (last && last.type === s.type) {
+        last.text += (last.text && s.text ? "\n" : "") + s.text;
+      } else {
+        out.push({ ...s });
+      }
+    }
+    return out;
+  }
+
+  return { oldSegments: compact(oldSegments), newSegments: compact(newSegments) };
+}
+
+// ── Side-by-side diff view ────────────────────────────────────────
+
+export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistoryItem; newEntry: ReportHistoryItem }) {
+  const oldSections = oldEntry.report_data?.sections ?? [];
+  const newSections = newEntry.report_data?.sections ?? [];
+  const sectionDiffs = computeSectionDiff(oldSections, newSections);
+
+  const summary = {
+    added: sectionDiffs.filter((d) => d.status === "added").length,
+    removed: sectionDiffs.filter((d) => d.status === "removed").length,
+    modified: sectionDiffs.filter((d) => d.status === "modified").length,
+    unchanged: sectionDiffs.filter((d) => d.status === "unchanged").length,
+  };
+
+  function renderLines(segments: DiffSegment[], side: "old" | "new") {
+    return segments.map((seg, i) => {
+      if (seg.type === "del" && side === "new") return null; // placeholder on new side
+      if (seg.type === "add" && side === "old") return null; // placeholder on old side
+      const lines = seg.text ? seg.text.split("\n") : [""];
+
+      let bgClass = "";
+      if (seg.type === "del") bgClass = "bg-red-100/50 text-red-800";
+      else if (seg.type === "add") bgClass = "bg-green-100/50 text-green-800";
+
+      return (
+        <div key={i} className={bgClass}>
+          {lines.map((line, li) => (
+            <div key={li} className="min-h-[1.4em] px-2 py-px font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+              {line || " "}
+            </div>
+          ))}
+        </div>
+      );
+    });
+  }
+
+  return (
+    <div className="space-y-1 text-xs">
+      {/* Summary bar */}
+      <div className="mb-2 flex items-center gap-3 rounded bg-muted p-2 text-[11px]">
+        <span className="text-green-600">+{summary.added} 新增</span>
+        <span className="text-red-600">-{summary.removed} 移除</span>
+        <span className="text-amber-600">~{summary.modified} 修改</span>
+        <span className="text-muted-foreground">{summary.unchanged} 不变</span>
+      </div>
+
+      {/* Side-by-side sections */}
+      {sectionDiffs.map((sd) => {
+        const isAdded = sd.status === "added";
+        const isRemoved = sd.status === "removed";
+        const isModified = sd.status === "modified";
+
+        let oldText = sd.old_content ?? "";
+        let newText = sd.new_content ?? "";
+        let oldSegs: DiffSegment[] = [];
+        let newSegs: DiffSegment[] = [];
+
+        if (isModified) {
+          const diff = computeTextDiff(oldText, newText);
+          oldSegs = diff.oldSegments;
+          newSegs = diff.newSegments;
+        } else if (isRemoved) {
+          oldSegs = [{ type: "del", text: oldText }];
+          newSegs = [{ type: "del", text: "" }];
+        } else if (isAdded) {
+          oldSegs = [{ type: "add", text: "" }];
+          newSegs = [{ type: "add", text: newText }];
+        } else {
+          oldSegs = [{ type: "same", text: oldText }];
+          newSegs = [{ type: "same", text: oldText }];
+        }
+
+        return (
+          <div key={sd.id} className="mb-2 rounded border border-muted overflow-hidden">
+            {/* Section header */}
+            <div className={`px-2 py-1 text-[11px] font-medium ${
+              isAdded ? "bg-green-100 text-green-700" :
+              isRemoved ? "bg-red-100 text-red-700" :
+              isModified ? "bg-amber-100 text-amber-700" :
+              "bg-muted/50 text-muted-foreground"
+            }`}>
+              {sd.title}
+              <span className="ml-2 font-normal text-[10px]">
+                {isAdded ? "新增" : isRemoved ? "移除" : isModified ? "修改" : "无变化"}
+              </span>
+            </div>
+
+            {/* Side-by-side panels */}
+            <div className="grid grid-cols-2 divide-x divide-border">
+              {/* Old panel */}
+              <div className="min-h-[2em]">
+                <div className="bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground border-b border-border">
+                  旧版本
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {renderLines(oldSegs, "old")}
+                </div>
+              </div>
+              {/* New panel */}
+              <div className="min-h-[2em]">
+                <div className="bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground border-b border-border">
+                  新版本
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {renderLines(newSegs, "new")}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Source hover hook ───────────────────────────────────────────────
 
 export function useSourceHover() {
