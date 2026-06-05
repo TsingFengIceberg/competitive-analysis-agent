@@ -17,7 +17,7 @@ from deerflow.competition.dag import (
 class TestTopology:
     def test_all_nodes_have_ids(self):
         ids = {n["id"] for n in DAG_TOPOLOGY["nodes"]}
-        assert len(ids) == 13
+        assert len(ids) == 14  # v4: +orchestrator
 
     def test_edges_have_valid_refs(self):
         node_ids = {n["id"] for n in DAG_TOPOLOGY["nodes"]} | {"__end__"}
@@ -33,13 +33,20 @@ class TestTopology:
 
 class TestInferCurrentNode:
     def test_empty_state(self):
-        assert _infer_current_node({}) == "collector"
+        assert _infer_current_node({}) == "orchestrator"  # v4: Orchestrator first
+
+    def test_orchestrator_done(self):
+        assert _infer_current_node({"orchestration_result": {"complexity": "standard"}}) == "collector"
 
     def test_collector_done(self):
-        assert _infer_current_node({"collected_data": [{"id": "1"}]}) == "analyst"
+        assert _infer_current_node({
+            "orchestration_result": {"complexity": "standard"},
+            "collected_data": [{"id": "1"}],
+        }) == "analyst"
 
     def test_analyst_done(self):
         assert _infer_current_node({
+            "orchestration_result": {"complexity": "standard"},
             "collected_data": [{"id": "1"}],
             "analysis_result": {"comparison_matrix": {}},
         }) == "reviewer"
@@ -49,6 +56,7 @@ class TestInferCurrentNode:
 
     def test_all_done(self):
         state = {
+            "orchestration_result": {"complexity": "standard"},
             "collected_data": [{"id": "1"}],
             "analysis_result": {"comparison_matrix": {"products": ["A"]}},
             "review_verdict": {"passed": True},
@@ -144,7 +152,10 @@ class TestNodeStyle:
 
 class TestGetDagState:
     def test_returns_structure(self):
-        state = get_dag_state({"collected_data": [{"id": "1"}]})
+        state = get_dag_state({
+            "orchestration_result": {"complexity": "standard"},
+            "collected_data": [{"id": "1"}],
+        })
         assert "nodes" in state
         assert "edges" in state
         assert "current_node" in state
@@ -152,7 +163,7 @@ class TestGetDagState:
 
     def test_all_nodes_present(self):
         state = get_dag_state({})
-        assert len(state["nodes"]) == 13
+        assert len(state["nodes"]) == 14  # v4: +orchestrator
 
     def test_summary(self):
         state = get_dag_state({

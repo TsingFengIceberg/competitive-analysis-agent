@@ -32,6 +32,7 @@ class TestBuildCompetitionGraph:
     def test_all_nodes_registered(self):
         build_competition_graph()  # compiles → all node names resolved
         expected = {
+            "orchestrator",  # v4
             "collector", "analyst", "reviewer", "writer", "hitl_gate",
             "error_handler",
             "deep_collector", "deep_analyst", "deep_reviewer",

@@ -20,6 +20,28 @@ REQUIRED_SECTIONS = [
     "appendix-quality",
 ]
 
+# v4: Schema profile → section sets (§3.18.3)
+SCHEMA_PROFILE_SECTIONS: dict[str, list[str]] = {
+    "full": [
+        "sec-executive-summary", "sec-comparison-matrix", "sec-swot",
+        "sec-recommendations", "sec-sources", "appendix-quality",
+    ],
+    "feature_only": ["sec-executive-summary", "sec-comparison-matrix", "sec-sources"],
+    "pricing_only": ["sec-executive-summary", "sec-sources"],  # pricing comparison is part of matrix
+    "no_swot": [
+        "sec-executive-summary", "sec-comparison-matrix",
+        "sec-recommendations", "sec-sources", "appendix-quality",
+    ],
+    "minimal": ["sec-executive-summary", "sec-sources"],
+}
+
+
+def _get_required_sections(state: dict) -> list[str]:
+    """Return the required section IDs based on Orchestrator's schema_profile, or defaults."""
+    orch = state.get("orchestration_result") or {}
+    profile = orch.get("schema_profile", "full")
+    return SCHEMA_PROFILE_SECTIONS.get(profile, REQUIRED_SECTIONS)
+
 OPTIONAL_SECTIONS = {
     "sec-trends": "trends",
     "sec-user-voice": "sentiment",
@@ -96,8 +118,9 @@ def writer_node(state: dict) -> dict:
     if issues:
         logger.warning("Writer self-check found %d issues: %s", len(issues), issues)
 
-    # ── Self-assessment (§3.17.2) ──
-    self_assessment = _build_writer_self_assessment(report_data, target_products)
+    # ── Self-assessment (§3.17.2, v4: Orchestrator-driven section set) ──
+    required_secs = _get_required_sections(state)
+    self_assessment = _build_writer_self_assessment(report_data, target_products, required_secs)
 
     return {
         "report_data": report_data,
@@ -420,17 +443,19 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
 # ── Self-Assessment (§3.17.2) ──
 
 
-def _build_writer_self_assessment(report_data: dict, target_products: list[str]) -> dict:
+def _build_writer_self_assessment(report_data: dict, target_products: list[str], required_sections: list[str] | None = None) -> dict:
     """Build Writer self-assessment: schema compliance, section completeness, source annotation rate.
 
     Returns dict suitable for frontend green/yellow/red dot visualization.
+    v4: accepts optional required_sections from Orchestrator's schema_profile.
     """
     sections = report_data.get("sections", [])
     section_ids = {s.get("id", "") for s in sections}
+    req_secs = required_sections if required_sections is not None else REQUIRED_SECTIONS
 
     # Schema compliance: all required sections present
-    required_present = all(rid in section_ids for rid in REQUIRED_SECTIONS)
-    missing_required = [rid for rid in REQUIRED_SECTIONS if rid not in section_ids]
+    required_present = all(rid in section_ids for rid in req_secs)
+    missing_required = [rid for rid in req_secs if rid not in section_ids]
 
     # Section completeness: proportion of required sections with non-empty content
     filled = 0

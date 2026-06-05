@@ -22,13 +22,23 @@ def reviewer_node(state: dict) -> dict:
     prev_gaps = _gaps_from_verdict(state.get("review_verdict"))
     review_round = state.get("review_round", 0)
 
+    # v4: Orchestrator-driven schema profile — skip dimension checks for tailored profiles
+    orch = state.get("orchestration_result") or {}
+    schema_profile = orch.get("schema_profile", "full")
+
     # Run 8 gap checks (§3.6.1)
     gaps: list[dict] = []
     gaps.extend(check_url_reachability(collected))        # G1
     gaps.extend(check_multi_source_consistency(collected)) # G2
     gaps.extend(check_data_freshness(collected))           # G3
-    gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
-    gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
+
+    # G4/G4.5: Skip dimension coverage checks for tailored profiles (feature_only/pricing_only/minimal)
+    if schema_profile == "full":
+        gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
+        gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
+    else:
+        logger.info("Reviewer: skipping G4/G4.5 for schema_profile=%s", schema_profile)
+
     gaps.extend(check_source_diversity(collected))         # G5
     gaps.extend(check_statistical_outliers(collected))     # G6
 

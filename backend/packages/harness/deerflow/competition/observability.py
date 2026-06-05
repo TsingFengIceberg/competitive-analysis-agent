@@ -11,14 +11,16 @@ from __future__ import annotations
 # ═══════════════════════════════════════════════════════════════════════════════
 
 NODE_INPUT_FIELDS = {
-    "collector": ["user_request", "target_products", "knowledge_gaps"],
-    "analyst": ["collected_data", "user_request", "persona"],
-    "reviewer": ["collected_data", "analysis_result"],
-    "writer": ["analysis_result", "review_verdict", "persona", "target_products"],
+    "orchestrator": ["user_request", "target_products"],
+    "collector": ["user_request", "target_products", "knowledge_gaps", "orchestration_result"],
+    "analyst": ["collected_data", "user_request", "persona", "orchestration_result"],
+    "reviewer": ["collected_data", "analysis_result", "orchestration_result"],
+    "writer": ["analysis_result", "review_verdict", "persona", "target_products", "orchestration_result"],
     "hitl_gate": ["review_package", "hitl_decision"],
 }
 
 NODE_OUTPUT_FIELDS = {
+    "orchestrator": ["orchestration_result", "target_products"],
     "collector": ["collected_data", "collection_summary"],
     "analyst": ["analysis_result"],
     "reviewer": ["review_verdict", "review_round", "gap_coverage_improvement"],
@@ -59,15 +61,16 @@ def get_agent_detail(state: dict, node_id: str) -> dict:
 
 
 def get_all_agent_details(state: dict) -> list[dict]:
-    """Get detail panels for all 5 core nodes."""
+    """Get detail panels for all 6 core nodes (v4: +Orchestrator)."""
     return [
         get_agent_detail(state, nid)
-        for nid in ["collector", "analyst", "reviewer", "writer", "hitl_gate"]
+        for nid in ["orchestrator", "collector", "analyst", "reviewer", "writer", "hitl_gate"]
     ]
 
 
 def _node_label(node_id: str) -> str:
     labels = {
+        "orchestrator": "Orchestrator — 意图解析 Agent",
         "collector": "Collector — 信息采集 Agent",
         "analyst": "Analyst — 分析 Agent",
         "reviewer": "Reviewer — 质检 Agent",
@@ -80,6 +83,7 @@ def _node_label(node_id: str) -> str:
 def _infer_tools(node_id: str) -> list[str]:
     """Return tools likely used by this node (would come from SubagentExecutor metadata in production)."""
     tool_map = {
+        "orchestrator": ["(single LLM call — intent parsing + routing)"],
         "collector": ["web_search", "web_fetch", "python", "write_file"],
         "analyst": ["python", "write_file", "read_file"],
         "reviewer": ["python", "bash (curl -I)", "read_file"],

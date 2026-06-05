@@ -13,6 +13,7 @@ NodeStatus = Literal["waiting", "active", "done", "error", "hitl_pending"]
 # DAG topology — fixed, not derived from state
 DAG_TOPOLOGY = {
     "nodes": [
+        {"id": "orchestrator", "label": "Orchestrator", "description": "意图解析 + 产品名提取/纠错 + 复杂度判定 + 维度权重 + Schema 裁剪", "color": "purple"},
         {"id": "collector", "label": "Collector", "description": "多源采集 + 去重 + 软停止"},
         {"id": "analyst", "label": "Analyst", "description": "对比矩阵 + SWOT + 趋势 + 预测"},
         {"id": "reviewer", "label": "Reviewer", "description": "8 项计算验证 + gap 生成"},
@@ -29,6 +30,9 @@ DAG_TOPOLOGY = {
     ],
     "edges": [
         # Normal mode
+        {"id": "o2c", "from": "orchestrator", "to": "collector", "type": "normal"},
+        {"id": "o2w", "from": "orchestrator", "to": "writer", "type": "normal", "condition": "collect_write_only"},
+        {"id": "o2err", "from": "orchestrator", "to": "error_handler", "type": "error"},
         {"id": "c2a", "from": "collector", "to": "analyst", "type": "normal"},
         {"id": "a2r", "from": "analyst", "to": "reviewer", "type": "normal"},
         {"id": "r2w", "from": "reviewer", "to": "writer", "type": "normal", "condition": "passed"},
@@ -59,6 +63,7 @@ DAG_TOPOLOGY = {
 
 # Node completion order for state inference (§7.2)
 _NODE_ORDER = [
+    "orchestrator",  # v4: entry point
     "collector", "analyst", "reviewer", "writer", "hitl_gate",
     "deep_collector", "deep_analyst", "deep_reviewer", "deep_writer",
     "deep_hitl", "feishu_delivery",
@@ -116,6 +121,7 @@ def _infer_current_node(state: dict) -> str | None:
 
     Walk the expected execution order, find the first incomplete node.
     """
+    has_orch = bool(state.get("orchestration_result"))
     has_data = bool(state.get("collected_data"))
     has_analysis = bool(state.get("analysis_result"))
     has_verdict = bool(state.get("review_verdict"))
@@ -125,6 +131,8 @@ def _infer_current_node(state: dict) -> str | None:
     if state.get("error"):
         return "error_handler"
 
+    if not has_orch:
+        return "orchestrator"
     if not has_data:
         return "collector"
     if not has_analysis:
@@ -266,6 +274,7 @@ def _get_self_assessment(node_id: str, state: dict) -> dict | None:
     or None if self-assessment is not yet computed for this node.
     """
     assessment_map = {
+        "orchestrator": "orchestrator_self_assessment",
         "collector": "collector_self_assessment",
         "analyst": "analyst_self_assessment",
         "writer": "writer_self_assessment",
@@ -277,6 +286,16 @@ def _get_self_assessment(node_id: str, state: dict) -> dict | None:
 
     data = state.get(key)
     if not data:
+        # v4: Orchestrator self-assessment from orchestration_result
+        if node_id == "orchestrator":
+            orch = state.get("orchestration_result")
+            if orch:
+                confidences = orch.get("product_confidence", {})
+                high_count = sum(1 for v in confidences.values() if v == "high")
+                total = max(len(confidences), 1)
+                score = high_count / total
+                tier = "green" if score >= 0.8 else ("yellow" if score >= 0.5 else "red")
+                return {"score": score, "tier": tier, "label": orch.get("summary", "")}
         return None
 
     # Extract the primary score based on node type

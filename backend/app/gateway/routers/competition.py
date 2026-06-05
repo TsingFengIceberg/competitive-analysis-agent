@@ -45,7 +45,7 @@ class AnalyzeRequest(BaseModel):
     """Request body for starting a competitive analysis."""
 
     query: str = Field(..., description="Natural language analysis request")
-    target_products: list[str] = Field(..., description="Products to compare, e.g. ['Cursor', 'Copilot']")
+    target_products: list[str] = Field(default_factory=list, description="Products to compare. Optional — leave empty for AI auto-detection. e.g. ['Cursor', 'Copilot']")
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
     deep_mode: bool = Field(default=False, description="Enable deep mode pipeline after normal mode")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
@@ -1000,71 +1000,45 @@ def _add_token_entry(thread_id: str, label: str) -> None:
 
 
 def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str]) -> None:
-    """Resolve products then run graph — all synchronous, called from thread executor.
+    """Orchestrator-driven entry point `[v4]` — all synchronous, called from thread executor.
 
-    Runs in background thread because:
-      1. _llm_extract_products() makes LLM calls (~20-30s)
-      2. _verify_products_via_search() makes search + LLM calls (~60-120s)
-      3. _run_graph_sync() runs the full graph (~5-10min)
-    Total: 5-10 minutes of synchronous LLM calls that would block the event loop.
+    v4 change: product resolution + complexity assessment + dimension weighting +
+    schema tailoring are now handled by the orchestrator_node (first node in graph).
+    This function only prepares the initial state and runs the graph.
+
+    Old scattered calls (_llm_extract_products / _verify_products_via_search /
+    _assess_complexity) are retained as fallback for when the Orchestrator fails.
+
+    Runs in background thread because graph execution takes ~5-10min of synchronous
+    LLM calls that would block the event loop.
     """
     import logging
     _log = logging.getLogger(__name__)
 
     try:
-        # ── Step 1: Resolve products ──
+        # ── Prepare initial state ──
         products: list[str] = []
-
         if explicit_products:
             for p in explicit_products:
                 p = p.strip()
                 if p and p not in products:
                     products.append(p)
 
-        if products:
-            # Verify/correct explicit products via search + LLM judge
-            products = _verify_products_via_search(products, 1, query)
-
-        if not products:
-            # No explicit products — extract from query via LLM
-            _log.info("No products from explicit list — extracting via LLM")
-            products = _llm_extract_products(query)
-
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        resolved: list[str] = []
-        for p in products:
-            if p.lower() not in seen:
-                seen.add(p.lower())
-                resolved.append(p)
-        products = resolved
-
-        _log.info("Resolved products: %s (from query: '%s')", products, query[:80])
-
-        # ── Assess task complexity (§3.17.1) ──
-        complexity = _assess_complexity(query, products)
-
-        if not products:
-            _log.warning("Could not resolve any products — marking as failed")
-            if thread_id in _store:
-                _store[thread_id]["status"] = "failed"
-                _store[thread_id]["state"]["error"] = (
-                    "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
-                )
-            return
-
-        # Update store with resolved products
+        # Update store — Orchestrator node will handle product resolution
         if thread_id in _store:
             _store[thread_id]["products"] = products
             _store[thread_id]["status"] = "running"
             _store[thread_id]["state"]["target_products"] = products
-            _store[thread_id]["state"]["complexity"] = complexity
+            # complexity will be set by orchestrator_node; seed with "standard" as default
+            _store[thread_id]["state"]["complexity"] = "standard"
 
-        # ── Step 2: Run the graph ──
+        _log.info("Orchestrator-driven graph start: products=%s query='%.80s'", products, query)
+
+        # ── Run the graph (Orchestrator is the entry point) ──
         _run_graph_sync(thread_id)
 
     except Exception as e:
-        _log.exception("Resolution+graph failed for %s: %s", thread_id, e)
+        _log.exception("Graph execution failed for %s: %s", thread_id, e)
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
@@ -1090,10 +1064,12 @@ def _run_graph_sync(thread_id: str) -> None:
         from deerflow.competition.nodes.collector import collector_node
         from deerflow.competition.nodes.error_handler import error_handler_node
         from deerflow.competition.nodes.hitl_gate import hitl_gate_node
+        from deerflow.competition.nodes.orchestrator import orchestrator_node
         from deerflow.competition.nodes.reviewer import reviewer_node
         from deerflow.competition.nodes.writer import writer_node
 
         register_nodes({
+            "orchestrator": orchestrator_node,
             "collector": collector_node,
             "analyst": analyst_node,
             "reviewer": reviewer_node,

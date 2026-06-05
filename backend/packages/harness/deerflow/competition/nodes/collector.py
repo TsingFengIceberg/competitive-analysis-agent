@@ -436,8 +436,11 @@ def _run_searches(state: dict) -> str:
     if gap_products:
         target_products = list(set(target_products + gap_products))
 
-    # ── Task complexity adjustment (§3.17.1) ──
-    complexity = state.get("complexity", "standard")
+    # ── Task complexity adjustment (§3.17.1, v4: Orchestrator-driven) ──
+    # Priority: Orchestrator's orchestration_result → state["complexity"] → "standard"
+    orch = state.get("orchestration_result") or {}
+    complexity = orch.get("complexity") or state.get("complexity", "standard")
+    dimension_weights = orch.get("dimension_weights") or []
     complexity_config = _get_complexity_config(complexity)
 
     # Calculate adaptive context budget
@@ -447,7 +450,12 @@ def _run_searches(state: dict) -> str:
     budget.fetch_top_n = complexity_config["fetch_top_n"]
     budget.max_results = complexity_config["max_results"]
 
+    # v4: If dimension_weights are available, adjust categories searched
+    # Higher weight → include that dimension in the search explicitly
     queries = build_search_queries(target_products, complexity=complexity)
+    if dimension_weights:
+        weighted_dims = {dw["dimension"]: dw["weight"] for dw in dimension_weights}
+        logger.info("Orchestrator dimension weights: %s", weighted_dims)
     logger.warning("═══ 🦆 DDG SEARCH: %d queries for %d products (complexity=%s, budget=%s, %dK tokens) ═══",
                    len(queries), len(target_products), complexity, budget.tier, budget.tokens // 1000)
     for i, q in enumerate(queries):

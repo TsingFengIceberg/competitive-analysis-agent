@@ -37,6 +37,7 @@
 ### 1.4 竞赛要求追溯矩阵
 
 > 每条 `**[竞赛要求]**` 标记对应开题材料或会议纪要中的具体条款。评审可据此快速定位实现位置。
+> `**[v4 新增]**` O1-O5 为 Orchestrator Agent 架构重构新增条目。
 
 | # | 竞赛要求（原文关键词） | 来源 | 实现章节 | 实现方式 |
 |---|---------------------|------|---------|---------|
@@ -62,6 +63,11 @@
 | R20 | 项目文档齐全：README/架构图/角色协议/部署说明 | 判标 §4 | [§10](#十参考信息) + README + DOCS-PA-AGENT/ | 文档体系 |
 | R21 | 前段展示页面，可现场演示 | 开题 + 会议纪要 | [§7](#七答辩呈现设计--内部工作流可视化) + [§8 Week 2](#week-2-527--63-前端--可观测--飞书集成) | Gradio/Next.js + DAG 可视化 |
 | R22 | 细分方向可做，系统需具备扩展性 | 会议纪要 | [§3.2](#32-双模定位对比) + config.yaml workflows | 双模架构 + 可配置 workflow |
+| **O1** `**[v4 新增]**` | **Orchestrator Agent：单次 LLM 统一意图解析+产品名解析+路由决策，下游动态响应** | 判标 §4 前瞻性 | [§3.3 Orchestrator 角色](#33-5-个-agent-角色定义) + [§3.18](#318-orchestrator-agent--query-driven-动态-pipeline-v4-核心架构重构) | Query-Driven 动态 Pipeline |
+| **O2** `**[v4 新增]**` | **Pipeline 变体路由：3 种路径 (full/collect_write_only/skip_reviewer)** | 判标 §4 前瞻性 | [§3.13 路由逻辑](#313-路由逻辑orchestrator-入口--普通模式--深度模式流水线) + [§3.18.2](#3182-pipeline-变体) | Orchestrator → route_after_orchestrator() |
+| **O3** `**[v4 新增]**` | **Schema 裁剪：5 种 schema_profile** | 判标 §4 前瞻性 | [§3.18.3 Schema 裁剪](#3183-schema-裁剪) | Writer 按 profile 动态生成 section |
+| **O4** `**[v4 新增]**` | **竞品自动发现：单产品 query → 自动搜索补全** | 判标 §4 前瞻性 | [§3.18.4 自动竞品发现](#3184-自动竞品发现) | 搜索 "{product} competitors" |
+| **O5** `**[v4 新增]**` | **Orchestrator 降级：三层降级确保不阻塞** | 判标 §4 工程完整度 | [§3.18.5 降级策略](#3185-降级策略) | Orchestrator 失败→默认 pipeline |
 
 > **标记说明**：文档中 `**[竞赛要求]**` 标记表示该段落/设计直接对应上述某条竞赛要求。评审可搜索此标记快速验证覆盖率。
 
@@ -128,28 +134,37 @@
 
 ## 三、比赛项目架构设计
 
-### 3.1 总体架构：普通模式 + 深度模式（流水线增强）
+### 3.1 总体架构：Orchestrator + 普通模式 + 深度模式（v4 Query-Driven 动态 Pipeline）
 
-> **核心理念**：普通模式是比赛的主体（80-100 分），不阉割任何核心环节。
+> **核心理念**：Orchestrator 作为入口 Agent 统一解析 query 意图并输出结构化路由指令（`OrchestrationResult`），下游 4 个执行 Agent 根据指令动态调整行为。
+> 普通模式是比赛的主体（80-100 分），不阉割任何核心环节。
 > 深度模式是可选增强，以普通模式输出为起点，进一步做更深入的调研和分析。
 
 ```
-用户输入 (deep_mode: false | true)
+用户输入 (query: str, target_products?: list[str])
          │
          ▼
-┌────────────────────────────────────────────────────────────┐
-│               📋 普通模式 (始终执行, 比赛基准)               │
-│                                                            │
-│  Collector ──→ Analyst ──→ Reviewer ──→ Writer ──→ HITL   │
-│      ↑             ↑           │            │         │    │
-│      │             │           │ ❌          │    approve │
-│      └─────────────┴── gap ────┘            │   replan   │
-│           (结构化 JSON, 最多 2 轮)           │ reanalyze  │
-│                                              │  rewrite   │
-│                                              │         │    │
-│                                         普通报告输出       │
-│                                         (前端展示)         │
-└──────────────────────┬─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│         🎯 Orchestrator (入口 Agent, §3.3)                        │
+│         意图解析 + 产品名提取/纠错 + 竞品自动补全                      │
+│         + 语义复杂度判定 + 维度权重分配 + Schema 裁剪 + Pipeline 路由    │
+│         输出: OrchestrationResult → 注入 State                      │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│               📋 普通模式 (始终执行, 比赛基准)                      │
+│                                                                  │
+│  Collector ──→ Analyst ──→ Reviewer ──→ Writer ──→ HITL         │
+│      ↑             ↑           │            │         │          │
+│      │             │           │ ❌          │    approve │        │
+│      └─────────────┴── gap ────┘            │   replan   │       │
+│           (结构化 JSON, 最多 2 轮)           │ reanalyze  │       │
+│                                              │  rewrite   │       │
+│                                              │         │          │
+│                                         普通报告输出               │
+│                                         (前端展示)                 │
+└──────────────────────┬───────────────────────────────────────────┘
                        │
                        │  普通报告 (report_data → 前端交互展示)
                        │
@@ -161,25 +176,11 @@
               ▼                 ▼
             END    ┌──────────────────────────────────────────┐
                    │         🔬 深度模式 (可选增强)            │
-                   │                                          │
                    │  以普通报告为种子，进一步:                   │
                    │  • 更多数据源 (视频/抖音/飞书文档)          │
                    │  • 更多轮验证 (无上限，直到收敛)             │
                    │  • 更精细分析 (细分市场/用户分群/财务预测)   │
-                   │  • 更完整报告 (ReportData + 导出 + 飞书推送)      │
-                   │  • 飞书文档自动创建 + Bot 通知              │
-                   │                                          │
-                   │  Deep Collector → Deep Analyst            │
-                   │       ↑              │                    │
-                   │       │         Deep Reviewer             │
-                   │       │              │                    │
-                   │       └── gap ──────┘ (轮数放宽)          │
-                   │                     │                    │
-                   │               Deep Writer                 │
-                   │                     │                    │
-                   │               Deep HITL (可选)             │
-                   │                     │                    │
-                   │              飞书文档交付 + Bot 通知       │
+                   │  • 更完整报告 (ReportData + 导出 + 飞书推送)│
                    └──────────────────────────────────────────┘
 ```
 
@@ -199,16 +200,60 @@
 | **数据源** | **不定死** — 编码时实测后决定。如果全模态抓取速度可接受，普通模式也会加入 | 覆盖普通模式未使用的更深层源 |
 | **目标耗时** | 不做硬性时间目标，编码实测后定 | 无时间上限 |
 
-### 3.3 4 个 Agent 角色定义 `**[竞赛要求 R1]**`
+### 3.3 5 个 Agent 角色定义 `**[竞赛要求 R1]**`
 
 > 每个 Agent 在普通模式中已具备完整能力。深度模式下行为增强但不替换。
+> **v4 新增**：Orchestrator 作为入口 Agent，单次 LLM 调用统一完成意图解析 + 产品名解析 + 路由决策。
 
 | Agent | 普通模式职责 | 深度模式额外行为 |
 |-------|------------|----------------|
+| **Orchestrator** `**[v4 新增]**` | 意图解析 / 产品名提取+纠错 / 竞品自动补全 / 语义复杂度判定 / 维度权重分配 / Schema 裁剪 / Pipeline 变体路由 | 深度模式触发判定（推荐是否启用 deep_mode） |
 | **Collector** | 多源并行采集、用户声音聚合、**问卷生成与访谈支持**、定向补采 | 增量采集：基于知识缺口补充视频/抖音/深层源 |
 | **Analyst** | 多维对比、SWOT、趋势、可视化 | 细分分析（按用户群/地域/场景）、预测建模 |
 | **Reviewer** | 交叉验证、Python 统计检验、gap 打回采集（≤2轮）、飞书审批推送 | 更多轮验证（无硬上限）、对深度新增内容专项验证 |
 | **Writer** | 双视角 ReportData 交互报告 + 内联溯源 + 一键导出 | Markdown/PDF/PPTX 导出 + 飞书 Doc 推送 |
+
+#### Orchestrator 入口 Agent `**[竞赛要求 R1 补充, v4 核心差异化]**`
+
+> Orchestrator 是整个 Pipeline 的"大脑"——不做数据执行，只做意图→指令的语义翻译。将当前分散在 `competition.py` 中的多次 LLM/关键词调用（产品提取 + 搜索验证 + LLM 纠错 + 关键词复杂度判定）统一为**单次结构化 LLM 调用**。
+
+**职责边界**：
+- ✅ 从自然语言 query 提取产品名 + 纠错（替代 `_llm_extract_products()` + `_llm_judge_and_correct()`）
+- ✅ 单产品 → 自动识别并发起竞品搜索（替代手动输入）
+- ✅ 语义判定复杂度 quick/standard/deep（替代 `_assess_complexity()` 关键词匹配）
+- ✅ 分配维度权重 `dimension_weights`：定价/功能/用户/市场各占多少搜索预算
+- ✅ 决定 Schema 裁剪 `schema_profile`：full / feature_only / pricing_only / no_swot / minimal
+- ✅ 决定 Pipeline 变体 `pipeline_variant`：full / collect_write_only / skip_reviewer
+- ❌ 不执行搜索、不生产分析结论、不写报告
+
+**输出 Schema**：
+```python
+class DimensionWeight(BaseModel):
+    dimension: str           # "features" | "pricing" | "users" | "market" | "technology"
+    weight: float            # 0.0-1.0，控制搜索预算分配
+    reason: str              # 为什么这个维度权重高/低
+
+class OrchestrationResult(BaseModel):
+    products: list[str]                     # 最终确认的产品名列表
+    product_confidence: dict[str, str]       # high/medium/low
+    complexity: Literal["quick", "standard", "deep"]
+    complexity_reason: str
+    dimension_weights: list[DimensionWeight]
+    schema_profile: Literal["full", "feature_only", "pricing_only", "no_swot", "minimal"]
+    emphasized_aspects: list[str]           # 用户强调的分析方面
+    pipeline_variant: Literal["full", "collect_write_only", "skip_reviewer"]
+    auto_discovered_competitors: list[str]  # 自动发现的竞品
+    summary: str                            # 意图解析的一句话摘要
+```
+
+**与下游 Agent 的关系**：
+- Orchestrator 输出 `OrchestrationResult` → 注入 `State.orchestration_result`
+- Collector 读 `dimension_weights` → 动态分配搜索预算
+- Analyst 读 `dimension_weights` + `emphasized_aspects` → 注入 System Prompt
+- Writer 读 `schema_profile` → 按需生成 Section
+- Reviewer 读 `schema_profile` → 调整 G4/G5 校验标准
+
+**降级策略**：Orchestrator LLM 调用失败 / JSON parse 失败 / model_validate 失败 → 降级为默认 pipeline（`complexity="standard"`, `schema_profile="full"`, `pipeline_variant="full"`），产品名解析降级为现有 `_llm_extract_products()` + `_verify_products_via_search()`。 |
 
 #### Collector 的双轨采集能力 `**[竞赛要求 R2]**`
 
@@ -241,7 +286,8 @@
 
 ### 3.4 Collector 采集规范 `**[竞赛要求 R1, R2]**`
 
-> 采集是整个系统的感官，Collector 不是"无脑搜"，而是按以下固定规则执行——搜什么、怎么搜、何时停、去重逻辑。
+> 采集是整个系统的感官，Collector 不是"无脑搜"，而是按以下规则执行——搜什么、怎么搜、何时停、去重逻辑。
+> **v4 更新**：搜索维度、预算、类别优先从 `state["orchestration_result"].dimension_weights` 动态读取；Orchestrator 失败时降级为 `COMPLEXITY_CONFIG`。
 
 #### 3.4.1 有效数据点最低门槛
 
@@ -495,7 +541,8 @@ class Questionnaire(BaseModel):
 
 ### 3.5 Analyst 分析规范
 
-> Analyst 从 `collected_data` 生成 `AnalysisResult`。不是"LLM 想到什么分析什么"——按以下固定规则执行。
+> Analyst 从 `collected_data` 生成 `AnalysisResult`。不是"LLM 想到什么分析什么"——按以下规则执行。
+> **v4 更新**：强制对比维度从硬编码 4-6 维改为优先从 `state["orchestration_result"].dimension_weights` 动态读取；`emphasized_aspects` 注入 Analyst System Prompt 作为重点标注。Orchestrator 失败时降级为默认维度集。
 
 #### 3.5.1 强制对比维度
 
@@ -698,6 +745,7 @@ PA-Agent-DF 用 Critic（提出质疑）+ Meta-Judge（裁决）是因为当时�
 ### 3.7 Writer 报告规范
 
 > Writer 输出不再是 `.md` 文件字符串——而是 `ReportData` 结构化 JSON，前端原生渲染交互报告。Markdown/PDF/PPTX 只是导出格式。
+> **v4 更新**：`REQUIRED_SECTIONS` 从硬编码改为优先从 `state["orchestration_result"].schema_profile` 动态生成（如 `feature_only` → 只生成 comparison-matrix + sources，跳过 SWOT/trends）。Orchestrator 失败时降级为默认 section 集。
 
 #### 3.7.1 报告从静态文件 → 前端原生交互
 
@@ -1194,9 +1242,13 @@ BranchTree 使用 CheckpointOps 而非直接调 LangGraph API 的论点：如果
 class CompetitionState(AgentState):
     # ── 用户输入 ──
     user_request: str
-    target_products: list[str]          # 要对比的产品
+    target_products: list[str]          # 要对比的产品（v4: Orchestrator 可从 query 自动提取）
     persona: str                        # "pm" | "entrepreneur" | "both"
     deep_mode: bool                     # False=仅普通模式, True=普通+深度
+
+    # ── Orchestrator 输出 `**[v4 新增]**` ──
+    orchestration_result: OrchestrationResult | None  # 意图解析 + 维度权重 + Schema 裁剪 + Pipeline 路由
+    complexity: str                     # "quick" | "standard" | "deep"（Orchestrator 失败时作为 fallback 值）
 
     # ── Collector 输出（普通模式累积，深度模式增量追加）──
     collected_data: Annotated[list[CollectedDataPoint], op_add]
@@ -1309,20 +1361,44 @@ Agent LLM 输出 (JSON string)
 - 每次校验失败时记录日志（时间、Agent、Schema 类型、原始输出、校验错误）
 - Schema 校验日志作为可观测面板的一部分展示
 
-### 3.13 路由逻辑（普通模式 + 深度模式流水线）
+### 3.13 路由逻辑（Orchestrator 入口 + 普通模式 + 深度模式流水线）
 
 ```python
 # competition/router.py
 
+# ── Orchestrator 路由 `**[v4 新增]**` ──
+
+def route_after_orchestrator(state: CompetitionState) -> str:
+    """Orchestrator → Collector（默认）或按 pipeline_variant 跳过节点。"""
+    if state.get("error"):
+        return "error_handler"
+    orch = state.get("orchestration_result") or {}
+    variant = orch.get("pipeline_variant", "full")
+    if variant == "collect_write_only":
+        return "writer"           # 跳过 Analyst + Reviewer（简单信息收集）
+    elif variant == "skip_reviewer":
+        return "collector"        # Collector → Analyst → Writer（跳过 Reviewer）
+    return "collector"            # 默认：完整 pipeline
+
+# ── 普通模式路由 ──
+
 def route_after_collector(state: CompetitionState) -> str:
     if state.get("error"):
         return "error_handler"
+    orch = state.get("orchestration_result") or {}
+    variant = orch.get("pipeline_variant", "full")
+    if variant == "collect_write_only":
+        return "writer"           # 跳过 Analyst + Reviewer
     return "analyst"
 
 def route_after_analyst(state: CompetitionState) -> str:
-    """普通模式: 始终进入 Reviewer（不跳过）"""
+    """普通模式: 始终进入 Reviewer（不跳过）。"""
     if state.get("error"):
         return "error_handler"
+    orch = state.get("orchestration_result") or {}
+    variant = orch.get("pipeline_variant", "full")
+    if variant == "skip_reviewer":
+        return "writer"           # 跳过 Reviewer（快速概览）
     return "reviewer"
 
 def route_after_reviewer(state: CompetitionState) -> str:
@@ -1389,6 +1465,9 @@ def route_after_deep_writer(state: CompetitionState) -> str:
 def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     builder = StateGraph(CompetitionState)
 
+    # ── Orchestrator 入口 `**[v4 新增]**` ──
+    builder.add_node("orchestrator", orchestrator_node)
+
     # ── 普通模式节点（始终运行）──
     builder.add_node("collector", collector_node)
     builder.add_node("analyst", analyst_node)
@@ -1409,8 +1488,17 @@ def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     builder.add_node("deep_error_handler", deep_error_handler_node)
 
     # ── 普通模式边 ──
-    builder.set_entry_point("collector")
-    builder.add_edge("collector", "analyst")
+    builder.set_entry_point("orchestrator")  # v4: Orchestrator 作为入口
+    builder.add_conditional_edges("orchestrator", route_after_orchestrator, {
+        "collector": "collector",
+        "writer": "writer",                     # collect_write_only 快速通道
+        "error_handler": "error_handler",
+    })
+    builder.add_conditional_edges("collector", route_after_collector, {
+        "analyst": "analyst",
+        "writer": "writer",                     # collect_write_only 跳过
+        "error_handler": "error_handler",
+    })
     builder.add_edge("analyst", "reviewer")
     builder.add_conditional_edges("reviewer", route_after_reviewer, {
         "writer": "writer",
@@ -1475,19 +1563,44 @@ def measure_improvement(gaps_before: list, gaps_after: list) -> dict:
 #### 3.14.1 通信契约总览
 
 ```
-Collector ──①──→ Analyst ──②──→ Reviewer ──③──→ Writer ──④──→ HITL
-    ↑                    ↑                                    │
-    └──── ⑤ gap ────────┘                   ⑥ replan/reanalyze/rewrite
+Orchestrator ──⓪──→ Collector ──①──→ Analyst ──②──→ Reviewer ──③──→ Writer ──④──→ HITL
+                      ↑                     ↑                                    │
+                      └─────── ⑤ gap ───────┘                   ⑥ replan/reanalyze/rewrite
 ```
 
 | 边 | 发送方 | 接收方 | Schema | State 字段 | 作用 |
 |---|-------|-------|--------|-----------|------|
+| ⓪ `**[v4 新增]**` | Orchestrator | Collector | `OrchestrationResult` | `orchestration_result` | 意图解析 + 维度权重 + Schema 裁剪 + Pipeline 路由 |
 | ① | Collector | Analyst | `CollectedDataPoint` | `collected_data` | 结构化采集结果 |
 | ② | Analyst | Reviewer | `AnalysisResult` | `analysis_result` | 可验证的分析输出 |
 | ③ | Reviewer | Writer | `ReviewVerdict` | `review_verdict` | 数据质量报告 |
 | ④ | Writer | HITL Gate | `ReviewPackage` | `review_package` | 审批简报 |
 | ⑤ | Reviewer | Collector | `ReviewGap` | `gaps` | 定向补采指令 |
 | ⑥ | HITL Gate | 目标节点 | `HitlDecision` | `hitl_decision` | 精准回退指令 |
+
+#### 3.14.0 边 ⓪：Orchestrator → Collector `**[v4 新增]**`
+
+```python
+class DimensionWeight(BaseModel):
+    dimension: str           # "features" | "pricing" | "users" | "market" | "technology"
+    weight: float            # 0.0-1.0，控制搜索预算分配
+    reason: str
+
+class OrchestrationResult(BaseModel):
+    """Orchestrator → 下游所有节点，写入 State.orchestration_result"""
+    products: list[str]
+    product_confidence: dict[str, str]       # high/medium/low
+    complexity: Literal["quick", "standard", "deep"]
+    complexity_reason: str
+    dimension_weights: list[DimensionWeight]
+    schema_profile: Literal["full", "feature_only", "pricing_only", "no_swot", "minimal"]
+    emphasized_aspects: list[str]
+    pipeline_variant: Literal["full", "collect_write_only", "skip_reviewer"]
+    auto_discovered_competitors: list[str]
+    summary: str
+```
+
+This is the first edge in the pipeline — all downstream nodes consume `orchestration_result` to adjust their behavior dynamically rather than using hardcoded defaults.
 
 #### 3.14.2 边 ①：Collector → Analyst
 
@@ -1870,7 +1983,7 @@ analysis_history   ──→ reference（回溯维度）
 
 | 机制 | 实现 |
 |------|------|
-| **per-Agent 超时** | Collector: 600s / Analyst: 300s / Reviewer: 300s / Writer: 180s（可配置） |
+| **per-Agent 超时** | Orchestrator: 60s `**[v4 新增]**` / Collector: 600s / Analyst: 300s / Reviewer: 300s / Writer: 180s（可配置） |
 | **工具调用超时** | 每个 web_search/web_fetch 调用 30s 超时，超时自动重试（指数退避：1s → 2s → 4s，最多 3 次） |
 | **LLM 调用重试** | API 错误自动重试（同指数退避），非 4xx 错误才重试 |
 | **降级策略** | 某数据源不可用时 → 自动切换备选源（Tavily 不可用 → Brave Search）；某 Agent 超时 → 带上已有部分结果继续下一节点 |
@@ -2090,7 +2203,9 @@ def error_handler_node(state: CompetitionState) -> dict:
 > 开题材料原文：「技术方案有独特或前瞻性思考（如自适应任务拆分、Agent 自评估、动态 Schema 演化）」。
 > 三个方向在答辩前至少各落地一个可演示的最小版本，作为差异化加分项。
 
-#### 3.17.1 自适应任务拆分
+#### 3.17.1 自适应任务拆分 `**[v4 已升级为 Orchestrator 语义判定]**`
+
+> **v4 升级**：复杂度判定已从关键词匹配（`_assess_complexity()`）升级为 Orchestrator Agent 的 LLM 语义判定。Orchestrator 输出 `OrchestrationResult.complexity` 和 `dimension_weights`，下游节点据此动态调整行为。旧实现保留作为 Orchestrator 失败时的降级 fallback。
 
 **目标**：根据 query 复杂度自动判定采集/分析深度，避免"一律全量"的资源浪费。
 
@@ -2156,6 +2271,81 @@ def error_handler_node(state: CompetitionState) -> dict:
 **用户自定义 Schema（P2，答辩口头提）**：
 - 前端 Schema 模板编辑器，用户可定义自己关注的维度字段
 - 保存为用户偏好，后续分析自动应用
+
+---
+
+### 3.18 Orchestrator Agent — Query-Driven 动态 Pipeline `**[v4 核心架构重构]**`
+
+> **定位**：Orchestrator 是整个系统唯一的"入口 Agent"，单次 LLM 调用统一完成当前分散在 `competition.py` 中的多次 LLM/关键词调用（产品提取 + 搜索验证 + LLM 纠错 + 关键词复杂度判定）。下游 4 个执行 Agent 从 `orchestration_result` 读取指令，动态调整行为而非硬编码。
+
+#### 3.18.1 设计动机
+
+当前入口流程问题：
+1. `_llm_extract_products()` (LLM #1) → 提取产品名
+2. `_verify_products_via_search()` (并行搜索) → 验证
+3. `_llm_judge_and_correct()` (LLM #2) → 纠错
+4. `_assess_complexity()` (关键词匹配) → 判定复杂度
+
+未来还要加：单产品补全竞品、维度强调检测、Schema 裁剪。各加一次 LLM 调用是灾难。
+
+**Orchestrator 解法**：单次 LLM 调用 → 结构化 `OrchestrationResult` → 下游节点消费。
+
+#### 3.18.2 Pipeline 变体
+
+| variant | Graph 路径 | 使用场景 |
+|---------|-----------|---------|
+| `full` | Orchestrator → Collector → Analyst → Reviewer → Writer → HITL | 默认，完整分析 |
+| `collect_write_only` | Orchestrator → Collector → Writer → HITL | "收集一下 X 产品的功能列表" |
+| `skip_reviewer` | Orchestrator → Collector → Analyst → Writer → HITL | 快速概览，跳过质检 |
+
+Orchestrator 根据 query 语义自动判定 variant：
+- "帮我查一下" / "有哪些功能" → `collect_write_only`
+- "快速对比" / "简单看看" → `skip_reviewer`
+- "深度分析" / "竞争格局" → `full`
+
+#### 3.18.3 Schema 裁剪
+
+| schema_profile | 生成 Sections | 适用场景 |
+|---------------|--------------|---------|
+| `full` | 全部（exec-summary + matrix + SWOT + trends + recommendations + sources + quality） | 完整分析 |
+| `feature_only` | exec-summary + comparison-matrix + sources | 只看功能对比 |
+| `pricing_only` | exec-summary + pricing-comparison + sources | 只看定价对比 |
+| `no_swot` | full 减去 SWOT | 不需要战略分析 |
+| `minimal` | exec-summary + sources | 极简概览 |
+
+#### 3.18.4 自动竞品发现
+
+用户只提供一个产品时，Orchestrator 自动发现竞品：
+1. 搜索 `"{product} competitors"` / `"{product} alternatives"`
+2. LLM 从搜索结果标题提取竞品名
+3. 合并入 `auto_discovered_competitors`
+4. 如果用户明确提供了多个产品 → 不触发自动发现
+
+#### 3.18.5 降级策略
+
+三层降级，确保 Orchestrator 失败不会导致整个分析挂掉：
+
+| 失败类型 | 降级行为 |
+|---------|---------|
+| LLM 调用失败（API error / timeout） | `orchestration_result=None`，下游节点按默认 pipeline 运行 |
+| JSON parse 失败 | 同上 |
+| model_validate 失败（Schema 不兼容） | 同上 |
+| 产品名为空 | 降级为 `_llm_extract_products()` + `_verify_products_via_search()` |
+| 单产品无自动发现结果 | `auto_discovered_competitors=[]`，只用该产品分析 |
+
+降级后 pipeline 参数：
+- `complexity` = `"standard"` (fallback to `_assess_complexity()`)
+- `schema_profile` = `"full"`
+- `pipeline_variant` = `"full"`
+- `dimension_weights` = 默认均分 4 维
+
+#### 3.18.6 Token 成本对比
+
+| 方式 | LLM 调用次数 | Token 估算 |
+|------|------------|-----------|
+| 当前分散调用 | 2-3 次 | ~1000-1500 tokens |
+| Orchestrator 单次 | 1 次 | ~500-800 tokens |
+| **节省** | — | **30-50%** |
 
 ---
 
@@ -2769,6 +2959,25 @@ Writer 完成报告
 
 **答辩话术**："我们的系统不仅用了字节的模型，还深度集成了火山引擎联网搜索的多模态能力、抖音开放平台的视频舆情数据、飞书的协作审批流程——形成了一个端到端的字节技术栈驱动的竞品分析系统。"
 
+### 6.0.5 Query-Driven 动态 Pipeline Orchestration `**[v4 核心差异化]**`
+
+> **定位**：传统 Agent 系统 pipeline 固定——无论用户问"Cursors 多少钱"还是"深度分析全球企业协作市场 Top 5"，都走相同的 4 节点全流程。我们引入 **Orchestrator Agent** 作为入口，单次 LLM 调用将自然语言 query 翻译为结构化路由指令。
+
+**创新点**：
+
+| 创新维度 | 传统做法 | 我们的做法 |
+|---------|---------|-----------|
+| **复杂度判定** | 关键词匹配 / 固定规则 | LLM 语义理解 query 意图 |
+| **产品名解析** | 多次 LLM 调用分散处理 | 单次 Orchestrator 统一完成提取+纠错 |
+| **搜索预算** | 固定配置（所有维度均分） | Orchestrator 按维度权重动态分配 |
+| **报告结构** | 硬编码 section 列表 | Orchestrator 按用户意图裁剪（5 种 schema_profile） |
+| **Pipeline 路径** | 固定 4 节点全跑 | 3 种 pipeline_variant：full / collect_write_only / skip_reviewer |
+| **竞品发现** | 用户必须手动输入所有产品 | 单产品 → 自动搜索发现竞品 |
+
+**降级保障**：Orchestrator 失败 → 三层降级 → 不影响系统可用性（降至默认 pipeline）。
+
+**答辩话术**："我们的系统不是固定流水线——Orchestrator 理解你的问题意图，然后动态决定搜什么、分析什么维度、生成什么章节。'查一下 Cursor 定价'和'深度分析全球 AI 编程工具竞争格局'走的是完全不同的处理路径。"
+
 ### 6.1 多模态视频信息提取
 
 结合 Doubao 视觉能力 + YouTube/Bilibili 字幕提取：
@@ -3067,9 +3276,30 @@ DAG 图是评审第一眼看到系统内部的地方，需要做到：
 
 ### 7.3 Agent 详情面板（点击节点展开）
 
-评审点击 DAG 上任意节点后，右侧展示：
+评审点击 DAG 上任意节点后，右侧展示。**v4 新增**：Orchestrator 节点为紫色，展开显示意图解析结果。
 
 ```
+┌───────────────────────────────────┐
+│  Agent: Orchestrator  ✅ 已完成    │
+│  耗时: 2.1s | Token: 680          │
+├───────────────────────────────────┤
+│  📥 输入 (user_request)            │
+│  "对比 Slack、飞书、钉钉，重点看   │
+│   定价策略和免费版功能差异"         │
+├───────────────────────────────────┤
+│  📤 输出 (OrchestrationResult)     │
+│  复杂度: standard                  │
+│  产品: [Slack, 飞书, 钉钉]         │
+│  维度权重:                          │
+│    pricing ████████░ 0.9           │
+│    features ██████░░░ 0.7          │
+│    users    ████░░░░░ 0.4          │
+│    market   ███░░░░░░ 0.3          │
+│  Schema: full                      │
+│  Pipeline: full                    │
+│  意图: "多产品定价+功能对比"        │
+└───────────────────────────────────┘
+
 ┌───────────────────────────────────┐
 │  Agent: Collector  ✅ 已完成       │
 │  耗时: 38.5s | Token: 15,230      │
@@ -3211,10 +3441,11 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 
 | 任务 | 产出 | 优先级 |
 |------|------|--------|
-| 创建 CompetitionState（单层 TypedDict，含深度模式字段） | `competition/state.py` | P0 |
-| 定义竞品知识 Schema（Pydantic: 功能树/定价/用户画像/来源） | `competition/schema.py` | P0 |
-| 构建普通模式 StateGraph + 条件路由（含反馈闭环 + HITL） | `competition/graph.py`, `router.py` | P0 |
-| 实现 Collector 节点 (多源搜索, 具体源编码时实测决定) | `competition/nodes/collector.py` | P0 |
+| 创建 CompetitionState（单层 TypedDict，含 Orchestrator + 深度模式字段）`**[v4]**` | `competition/state.py` | P0 |
+| 定义竞品知识 Schema（Pydantic: OrchestrationResult + 功能树/定价/用户画像/来源）`**[v4]**` | `competition/schema.py` | P0 |
+| 构建普通模式 StateGraph + 条件路由（含 Orchestrator 入口 + 反馈闭环 + HITL）`**[v4]**` | `competition/graph.py`, `router.py` | P0 |
+| **实现 Orchestrator 节点（意图解析 + 产品名提取/纠错 + 竞品发现 + 复杂度判定 + 维度权重 + Schema 裁剪 + Pipeline 路由）**`**[v4 新增 P0]**` | `competition/nodes/orchestrator.py` | P0 |
+| 实现 Collector 节点 (多源搜索, 消费 dimension_weights 动态分配预算) `**[v4]**` | `competition/nodes/collector.py` | P0 |
 | 实现用户声音聚合器 (G2/Reddit/GitHub 评论抓取+NLP) | `competition/nodes/collector.py` (voc 子模块) | P0 |
 | 实现视频字幕提取工具 (YouTube/Bilibili → LLM 观点提取) | `competition/tools/video_source.py` | P1 |
 | 实现 Analyst 节点 (多维对比+SWOT+趋势+可视化) | `competition/nodes/analyst.py` | P0 |
@@ -3244,9 +3475,9 @@ Agent 间的通信必须是**结构化 JSON**（比赛明确要求），在界�
 |------|------|--------|
 | 前端 UI 框架搭建 | DF Next.js 新增 `/competition` 路由 | P0 |
 | 双面板布局（左=交互报告, 右=系统内部） | `frontend/src/app/competition/page.tsx` | P0 |
-| DAG 执行图（ReactFlow 节点高亮 + 边动画） | 消费 `get_dag_state()` JSON（`dag.py` 已就绪） | P0 |
-| Agent 详情面板（点击节点 → Prompt/Input/Output） | 消费 `get_agent_detail()` JSON（`observability.py` 已就绪） | P0 |
-| 结构化消息流日志（6 边 JSON 时间线） | 消费 `get_message_flow()` JSON（`observability.py` 已就绪） | P0 |
+| DAG 执行图（ReactFlow 6 节点高亮：Orchestrator 紫色 + 其他 5 节点蓝色 + 边动画）`**[v4]**` | 消费 `get_dag_state()` JSON（`dag.py` 已就绪） | P0 |
+| Agent 详情面板（点击节点 → Prompt/Input/Output，Orchestrator 显示维度权重分布）`**[v4]**` | 消费 `get_agent_detail()` JSON（`observability.py` 已就绪） | P0 |
+| 结构化消息流日志（7 边 JSON 时间线，含 Orchestrator→Collector）`**[v4]**` | 消费 `get_message_flow()` JSON（`observability.py` 已就绪） | P0 |
 | 溯源链视图（hover `[n]` → source card） | 消费 `get_traceability_chain()` JSON（`observability.py` 已就绪） | P0 |
 | ReportData 交互报告渲染（What-if 输入框内嵌） | `competition/report-renderer.tsx` | P0 |
 | HITL 审批卡片（4 按钮 + 自由文本输入） | `competition/hitl-card.tsx` | P0 |

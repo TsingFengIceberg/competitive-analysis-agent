@@ -3,13 +3,14 @@
 State Architecture
 ------------------
 CompetitionState (single graph, no nested subgraphs)
-  └── Collector → Analyst → Reviewer → Writer → HITL Gate
+  └── Orchestrator → Collector → Analyst → Reviewer → Writer → HITL Gate
 
 Key design:
-- 4 Agent roles mapped to 4 nodes + 1 HITL Gate + 1 error handler
+- 5 Agent roles mapped to 5 nodes + 1 HITL Gate + 1 error handler
 - Annotated[list, op_add] reducers auto-merge multi-round/parallel results
 - error field triggers Graph-level routing to error_handler node
 - review_round stays top-level for routing ergonomics (§3.12 route_after_reviewer)
+- orchestration_result drives downstream node behavior (v4 Query-Driven Pipeline)
 """
 
 from operator import add as op_add
@@ -34,6 +35,12 @@ class CompetitionState(AgentState):
     """"pm" | "entrepreneur" | "both" — drives Writer dual-perspective output."""
     deep_mode: NotRequired[bool | None]
     """False = normal mode only, True = normal + deep mode pipeline."""
+
+    # ── Orchestrator Output `[v4 新增]` ──
+    orchestration_result: NotRequired[dict | None]
+    """OrchestrationResult: intent parsing + dimension weights + schema tailoring + pipeline routing."""
+    complexity: NotRequired[str | None]
+    """"quick" | "standard" | "deep" — set by Orchestrator, fallback if Orchestrator fails."""
 
     # ── Collector Output (accumulated across rounds via op_add reducer) ──
     collected_data: Annotated[list[dict], op_add]

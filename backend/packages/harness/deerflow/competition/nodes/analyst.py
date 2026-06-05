@@ -134,8 +134,22 @@ def _build_analyst_task(state: dict) -> str:
     persona = state.get("persona", "pm")
     review_round = state.get("review_round", 0)
 
+    # v4: Orchestrator-driven emphasis
+    orch = state.get("orchestration_result") or {}
+    emphasized = orch.get("emphasized_aspects") or []
+    dim_weights = orch.get("dimension_weights") or []
+
     products_str = ", ".join(target_products) if target_products else "(unknown)"
     data_count = len(collected)
+
+    # v4: Build emphasis and dimension weight hints for the prompt
+    emphasis_hint = ""
+    if emphasized:
+        emphasis_hint = f"\nUSER EMPHASIZED ASPECTS: {', '.join(emphasized)}. Prioritize analysis of these aspects.\n"
+    dim_weight_hint = ""
+    if dim_weights:
+        parts = [f"  {dw['dimension']}={dw['weight']:.0%} ({dw.get('reason', '')})" for dw in dim_weights[:5]]
+        dim_weight_hint = f"\nDIMENSION PRIORITIES (from Orchestrator):\n" + "\n".join(parts) + "\n"
 
     categories_present = {dp.get("category", "") for dp in collected if isinstance(dp, dict)}
     dimensions = list(MANDATORY_DIMENSIONS)
@@ -157,7 +171,7 @@ Tier 4 "estimated" (LAST RESORT — use ONLY after Tier 1/2/3 exhausted):
 
     return f"""Analyze competitive intelligence data for: {products_str}
 
-User request: {user_request}
+User request: {user_request}{emphasis_hint}{dim_weight_hint}
 Persona: {persona}
 Available data points: {data_count}
 
@@ -180,7 +194,7 @@ OUTPUT JSON WITH THESE SECTIONS:
    - SaaS: integration_count, api_openness, sla_guarantee
    - Hardware: chip_model, power_consumption, weight
    - Gaming: engine, platforms, monetization_model
-   - Format: {"field_name": {"value": ..., "evidence": "...", "source_data_point_ids": [...]}}
+   - Format: {{"field_name": {{"value": ..., "evidence": "...", "source_data_point_ids": [...]}}}}
    - If no industry-specific dimensions are clear, use empty object {{}}.
 
 ━━━ FOUR-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━

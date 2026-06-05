@@ -537,36 +537,36 @@
 
 ### 15.1 PLAN 文档修改（13 处）
 
-- [ ] **PLAN §3.1 架构图更新**：新增 Orchestrator 预处理阶段
+- [x] **PLAN §3.1 架构图更新**：新增 Orchestrator 预处理阶段
   → 原：`Collector → Analyst → Reviewer → Writer → HITL`
   → 新：`Orchestrator → Collector → Analyst → Reviewer → Writer → HITL`（Orchestrator 输出 `OrchestrationResult` 注入 State）
-- [ ] **PLAN §3.3 角色定义更新**：新增第 5 个 Agent — Orchestrator
+- [x] **PLAN §3.3 角色定义更新**：新增第 5 个 Agent — Orchestrator
   → 职责：意图解析 / 产品名提取+纠错 / 竞品自动补全 / 复杂度判定 / 维度权重分配 / Schema 裁剪 / pipeline 变体路由
   → 与其他 4 Agent 的关系：Orchestrator 只做意图→结构化指令，不做数据操作
-- [ ] **PLAN §3.4 Collector 规范更新**：搜索维度、预算、类别不再从固定 `COMPLEXITY_CONFIG` 取
+- [x] **PLAN §3.4 Collector 规范更新**：搜索维度、预算、类别不再从固定 `COMPLEXITY_CONFIG` 取
   → 改为从 `state["orchestration_result"].dimension_weights` 动态取
   → 保留 `COMPLEXITY_CONFIG` 作为 fallback（Orchestrator 失败时降级）
-- [ ] **PLAN §3.5 Analyst 规范更新**：强制对比维度不再硬编码 4-6 维
+- [x] **PLAN §3.5 Analyst 规范更新**：强制对比维度不再硬编码 4-6 维
   → 改为从 `state["orchestration_result"].dimension_weights` 动态取
   → 保留默认维度集作为 fallback
-- [ ] **PLAN §3.7 Writer 报告规范更新**：`REQUIRED_SECTIONS` 不再硬编码
+- [x] **PLAN §3.7 Writer 报告规范更新**：`REQUIRED_SECTIONS` 不再硬编码
   → 改为从 `state["orchestration_result"].schema_profile` 动态生成
   → 保留默认 section 集作为 fallback
-- [ ] **PLAN §3.10 State 更新**：新增 `orchestration_result: OrchestrationResult | None` + `complexity: str` 字段
-- [ ] **PLAN §3.13 路由逻辑更新**：新增 `route_after_orchestrator()` 函数
+- [x] **PLAN §3.10 State 更新**：新增 `orchestration_result: OrchestrationResult | None` + `complexity: str` 字段
+- [x] **PLAN §3.13 路由逻辑更新**：新增 `route_after_orchestrator()` 函数
   → Orchestrator 成功后固定进 Collector；失败则根据 `pipeline_variant` 做条件路由
-- [ ] **PLAN §3.14 通信协议更新**：新增 **边 0：Orchestrator → Collector（OrchestrationResult）**
+- [x] **PLAN §3.14 通信协议更新**：新增 **边 0：Orchestrator → Collector（OrchestrationResult）**
   → 通信契约总览从"6 边"更新为"7 边"
   → OrchestrationResult 作为后续所有节点的路由指令来源
-- [ ] **PLAN §3.16.5 超时重试更新**：新增 Orchestrator 超时配置
+- [x] **PLAN §3.16.5 超时重试更新**：新增 Orchestrator 超时配置
   → 建议 60s（单次 LLM 调用，远短于 Collector 的 600s）
-- [ ] **PLAN §3.17.1 自适应任务拆分更新**：标注复杂度判定已升级
+- [x] **PLAN §3.17.1 自适应任务拆分更新**：标注复杂度判定已升级
   → 原：关键词匹配 `_assess_complexity()` → 现：Orchestrator LLM 语义判定
   → 旧实现保留作为降级 fallback
-- [ ] **PLAN §7 答辩呈现更新**：新增 Orchestrator 详情面板描述
+- [x] **PLAN §7 答辩呈现更新**：新增 Orchestrator 详情面板描述
   → DAG 图第一个节点 → 展开显示意图解析结果 / 产品置信度 / 维度权重分布
-- [ ] **PLAN §8 开发计划更新**：新增 Orchestrator 相关 Week 分配
-- [ ] **PLAN §6 差异化创新更新**：新增 Query-Driven Dynamic Orchestration 差异化点
+- [x] **PLAN §8 开发计划更新**：新增 Orchestrator 相关 Week 分配
+- [x] **PLAN §6 差异化创新更新**：新增 Query-Driven Dynamic Orchestration 差异化点
   → 核心论点：传统 Agent 系统 pipeline 固定，我们引入 Orchestrator 实现 query 语义→pipeline 动态塑形
 
 ### 15.2 新代码：Orchestrator Agent

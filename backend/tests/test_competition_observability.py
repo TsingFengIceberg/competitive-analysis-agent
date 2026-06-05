@@ -30,8 +30,9 @@ class TestAgentDetail:
 
     def test_all_details(self):
         details = get_all_agent_details({"collected_data": [{"id": "1"}]})
-        assert len(details) == 5
+        assert len(details) == 6  # v4: +orchestrator
         ids = {d["node_id"] for d in details}
+        assert "orchestrator" in ids
         assert "collector" in ids
         assert "writer" in ids
 

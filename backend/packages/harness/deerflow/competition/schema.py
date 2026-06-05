@@ -92,8 +92,42 @@ class UserPersona(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Layer 2: 6-Edge Agent Communication Schemas (§3.13)
+# Layer 2: 7-Edge Agent Communication Schemas (§3.14)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Edge ⓪: Orchestrator → Collector `[v4 新增]` (§3.14.0) ──
+
+
+class DimensionWeight(BaseModel):
+    """Per-dimension analysis weight assigned by the Orchestrator."""
+
+    dimension: str = Field(..., description="'features' | 'pricing' | 'users' | 'market' | 'technology'")
+    weight: float = Field(default=0.5, ge=0.0, le=1.0, description="0.0-1.0, controls search budget allocation")
+    reason: str = Field(default="", description="Why this weight was assigned")
+
+
+class OrchestrationResult(BaseModel):
+    """Orchestrator → all downstream nodes. Written to State.orchestration_result.
+
+    Single LLM call replaces scattered product extraction + complexity assessment +
+    dimension weighting + schema tailoring logic at the API entry point.
+    """
+
+    products: list[str] = Field(default_factory=list, description="Final resolved product names")
+    product_confidence: dict[str, str] = Field(
+        default_factory=dict, description="Per-product confidence: 'high' | 'medium' | 'low'"
+    )
+    complexity: Literal["quick", "standard", "deep"] = "standard"
+    complexity_reason: str = Field(default="", description="Why this complexity level was chosen")
+    dimension_weights: list[DimensionWeight] = Field(default_factory=list)
+    schema_profile: Literal["full", "feature_only", "pricing_only", "no_swot", "minimal"] = "full"
+    emphasized_aspects: list[str] = Field(default_factory=list, description="User-emphasized analysis aspects")
+    pipeline_variant: Literal["full", "collect_write_only", "skip_reviewer"] = "full"
+    auto_discovered_competitors: list[str] = Field(
+        default_factory=list, description="Auto-discovered competitors for single-product queries"
+    )
+    summary: str = Field(default="", description="One-sentence intent summary")
+
 
 # ── Edge ①: Collector → Analyst (§3.13.2) ──
 

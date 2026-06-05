@@ -1,8 +1,8 @@
 """LangGraph StateGraph builder for the CI-Agent competition system.
 
-Per COMPETITION_PLAN.md §3 — single graph with 4-agent normal mode +
-optional deep mode pipeline. Nodes are placeholder lambdas; real node
-implementations are injected via ``register_nodes()`` or set directly
+Per COMPETITION_PLAN.md §3 — single graph with Orchestrator entry + 4-agent
+normal mode + optional deep mode pipeline. Nodes are placeholder lambdas; real
+node implementations are injected via ``register_nodes()`` or set directly
 on the module-level ``_NODE_IMPLEMENTATIONS`` dict.
 
 Usage::
@@ -36,6 +36,7 @@ from deerflow.competition.router import (
     route_after_deep_reviewer,
     route_after_deep_writer,
     route_after_hitl,
+    route_after_orchestrator,
     route_after_reviewer,
     route_after_writer,
 )
@@ -57,6 +58,8 @@ def _placeholder(name: str) -> Callable[[dict], dict]:
 
 
 _NODE_IMPLEMENTATIONS: dict[str, Callable] = {
+    # Orchestrator `[v4 新增]`
+    "orchestrator": _placeholder("orchestrator"),
     # Normal mode
     "collector": _placeholder("collector"),
     "analyst": _placeholder("analyst"),
@@ -103,6 +106,9 @@ def build_competition_graph(
     """
     builder = StateGraph(CompetitionState)
 
+    # ── Orchestrator entry `[v4 新增]` ──
+    builder.add_node("orchestrator", _NODE_IMPLEMENTATIONS["orchestrator"])
+
     # ── Normal mode nodes ──
     builder.add_node("collector", _NODE_IMPLEMENTATIONS["collector"])
     builder.add_node("analyst", _NODE_IMPLEMENTATIONS["analyst"])
@@ -121,13 +127,20 @@ def build_competition_graph(
     builder.add_node("feishu_delivery", _NODE_IMPLEMENTATIONS["feishu_delivery"])
 
     # ── Normal mode edges ──
-    builder.set_entry_point("collector")
+    builder.set_entry_point("orchestrator")  # v4: Orchestrator as entry
+    builder.add_conditional_edges("orchestrator", route_after_orchestrator, {
+        "collector": "collector",
+        "writer": "writer",                     # collect_write_only fast path
+        "error_handler": "error_handler",
+    })
     builder.add_conditional_edges("collector", route_after_collector, {
         "analyst": "analyst",
+        "writer": "writer",                     # collect_write_only fast path
         "error_handler": "error_handler",
     })
     builder.add_conditional_edges("analyst", route_after_analyst, {
         "reviewer": "reviewer",
+        "writer": "writer",                     # skip_reviewer fast path
         "error_handler": "error_handler",
     })
     builder.add_conditional_edges("reviewer", route_after_reviewer, {

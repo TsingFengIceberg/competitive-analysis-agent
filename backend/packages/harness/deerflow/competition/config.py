@@ -77,6 +77,23 @@ class WriterConfig(AgentConfig):
     )
 
 
+class OrchestratorConfig(AgentConfig):
+    """Orchestrator Agent configuration `[v4 新增]` — §3.18.
+
+    Single LLM call, fast timeout, zero tools. Different from other agents:
+    - No SubagentExecutor (single LLM call, not multi-turn agent)
+    - temperature=0.0 (deterministic routing decisions)
+    - max_tokens=800 (compact JSON output)
+    """
+
+    timeout_seconds: int = Field(default=60, description="Single LLM call, fast timeout")
+    max_turns: int = Field(default=1, ge=1, description="Orchestrator is single-call, not multi-turn")
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0, description="Deterministic for routing decisions")
+    max_tokens: int = Field(default=800, description="Compact JSON output")
+    skills: list[str] = Field(default_factory=list, description="No skills — pure intent parsing")
+    tools: list[str] = Field(default_factory=list, description="No tools — pure intent parsing")
+
+
 class HitlConfig(BaseModel):
     """HITL Gate configuration — §5.2."""
 
@@ -170,6 +187,7 @@ class CompetitionConfig(BaseModel):
     Read at graph startup, injected into CompetitionState.config.
     """
 
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     collector: CollectorConfig = Field(default_factory=CollectorConfig)
     analyst: AnalystConfig = Field(default_factory=AnalystConfig)
     reviewer: ReviewerConfig = Field(default_factory=ReviewerConfig)

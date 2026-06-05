@@ -1,11 +1,40 @@
 """Conditional routing functions for the CI-Agent competition graph.
 
-Per COMPETITION_PLAN.md §3.12 — 7 route_after_* pure functions.
+Per COMPETITION_PLAN.md §3.13 — route_after_* pure functions.
 Each function reads CompetitionState and returns the next node name (str).
 All functions are pure: dict → str, zero side effects, trivially testable.
+
+v4: Added route_after_orchestrator() — Orchestrator → Collector (or skip).
 """
 
 from __future__ import annotations
+
+
+# ── Orchestrator Routing `[v4 新增]` (§3.13) ──
+
+
+def route_after_orchestrator(state: dict) -> str:
+    """Orchestrator → Collector (default) or skip nodes per pipeline_variant.
+
+    §3.13.1: Orchestrator is the entry point. After intent parsing:
+      - error → error_handler
+      - collect_write_only → writer (skip Analyst + Reviewer)
+      - skip_reviewer → collector (Collector → Analyst → Writer)
+      - full → collector (normal full pipeline)
+    """
+    if state.get("error"):
+        return "error_handler"
+
+    orch = state.get("orchestration_result") or {}
+    variant = orch.get("pipeline_variant", "full")
+
+    if variant == "collect_write_only":
+        return "writer"
+    # skip_reviewer and full both start with collector
+    return "collector"
+
+
+# ── Normal Mode Routing ──
 
 
 def route_after_collector(state: dict) -> str:
@@ -18,6 +47,10 @@ def route_after_collector(state: dict) -> str:
     collected = state.get("collected_data") or []
     if len(collected) == 0:
         return "error_handler"
+    # v4: collect_write_only → skip Analyst, go straight to Writer
+    orch = state.get("orchestration_result") or {}
+    if orch.get("pipeline_variant") == "collect_write_only":
+        return "writer"
     return "analyst"
 
 
@@ -25,9 +58,13 @@ def route_after_analyst(state: dict) -> str:
     """Analyst → Reviewer (always, no skip).
 
     §3.12: Normal mode always enters Reviewer — no bypass.
+    v4: skip_reviewer variant → skip Reviewer, go straight to Writer.
     """
     if state.get("error"):
         return "error_handler"
+    orch = state.get("orchestration_result") or {}
+    if orch.get("pipeline_variant") == "skip_reviewer":
+        return "writer"
     return "reviewer"
 
 
