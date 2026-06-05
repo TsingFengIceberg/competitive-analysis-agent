@@ -542,7 +542,78 @@ function escapeAttr(s: string): string {
     });
   }, []);
 
-  const renderSection = (section: ReportSection, depth = 0) => (
+  const renderSection = (section: ReportSection, depth = 0) => {
+    // DynamicBlock tables — render from chart_path data
+    if (section.content_type === "table" && section.chart_path) {
+      const cp = section.chart_path as Record<string, unknown>;
+      const headers = (cp.headers as string[]) || [];
+      const rows = (cp.rows as string[][]) || [];
+      return (
+        <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
+          <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
+          <div className="overflow-x-auto rounded border">
+            <table className="w-full text-xs border-collapse">
+              <thead className="bg-muted">
+                <tr>
+                  {headers.map((h, i) => (
+                    <th key={i} className="border px-2 py-1 text-left font-medium">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, ri) => (
+                  <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-muted/30"}>
+                    {row.map((cell, ci) => (
+                      <td key={ci} className="border px-2 py-1">{cell}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
+        </div>
+      );
+    }
+
+    // DynamicBlock charts — render from chart_path data
+    if (section.content_type === "chart" && section.chart_path) {
+      const cp = section.chart_path as Record<string, unknown>;
+      const chartType = (cp.chart as string) || "radar";
+      const labels = (cp.labels as string[]) || [];
+      const series = (cp.series as Record<string, number[]>) || {};
+      return (
+        <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
+          <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
+          <div className="rounded border bg-white p-3">
+            <div className="mb-2 text-xs text-muted-foreground">Chart: {chartType} · {labels.length} dimensions · {Object.keys(series).length} products</div>
+            <div className="space-y-2">
+              {Object.entries(series).map(([name, values]) => (
+                <div key={name} className="flex items-center gap-2">
+                  <span className="text-xs font-medium w-20 shrink-0">{name}</span>
+                  <div className="flex gap-1 flex-1">
+                    {values.map((v, vi) => (
+                      <div key={vi} className="flex-1 flex flex-col items-center">
+                        <div className="w-full bg-blue-100 rounded-t" style={{
+                          height: `${Math.max(4, (v / 5) * 60)}px`,
+                          backgroundColor: ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6"][vi % 5],
+                          opacity: 0.7,
+                        }} />
+                        <span className="text-[10px] text-muted-foreground mt-0.5">{labels[vi]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground w-24 text-right">{values.map((v, i) => `${labels[i]}=${v}`).join(", ")}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
+        </div>
+      );
+    }
+
+    return (
     <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
       <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
       {section.content_type === "what-if-form" ? (
@@ -571,7 +642,7 @@ function escapeAttr(s: string): string {
       )}
       {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
     </div>
-  );
+  );}
 
   const statusBadge = status === "idle" ? <Badge variant="outline">就绪</Badge>
     : status === "running" ? <Badge variant="default">运行中…</Badge>

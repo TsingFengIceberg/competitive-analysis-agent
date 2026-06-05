@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
-# Report section structure (§3.7.3)
+# Report section structure (§3.7.3) — baseline always 6 sections
 REQUIRED_SECTIONS = [
     "sec-executive-summary",
     "sec-comparison-matrix",
@@ -20,34 +20,26 @@ REQUIRED_SECTIONS = [
     "appendix-quality",
 ]
 
-# v4: Schema profile → section sets (§3.18.3)
-SCHEMA_PROFILE_SECTIONS: dict[str, list[str]] = {
-    "full": [
-        "sec-executive-summary", "sec-comparison-matrix", "sec-swot",
-        "sec-recommendations", "sec-sources", "appendix-quality",
-    ],
-    "feature_only": ["sec-executive-summary", "sec-comparison-matrix", "sec-sources"],
-    "pricing_only": ["sec-executive-summary", "sec-sources"],  # pricing comparison is part of matrix
-    "no_swot": [
-        "sec-executive-summary", "sec-comparison-matrix",
-        "sec-recommendations", "sec-sources", "appendix-quality",
-    ],
-    "minimal": ["sec-executive-summary", "sec-sources"],
-}
-
-
-def _get_required_sections(state: dict) -> list[str]:
-    """Return the required section IDs based on Orchestrator's schema_profile, or defaults."""
-    orch = state.get("orchestration_result") or {}
-    profile = orch.get("schema_profile", "full")
-    return SCHEMA_PROFILE_SECTIONS.get(profile, REQUIRED_SECTIONS)
-
+# Conditionally generated (always available, generated when data exists)
 OPTIONAL_SECTIONS = {
     "sec-trends": "trends",
     "sec-user-voice": "sentiment",
     "sec-forecast": "forecast",
     "appendix-charts": "charts",
 }
+
+# v4: Deep mode additional sections — generated only when schema_profile="deep"
+DEEP_SECTIONS = [
+    "sec-trends",        # market/product trends
+    "sec-forecast",      # prediction + what-if
+    "appendix-industry", # industry-specific dimensions (extra_fields)
+]
+
+
+def _get_schema_mode(state: dict) -> str:
+    """Return the active schema profile from Orchestrator, default baseline."""
+    orch = state.get("orchestration_result") or {}
+    return orch.get("schema_profile", "baseline")
 
 # Persona profiles (§3.7.4)
 PERSONA_PROFILES = {
@@ -82,9 +74,10 @@ def writer_node(state: dict) -> dict:
     # Only use comment as what-if scenario when action is explicitly "rewrite"
     whatif_comment = whatif_comment_raw if hitl_action == "rewrite" else ""
 
-    # Build report sections
+    # Build report sections — v4: schema_profile controls deep sections
     quality = verdict.get("quality_summary", {})
-    sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality)
+    schema_mode = _get_schema_mode(state)
+    sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
 
     # Generate executive summary via LLM for all actions (not just rewrite)
     try:
@@ -95,6 +88,7 @@ def writer_node(state: dict) -> dict:
     traceability = _build_traceability_map(collected)
     forecast = analysis.get("forecast")
     extra_fields = analysis.get("extra_fields") or {}
+    dynamic_blocks = analysis.get("dynamic_blocks") or []
     metrics = _compute_report_metrics(collected, verdict, traceability)
 
     report_data = {
@@ -108,6 +102,7 @@ def writer_node(state: dict) -> dict:
         "forecast": forecast,
         "metrics": metrics,
         "extra_fields": extra_fields,
+        "dynamic_blocks": dynamic_blocks,
     }
 
     # Build ReviewPackage for HITL (§3.13.5)
@@ -118,9 +113,8 @@ def writer_node(state: dict) -> dict:
     if issues:
         logger.warning("Writer self-check found %d issues: %s", len(issues), issues)
 
-    # ── Self-assessment (§3.17.2, v4: Orchestrator-driven section set) ──
-    required_secs = _get_required_sections(state)
-    self_assessment = _build_writer_self_assessment(report_data, target_products, required_secs)
+    # ── Self-assessment (§3.17.2) ──
+    self_assessment = _build_writer_self_assessment(report_data, target_products)
 
     return {
         "report_data": report_data,
@@ -141,7 +135,7 @@ def _get_hitl_focus(state: dict) -> list[str] | None:
     return decision.get("target_focus"), decision.get("comment", ""), decision.get("action", "")
 
 
-def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict) -> list[dict]:
+def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict, schema_profile: str = "baseline") -> list[dict]:
     """Build all report sections, respecting persona and optional conditions."""
     profile = PERSONA_PROFILES.get(persona, PERSONA_PROFILES["pm"])
     sections: list[dict] = []
@@ -284,9 +278,15 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
         "source_ids": [], "chart_path": None, "subsections": None,
     })
 
-    # 9. Appendix: Domain-specific fields (§3.17.3)
+    # 9. Dynamic blocks — domain-adaptive analysis `[v4 动态 Schema]`
+    dynamic_blocks = analysis.get("dynamic_blocks") or []
+    if dynamic_blocks:
+        block_sections = _render_dynamic_blocks(dynamic_blocks, _src_ref)
+        sections.extend(block_sections)
+
+    # 10. Legacy: extra_fields appendix (kept for backward compatibility)
     extra_fields = analysis.get("extra_fields") or {}
-    if extra_fields:
+    if extra_fields and not dynamic_blocks:
         ef_text = ""
         for field_name, field_data in extra_fields.items():
             if isinstance(field_data, dict):
@@ -308,6 +308,94 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
         })
 
     return sections
+
+
+def _render_dynamic_blocks(blocks: list[dict], _src_ref) -> list[dict]:
+    """Render DynamicBlock list → ReportSection list. `[v4 动态 Schema]`
+
+    Each block_type maps to a different content_type for frontend rendering:
+      kv_list → "text" (key-value list)
+      comparison_table → "table" (sortable comparison table)
+      stat_chart → "chart" (radar/bar/pie chart component)
+      insight_text → "text" (markdown narrative)
+    """
+    sections: list[dict] = []
+    TYPE_TO_CONTENT = {
+        "kv_list": "text",
+        "comparison_table": "table",
+        "stat_chart": "chart",
+        "insight_text": "text",
+    }
+    TYPE_TO_TITLE_PREFIX = {
+        "kv_list": "指标: ",
+        "comparison_table": "对比: ",
+        "stat_chart": "图表: ",
+        "insight_text": "洞察: ",
+    }
+
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        bt = block.get("block_type", "kv_list")
+        title = block.get("title", f"动态分析 {i+1}")
+        data = block.get("data", {})
+        src_ids = block.get("source_data_point_ids", [])
+
+        content = _format_block_content(bt, data, src_ids, _src_ref)
+        sections.append({
+            "id": f"dynamic-block-{i}",
+            "title": TYPE_TO_TITLE_PREFIX.get(bt, "") + title,
+            "content": content,
+            "content_type": TYPE_TO_CONTENT.get(bt, "text"),
+            "source_ids": src_ids,
+            "chart_path": _extract_chart_config(bt, data),
+            "subsections": None,
+        })
+
+    return sections
+
+
+def _format_block_content(block_type: str, data: dict, src_ids: list[str], _src_ref) -> str:
+    """Format a single DynamicBlock's data as renderable content."""
+    src_str = " " + _src_ref(src_ids) if src_ids else ""
+
+    if block_type == "kv_list":
+        lines = []
+        for key, val in (data or {}).items():
+            if isinstance(val, dict):
+                v = val.get("value", "?")
+                e = val.get("evidence", "")
+                lines.append(f"- **{key}**: {v}" + (f" — {e}" if e else ""))
+            else:
+                lines.append(f"- **{key}**: {val}")
+        return "\n".join(lines) + src_str
+
+    elif block_type == "comparison_table":
+        return ""  # content is in data dict; frontend reads from chart_path
+
+    elif block_type == "stat_chart":
+        return ""  # content is in data dict; frontend reads from chart_path
+
+    elif block_type == "insight_text":
+        return (data.get("content", "") if isinstance(data, dict) else str(data)) + src_str
+
+    return str(data) + src_str
+
+
+def _extract_chart_config(block_type: str, data: dict) -> dict | None:
+    """Extract chart config from stat_chart blocks for frontend chart_path."""
+    if block_type == "stat_chart" and isinstance(data, dict):
+        return {
+            "chart": data.get("chart", "radar"),
+            "labels": data.get("labels", []),
+            "series": data.get("series", {}),
+        }
+    if block_type == "comparison_table" and isinstance(data, dict):
+        return {
+            "headers": data.get("headers", []),
+            "rows": data.get("rows", []),
+        }
+    return None
 
 
 def _render_comparison_table(rows: list[dict], products: list[str], dimensions: list[str]) -> str:

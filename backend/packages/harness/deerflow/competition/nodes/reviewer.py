@@ -22,23 +22,13 @@ def reviewer_node(state: dict) -> dict:
     prev_gaps = _gaps_from_verdict(state.get("review_verdict"))
     review_round = state.get("review_round", 0)
 
-    # v4: Orchestrator-driven schema profile — skip dimension checks for tailored profiles
-    orch = state.get("orchestration_result") or {}
-    schema_profile = orch.get("schema_profile", "full")
-
-    # Run 8 gap checks (§3.6.1)
+    # Run 8 gap checks (§3.6.1) — v4: always run all checks
     gaps: list[dict] = []
     gaps.extend(check_url_reachability(collected))        # G1
     gaps.extend(check_multi_source_consistency(collected)) # G2
     gaps.extend(check_data_freshness(collected))           # G3
-
-    # G4/G4.5: Skip dimension coverage checks for tailored profiles (feature_only/pricing_only/minimal)
-    if schema_profile == "full":
-        gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
-        gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
-    else:
-        logger.info("Reviewer: skipping G4/G4.5 for schema_profile=%s", schema_profile)
-
+    gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
+    gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
     gaps.extend(check_source_diversity(collected))         # G5
     gaps.extend(check_statistical_outliers(collected))     # G6
 
@@ -50,7 +40,7 @@ def reviewer_node(state: dict) -> dict:
         state["_g8_verdicts"] = g8_verdicts  # stored for confidence adjustment pass
 
     # G9: Extra fields validation (§3.17.3) — domain-specific dimensions must have sources
-    gaps.extend(_check_extra_fields_sources(analysis))
+    gaps.extend(_check_dynamic_blocks(analysis))   # G9: dynamic blocks validation
 
     # Detect feedback loop (§3.15.6.2): same gap 3x → force close
     gaps = _filter_loop_gaps(gaps, prev_gaps, review_round)
@@ -314,13 +304,100 @@ def check_statistical_outliers(points: list[dict]) -> list[dict]:
 # ── G9: Extra fields source validation (§3.17.3) ──
 
 
-def _check_extra_fields_sources(analysis: dict) -> list[dict]:
-    """G9: Every extra_fields entry must have source_data_point_ids.
+def _check_dynamic_blocks(analysis: dict) -> list[dict]:
+    """G9: Validate dynamic_blocks — per-block-type validation `[v4 动态 Schema]`.
 
-    Domain-specific dimensions without citations are flagged as minor gaps.
-    This ensures dynamic schema fields maintain the same traceability standard
-    as the core comparison matrix.
+    Every block must have:
+      - source_data_point_ids (≥1). Missing → minor gap.
+      - valid block_type. Unknown → minor gap.
+
+    Per-type deeper checks:
+      - kv_list: each value should have evidence if it's a dict
+      - comparison_table: headers count matches row cell count
+      - stat_chart: labels count matches series values count
+      - insight_text: content must be non-empty string
     """
+    blocks = analysis.get("dynamic_blocks") or []
+    if not blocks:
+        return []
+
+    gaps = []
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        bt = block.get("block_type", "?")
+        title = block.get("title", f"block_{i}")
+        src_ids = block.get("source_data_point_ids", [])
+        data = block.get("data") or {}
+
+        # Universal: every block must have source citations
+        if not src_ids:
+            gaps.append(_make_gap(
+                gid=f"gap-g9-db{i}-no-sources",
+                gap_type="missing_data",
+                method="dynamic_block_source_check",
+                desc=f"动态分析块 '{title}' ({bt}) 缺少数据来源引用",
+                evidence=f"dynamic_blocks[{i}].source_data_point_ids is empty",
+                task=f"Add source citations for dynamic block: {title}",
+                severity="minor",
+                related_ids=[],
+            ))
+
+        # Per-type validation
+        if bt == "comparison_table" and isinstance(data, dict):
+            headers = data.get("headers", [])
+            rows = data.get("rows", [])
+            for j, row in enumerate(rows):
+                if isinstance(row, list) and len(row) != len(headers):
+                    gaps.append(_make_gap(
+                        gid=f"gap-g9-db{i}-row{j}",
+                        gap_type="missing_data",
+                        method="comparison_table_row_check",
+                        desc=f"对比表 '{title}' 第{j}行列数({len(row)})与表头({len(headers)})不匹配",
+                        evidence=f"dynamic_blocks[{i}].data.rows[{j}]",
+                        task=f"Fix row column count in comparison table: {title}",
+                        severity="minor",
+                        related_ids=[],
+                    ))
+
+        elif bt == "stat_chart" and isinstance(data, dict):
+            labels = data.get("labels", [])
+            series = data.get("series", {})
+            for s_name, s_values in series.items():
+                if isinstance(s_values, list) and len(s_values) != len(labels):
+                    gaps.append(_make_gap(
+                        gid=f"gap-g9-db{i}-chart-{s_name}",
+                        gap_type="missing_data",
+                        method="stat_chart_series_check",
+                        desc=f"图表 '{title}' 系列'{s_name}'值数({len(s_values)})与标签数({len(labels)})不匹配",
+                        evidence=f"dynamic_blocks[{i}].data.series['{s_name}']",
+                        task=f"Fix series value count in chart: {title}",
+                        severity="minor",
+                        related_ids=[],
+                    ))
+
+        elif bt == "insight_text" and isinstance(data, dict):
+            content = data.get("content", "")
+            if not content or not str(content).strip():
+                gaps.append(_make_gap(
+                    gid=f"gap-g9-db{i}-empty",
+                    gap_type="missing_data",
+                    method="insight_text_content_check",
+                    desc=f"文本洞察 '{title}' 内容为空",
+                    evidence=f"dynamic_blocks[{i}].data.content is empty",
+                    task=f"Provide content for insight: {title}",
+                    severity="minor",
+                    related_ids=[],
+                ))
+
+    return gaps
+
+
+# Legacy G9: extra_fields source check (retained for backward compatibility)
+
+
+def _check_extra_fields_sources(analysis: dict) -> list[dict]:
+    """Legacy G9 for old extra_fields format. Prefer _check_dynamic_blocks for new blocks."""
     extra = analysis.get("extra_fields") or {}
     if not extra:
         return []

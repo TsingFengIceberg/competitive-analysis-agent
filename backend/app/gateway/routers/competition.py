@@ -1000,45 +1000,69 @@ def _add_token_entry(thread_id: str, label: str) -> None:
 
 
 def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str]) -> None:
-    """Orchestrator-driven entry point `[v4]` — all synchronous, called from thread executor.
+    """ProductResolver (pre-graph) → Orchestrator (graph entry) `[v4 Plan D]`.
 
-    v4 change: product resolution + complexity assessment + dimension weighting +
-    schema tailoring are now handled by the orchestrator_node (first node in graph).
-    This function only prepares the initial state and runs the graph.
+    Phase 1 (pre-graph): ProductResolver — LLM extract + search verify + LLM correct
+      → verified products → state["target_products"]
+    Phase 2 (graph): Orchestrator → Collector → ... — semantic strategy from verified products
 
-    Old scattered calls (_llm_extract_products / _verify_products_via_search /
-    _assess_complexity) are retained as fallback for when the Orchestrator fails.
-
-    Runs in background thread because graph execution takes ~5-10min of synchronous
-    LLM calls that would block the event loop.
+    Runs in background thread because LLM + search calls are synchronous and
+    take ~2min total, which would block the event loop.
     """
     import logging
     _log = logging.getLogger(__name__)
 
     try:
-        # ── Prepare initial state ──
+        # ── Phase 1: ProductResolver (pre-graph) ──
         products: list[str] = []
+
         if explicit_products:
             for p in explicit_products:
                 p = p.strip()
                 if p and p not in products:
                     products.append(p)
 
-        # Update store — Orchestrator node will handle product resolution
+        if products:
+            # Verify/correct explicit products via search + LLM judge
+            products = _verify_products_via_search(products, 1, query)
+
+        if not products:
+            # No explicit products — extract from query via LLM + search
+            _log.info("No explicit products — extracting via ProductResolver")
+            products = _llm_extract_products(query)
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        resolved: list[str] = []
+        for p in products:
+            if p.lower() not in seen:
+                seen.add(p.lower())
+                resolved.append(p)
+        products = resolved
+
+        _log.info("ProductResolver: %s (query: '%.80s')", products, query)
+
+        if not products:
+            _log.warning("ProductResolver found 0 products — marking as failed")
+            if thread_id in _store:
+                _store[thread_id]["status"] = "failed"
+                _store[thread_id]["state"]["error"] = (
+                    "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
+                )
+            return
+
+        # Update store with verified products
         if thread_id in _store:
             _store[thread_id]["products"] = products
             _store[thread_id]["status"] = "running"
             _store[thread_id]["state"]["target_products"] = products
-            # complexity will be set by orchestrator_node; seed with "standard" as default
             _store[thread_id]["state"]["complexity"] = "standard"
 
-        _log.info("Orchestrator-driven graph start: products=%s query='%.80s'", products, query)
-
-        # ── Run the graph (Orchestrator is the entry point) ──
+        # ── Phase 2: Graph (Orchestrator → Collector → ...) ──
         _run_graph_sync(thread_id)
 
     except Exception as e:
-        _log.exception("Graph execution failed for %s: %s", thread_id, e)
+        _log.exception("Resolve+graph failed for %s: %s", thread_id, e)
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)

@@ -71,3 +71,130 @@
 把"输入"列作为 candidate name，搭配对应的 query 上下文发给 `_llm_judge_and_correct`，检查 returned mapping 里 `resolved` 是否等于"期望输出"。
 
 模拟 search_titles 时：纠错用例的 search 标题应该包含期望输出对应的产品名（模拟搜索引擎自动纠错）；正确用例的标题自然就包含正确名称。
+
+---
+
+## 四、v4 Orchestrator — 复杂度判定（6 个）
+
+> 测试 `_build_analyst_task` prompt 中的 complexity 判定逻辑 + `route_after_reviewer` 的轮次上限。
+> 注意：此测试不涉及真实 LLM 调用，只测试路由和参数选择。
+
+| # | Query | 产品数 | 期望复杂度 | 期望 Review 轮次 | 期望搜索预算 | 判定依据 |
+|---|-------|--------|-----------|-----------------|-------------|---------|
+| 1 | 对比 Slack 和飞书的定价 | 2 | quick | 1 | 12 | 2产品+简单对比 |
+| 2 | 分析 Slack、飞书、钉钉的竞争力 | 3 | standard | 2 | 20 | 3产品+分析意图 |
+| 3 | 深度分析全球协作工具 Top5 的竞争格局与未来趋势 | 5 | deep | 3 | 30 | 5产品+深度/战略/趋势关键词 |
+| 4 | 对比 Notion 和 Confluence，重点分析定价策略和企业版功能差异 | 2 | standard | 2 | 20 | 2产品但含"分析"+"策略" → standard |
+| 5 | Cursor 有哪些竞争对手 | 1→4 | standard | 2 | 20 | ProductResolver 自动补全 3 竞品 |
+| 6 | Slack 和 Teams 在 SaaS 集成能力、API 开放程度、SLA 保障方面的对比 | 2 | quick | 1 | 12 | 2产品+具体维度对比 → quick |
+
+### 复杂度决策树
+
+```
+产品数 ≥5 或 deep关键词 ≥2 或 query长度 >200  →  deep
+产品数 ≥3 或 query长度 >80                       →  standard
+产品 ≤2 且 有对比关键词                           →  quick
+其他情况                                          →  standard（兜底）
+```
+
+---
+
+## 五、v4 Orchestrator — 维度权重与策略输出（6 个）
+
+> 测试 `OrchestrationResult` Schema 的字段完整性 + `orchestrator_node` 降级路径。
+
+| # | 场景 | 输入 | 期望输出 |
+|---|------|------|---------|
+| 1 | 空 query 降级 | `user_request=""` | `complexity=standard, schema_profile=baseline, dimension_weights=4项` |
+| 2 | 空产品降级 | `user_request="test", target_products=[]` | 立即返回降级，不调用 LLM |
+| 3 | 完整 valid 输入 | `complexity=deep, schema_profile=deep, 2 dim_weights, 2 emphasized` | model_validate 通过 |
+| 4 | 非法 complexity | `complexity="invalid"` | Pydantic ValidationError |
+| 5 | 非法 schema_profile | `schema_profile="feature_only"`（已删除的旧值） | Pydantic ValidationError |
+| 6 | JSON parse 失败 | LLM 返回 `"not json"` | `_parse_orchestrator_output()` → None → 降级 |
+
+---
+
+## 六、v4 Pipeline 路由 — 固定结构 + 轮次上限（8 个）
+
+> 测试 `route_after_*` 全部 7 个函数的正确性。
+> 核心原则：**Pipeline 节点图固定（O→C→A→R→W→H），复杂度只控制执行深度。**
+
+| # | 场景 | 测试内容 | 期望 |
+|---|------|---------|------|
+| 1 | O→C 永远不变 | quick/standard/deep/无orch → `route_after_orchestrator` | 全部返回 `"collector"` |
+| 2 | O→error | `state["error"]` 非空 | 返回 `"error_handler"` |
+| 3 | C→A 永远不变 | 任意 state | 返回 `"analyst"` |
+| 4 | C→error | 0 条 collected_data | 返回 `"error_handler"` |
+| 5 | A→R 永远不变 | 任意 state | 返回 `"reviewer"` |
+| 6 | Review 轮次 quick | quick + review_round=1 | 返回 `"writer"`（达上限） |
+| 7 | Review 轮次 deep | deep + review_round=2 | 返回 `"collector"`（还可以继续） |
+| 8 | Review 轮次 deep 上限 | deep + review_round=3 | 返回 `"writer"`（达上限） |
+
+---
+
+## 七、v4 DynamicBlock — 4 种动态块类型（12 个）
+
+> 测试 `DynamicBlock` Pydantic Schema + Writer `_render_dynamic_blocks` + Reviewer `_check_dynamic_blocks`。
+
+### 7.1 Schema 校验（5 个）
+
+| # | 块类型 | 测试内容 | 期望 |
+|---|--------|---------|------|
+| 1 | kv_list | 2 个指标 + 2 个 source_ids | model_validate 通过 |
+| 2 | comparison_table | 4 列表头 × 3 行数据 | model_validate 通过 |
+| 3 | stat_chart | radar 图 5 标签 × 2 系列 | model_validate 通过 |
+| 4 | insight_text | markdown 文本内容 | model_validate 通过 |
+| 5 | 非法 block_type | `"invalid_type"` | Pydantic ValidationError |
+
+### 7.2 Writer 渲染（4 个）
+
+| # | 块类型 | 期望 content_type | 期望 chart_path |
+|---|--------|-----------------|----------------|
+| 1 | kv_list | `"text"` | None |
+| 2 | comparison_table | `"table"` | `{headers, rows}` |
+| 3 | stat_chart | `"chart"` | `{chart, labels, series}` |
+| 4 | insight_text | `"text"` | None |
+
+### 7.3 Reviewer G9 校验（3 个）
+
+| # | 场景 | 期望 gaps |
+|---|------|----------|
+| 1 | 块无 source_data_point_ids | 1 gap（minor） |
+| 2 | comparison_table row 列数不匹配 header | 1 gap（minor） |
+| 3 | stat_chart series 值数与 labels 不匹配 | 1 gap（minor） |
+
+---
+
+## 八、v4 Schema 深度 — baseline vs deep（4 个）
+
+| # | 场景 | schema_profile | 期望 section 数 | 说明 |
+|---|------|---------------|----------------|------|
+| 1 | 简单对比 | baseline | 6 | 执行摘要+矩阵+SWOT+建议+来源+质量 |
+| 2 | 深度战略 | deep | 9 | baseline + 趋势+预测+行业附录 |
+| 3 | 默认（无 orch） | baseline（默认） | 6 | 降级行为 |
+| 4 | 无 orch → _get_schema_mode | baseline | 6 | `state.get("orchestration_result") or {}` |
+
+---
+
+## 九、集成测试 — 6 种代表性 Query Flow
+
+| # | Query | 产品 | 复杂度 | Schema | 路径 | Review轮次 | 关键验证点 |
+|---|-------|------|--------|--------|------|-----------|-----------|
+| 1 | 对比 Slack 和飞书的定价 | [Slack, 飞书] | quick | baseline | O→C→A→R→W→H | 1 | 2产品简单对比，搜索预算 12 |
+| 2 | 分析 Slack、飞书、钉钉的竞争力 | [Slack, 飞书, 钉钉] | standard | baseline | O→C→A→R→W→H | 2 | 3产品分析，搜索预算 20 |
+| 3 | 深度分析全球协作工具 Top5 的竞争格局与未来趋势 | [Slack, Teams, 飞书, 钉钉, Discord] | deep | deep | O→C→A→R→W→H | 3 | 5产品+战略，搜索预算 30，9 sections |
+| 4 | Cursor 有哪些竞争对手 | [Cursor, Copilot, Windsurf, Codeium] | standard | baseline | O→C→A→R→W→H | 2 | ProductResolver 自动补全 3 竞品 |
+| 5 | 对比 Notion 和 Confluence，重点分析定价策略和企业版功能差异 | [Notion, Confluence] | standard | baseline | O→C→A→R→W→H | 2 | pricing weight=0.95，emphasized_aspects 注入 Analyst |
+| 6 | Slack 和 Teams 在 SaaS 集成能力、API 开放程度、SLA 保障方面的对比 | [Slack, Teams] | quick | baseline | O→C→A→R→W→H | 1 | SaaS 特有维度 → DynamicBlock kv_list |
+
+---
+
+## 十、测试运行方式
+
+```bash
+# 综合测试（49 个断言，无 LLM 依赖）
+cd backend && PYTHONPATH=packages/harness:. uv run python /tmp/test_v4_comprehensive.py
+
+# 回归测试
+cd backend && PYTHONPATH=packages/harness:. uv run pytest tests/test_competition_*.py -v
+```

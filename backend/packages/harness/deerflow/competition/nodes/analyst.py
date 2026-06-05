@@ -189,13 +189,46 @@ OUTPUT JSON WITH THESE SECTIONS:
 
 4. forecast (optional) — 6-month and 12-month projections, with disclaimer
 5. visualization_paths — recommended charts (radar, heatmap, bar, line, pie, stacked_bar)
-6. extra_fields (OPTIONAL) — domain-specific dimensions beyond the standard 4.
-   Identify dimensions unique to this industry. Each must have source citations:
-   - SaaS: integration_count, api_openness, sla_guarantee
-   - Hardware: chip_model, power_consumption, weight
-   - Gaming: engine, platforms, monetization_model
-   - Format: {{"field_name": {{"value": ..., "evidence": "...", "source_data_point_ids": [...]}}}}
-   - If no industry-specific dimensions are clear, use empty object {{}}.
+7. dynamic_blocks (RECOMMENDED) — domain-adaptive analysis blocks beyond the standard 4 dimensions.
+   Identify what makes THIS industry unique, then structure findings as typed blocks.
+   Each block declares its type — frontend picks the right renderer automatically.
+
+   BLOCK TYPES:
+
+   a) "kv_list" — key-value list of domain-specific metrics
+      Format: {{"block_type": "kv_list", "title": "AI 能力指标",
+               "data": {{"AI集成数量": {{"value": 2300, "evidence": "..."}},
+                         "API开放程度": {{"value": "REST+GraphQL", "evidence": "..."}}}},
+               "source_data_point_ids": ["dp-1", "dp-2"]}}
+      Use for: flat metrics unique to this domain (e.g. SaaS→integration_count, Hardware→chip_model)
+
+   b) "comparison_table" — multi-product side-by-side comparison
+      Format: {{"block_type": "comparison_table", "title": "AI 功能对比",
+               "data": {{"headers": ["产品", "AI补全", "多文件重构", "延迟"],
+                         "rows": [["Cursor", "★★★★★", "★★★", "50ms"], ...]}},
+               "source_data_point_ids": ["dp-3", ...]}}
+      Use for: head-to-head feature comparison with multiple products × sub-dimensions
+
+   c) "stat_chart" — numeric data best shown as a chart
+      Format: {{"block_type": "stat_chart", "title": "综合能力雷达图",
+               "data": {{"chart": "radar", "labels": ["功能","定价","易用性"],
+                         "series": {{"Cursor": [5,3,4], "Copilot": [4,4,3]}}}},
+               "source_data_point_ids": [...]}}
+      Use for: ratings, scores, percentages that benefit from visual comparison
+      Supported chart types: "radar", "bar", "pie"
+
+      Format: {{"block_type": "insight_text", "title": "定价策略深度分析",
+               "data": {{"content": "飞书的5层定价结构...(markdown)"}},
+               "source_data_point_ids": [...]}}
+               "source_data_point_ids": [...]}}
+      Use for: cross-cutting observations, strategy analysis, qualitative judgments
+
+   RULES:
+   - EVERY block MUST have source_data_point_ids (≥1). Reviewer enforces this.
+   - Generate 1-4 blocks. More ≠ better — only generate when data supports it.
+   - kv_list is the safe default. Use comparison_table when comparing 3+ sub-dimensions.
+   - stat_chart requires numeric data. Don't force it if data is qualitative.
+   - If no domain-specific insights are clear, use empty array [].
 
 ━━━ FOUR-TIER EVIDENCE STRATEGY (ANTI-HALLUCINATION) ━━━
 
@@ -354,6 +387,23 @@ def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
     raw.setdefault("forecast", None)
     raw.setdefault("visualization_paths", [])
     raw.setdefault("extra_fields", {})
+    raw.setdefault("dynamic_blocks", [])
+
+    # Validate dynamic_blocks format (v4 动态 Schema)
+    blocks = raw.get("dynamic_blocks") or []
+    validated_blocks = []
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        if "block_type" not in block or "title" not in block:
+            logger.warning("dynamic_block[%d] missing block_type/title — skipping", i)
+            continue
+        bt = block.get("block_type")
+        if bt not in ("kv_list", "comparison_table", "stat_chart", "insight_text"):
+            logger.warning("dynamic_block[%d] unknown block_type '%s' — skipping", i, bt)
+            continue
+        validated_blocks.append(block)
+    raw["dynamic_blocks"] = validated_blocks
 
     return raw
 

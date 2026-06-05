@@ -36,7 +36,6 @@ from deerflow.competition.router import (
     route_after_deep_reviewer,
     route_after_deep_writer,
     route_after_hitl,
-    route_after_orchestrator,
     route_after_reviewer,
     route_after_writer,
 )
@@ -128,19 +127,13 @@ def build_competition_graph(
 
     # ── Normal mode edges ──
     builder.set_entry_point("orchestrator")  # v4: Orchestrator as entry
-    builder.add_conditional_edges("orchestrator", route_after_orchestrator, {
-        "collector": "collector",
-        "writer": "writer",                     # collect_write_only fast path
-        "error_handler": "error_handler",
-    })
+    builder.add_edge("orchestrator", "collector")  # fixed: O→C always
     builder.add_conditional_edges("collector", route_after_collector, {
         "analyst": "analyst",
-        "writer": "writer",                     # collect_write_only fast path
         "error_handler": "error_handler",
     })
     builder.add_conditional_edges("analyst", route_after_analyst, {
         "reviewer": "reviewer",
-        "writer": "writer",                     # skip_reviewer fast path
         "error_handler": "error_handler",
     })
     builder.add_conditional_edges("reviewer", route_after_reviewer, {

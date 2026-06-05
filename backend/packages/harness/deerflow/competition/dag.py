@@ -31,7 +31,6 @@ DAG_TOPOLOGY = {
     "edges": [
         # Normal mode
         {"id": "o2c", "from": "orchestrator", "to": "collector", "type": "normal"},
-        {"id": "o2w", "from": "orchestrator", "to": "writer", "type": "normal", "condition": "collect_write_only"},
         {"id": "o2err", "from": "orchestrator", "to": "error_handler", "type": "error"},
         {"id": "c2a", "from": "collector", "to": "analyst", "type": "normal"},
         {"id": "a2r", "from": "analyst", "to": "reviewer", "type": "normal"},
@@ -290,12 +289,11 @@ def _get_self_assessment(node_id: str, state: dict) -> dict | None:
         if node_id == "orchestrator":
             orch = state.get("orchestration_result")
             if orch:
-                confidences = orch.get("product_confidence", {})
-                high_count = sum(1 for v in confidences.values() if v == "high")
-                total = max(len(confidences), 1)
-                score = high_count / total
-                tier = "green" if score >= 0.8 else ("yellow" if score >= 0.5 else "red")
-                return {"score": score, "tier": tier, "label": orch.get("summary", "")}
+                # Orchestrator is pure semantic — score = 1.0 if it produced a result
+                summary = orch.get("summary", "")
+                score = 1.0 if summary else 0.5
+                tier = "green" if score >= 0.8 else "yellow"
+                return {"score": score, "tier": tier, "label": summary}
         return None
 
     # Extract the primary score based on node type

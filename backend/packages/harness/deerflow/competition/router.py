@@ -4,33 +4,24 @@ Per COMPETITION_PLAN.md §3.13 — route_after_* pure functions.
 Each function reads CompetitionState and returns the next node name (str).
 All functions are pure: dict → str, zero side effects, trivially testable.
 
-v4: Added route_after_orchestrator() — Orchestrator → Collector (or skip).
+v4: Pipeline structure is FIXED (O→C→A→R→W→H). Complexity only controls
+execution depth (search budget, review rounds) — never skips nodes.
 """
 
 from __future__ import annotations
 
 
-# ── Orchestrator Routing `[v4 新增]` (§3.13) ──
+# ── Orchestrator Routing `[v4]` ──
 
 
 def route_after_orchestrator(state: dict) -> str:
-    """Orchestrator → Collector (default) or skip nodes per pipeline_variant.
+    """Orchestrator → Collector (always).
 
-    §3.13.1: Orchestrator is the entry point. After intent parsing:
-      - error → error_handler
-      - collect_write_only → writer (skip Analyst + Reviewer)
-      - skip_reviewer → collector (Collector → Analyst → Writer)
-      - full → collector (normal full pipeline)
+    Pipeline structure is fixed. Complexity tier only affects execution
+    parameters — not which nodes run.
     """
     if state.get("error"):
         return "error_handler"
-
-    orch = state.get("orchestration_result") or {}
-    variant = orch.get("pipeline_variant", "full")
-
-    if variant == "collect_write_only":
-        return "writer"
-    # skip_reviewer and full both start with collector
     return "collector"
 
 
@@ -38,40 +29,27 @@ def route_after_orchestrator(state: dict) -> str:
 
 
 def route_after_collector(state: dict) -> str:
-    """Collector → Analyst (normal) or error_handler (no data / error).
-
-    §3.7 empty-result guard: 0 collected_data → error_handler.
-    """
+    """Collector → Analyst (normal) or error_handler (no data / error)."""
     if state.get("error"):
         return "error_handler"
     collected = state.get("collected_data") or []
     if len(collected) == 0:
         return "error_handler"
-    # v4: collect_write_only → skip Analyst, go straight to Writer
-    orch = state.get("orchestration_result") or {}
-    if orch.get("pipeline_variant") == "collect_write_only":
-        return "writer"
     return "analyst"
 
 
 def route_after_analyst(state: dict) -> str:
-    """Analyst → Reviewer (always, no skip).
-
-    §3.12: Normal mode always enters Reviewer — no bypass.
-    v4: skip_reviewer variant → skip Reviewer, go straight to Writer.
-    """
+    """Analyst → Reviewer (always)."""
     if state.get("error"):
         return "error_handler"
-    orch = state.get("orchestration_result") or {}
-    if orch.get("pipeline_variant") == "skip_reviewer":
-        return "writer"
     return "reviewer"
 
 
 def route_after_reviewer(state: dict) -> str:
     """Reviewer → Writer (passed / max rounds) or Collector (gap feedback).
 
-    §3.12: passed → Writer / round >= 2 forced → Writer / else → Collector.
+    v4: max rounds is complexity-driven:
+      quick: 1 round / standard: 2 rounds / deep: 3 rounds
     """
     if state.get("error"):
         return "error_handler"
@@ -80,28 +58,27 @@ def route_after_reviewer(state: dict) -> str:
     if verdict.get("passed"):
         return "writer"
 
+    orch = state.get("orchestration_result") or {}
+    complexity = orch.get("complexity", "standard")
+    max_rounds = {"quick": 1, "standard": 2, "deep": 3}
+    cap = max_rounds.get(complexity, 2)
+
     review_round = state.get("review_round", 0)
-    if review_round >= 2:
-        return "writer"  # §3.12: hard cap — proceed with uncertainty
+    if review_round >= cap:
+        return "writer"  # hard cap — proceed with uncertainty
 
     return "collector"
 
 
 def route_after_writer(state: dict) -> str:
-    """Writer → HITL Gate (always).
-
-    §3.12: Report done → human review.
-    """
+    """Writer → HITL Gate (always)."""
     if state.get("error"):
         return "error_handler"
     return "hitl_gate"
 
 
 def route_after_hitl(state: dict) -> str:
-    """HITL Gate → END / Collector / Analyst / Writer / deep_collector.
-
-    §3.12 + §5.2.2: four-way HITL routing + deep mode bridge.
-    """
+    """HITL Gate → END / Collector / Analyst / Writer / deep_collector."""
     decision = state.get("hitl_decision") or {}
     action = decision.get("action", "approve")
 
@@ -141,7 +118,7 @@ def route_after_deep_reviewer(state: dict) -> str:
 
     deep_round = state.get("deep_review_round", 0)
     if deep_round >= 5:
-        return "deep_writer"  # §3.12: deep mode relaxed cap
+        return "deep_writer"
 
     return "deep_collector"
 

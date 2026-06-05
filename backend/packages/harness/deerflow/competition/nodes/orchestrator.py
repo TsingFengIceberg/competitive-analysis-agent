@@ -1,9 +1,9 @@
 """Orchestrator node — Query-Driven Dynamic Pipeline entry point `[v4 新增]`.
 
-Replaces scattered LLM/keyword calls at the API entry point with a single
-structured LLM invocation that resolves products, assesses complexity,
-allocates dimension weights, selects schema profile, and chooses the
-pipeline variant — all in one shot.
+Performs pure semantic strategy analysis: complexity assessment, dimension
+weighting, schema tailoring, and pipeline variant selection. Product name
+resolution is handled by ProductResolver (pre-graph) — Orchestrator reads
+verified products from state["target_products"].
 """
 
 from __future__ import annotations
@@ -42,37 +42,86 @@ _DEFAULT_DIMENSION_WEIGHTS = [
 ]
 
 
-def _build_default_result(products: list[str], complexity: str = "standard") -> OrchestrationResult:
+def _build_default_result() -> OrchestrationResult:
     """Build a fallback OrchestrationResult when LLM fails."""
     from deerflow.competition.schema import DimensionWeight
 
     return OrchestrationResult(
-        products=products,
-        product_confidence={p: "medium" for p in products} if products else {},
-        complexity=complexity,
+        complexity="standard",
         complexity_reason="fallback: Orchestrator LLM call failed — using default pipeline",
         dimension_weights=[DimensionWeight(**dw) for dw in _DEFAULT_DIMENSION_WEIGHTS],
-        schema_profile="full",
         emphasized_aspects=[],
-        pipeline_variant="full",
-        auto_discovered_competitors=[],
+        schema_profile="baseline",
         summary="(Orchestrator degraded — default full pipeline)",
     )
 
 
 def _parse_orchestrator_output(raw: str) -> dict | None:
-    """Parse LLM output as JSON, handling markdown code blocks."""
+    """Parse LLM output as JSON, with robust error recovery for common LLM issues.
+
+    Handles:
+      - markdown code blocks (```json ... ```)
+      - leading/trailing text outside the JSON object
+      - unescaped newlines in string values (common with Doubao)
+    """
     text = raw.strip()
+
+    # Strip markdown code blocks
     if text.startswith("```"):
         lines = text.split("\n")
-        if lines[-1].strip() == "```":
-            text = "\n".join(lines[1:-1])
-        else:
-            text = "\n".join(lines[1:])
+        # Remove opening ```json or ```
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        # Remove closing ```
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    # Try direct parse first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
+        pass
+
+    # Try to extract just the JSON object: find first { and matching }
+    first_brace = text.find("{")
+    if first_brace == -1:
         return None
+
+    # Find matching closing brace by counting nesting levels
+    depth = 0
+    last_brace = -1
+    for i in range(first_brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                last_brace = i
+                break
+
+    if last_brace > first_brace:
+        extracted = text[first_brace:last_brace + 1]
+        try:
+            return json.loads(extracted)
+        except json.JSONDecodeError:
+            pass
+
+        # Last resort: try to fix unescaped newlines in string values
+        # Replace literal newlines within quoted strings with \\n
+        try:
+            import re
+            # Find all string values that span multiple lines and escape them
+            fixed = re.sub(
+                r'"(?P<value>[^"]*\n[^"]*)"',
+                lambda m: '"' + m.group("value").replace("\n", "\\n") + '"',
+                extracted,
+            )
+            return json.loads(fixed)
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    return None
 
 
 # ── Main node function ──
@@ -81,32 +130,38 @@ def _parse_orchestrator_output(raw: str) -> dict | None:
 def orchestrator_node(state: dict) -> dict:
     """Orchestrator Agent node — entry point of the competition graph.
 
-    Reads state["user_request"] and optionally state["target_products"],
-    produces an OrchestrationResult that drives all downstream nodes.
+    Reads state["user_request"] + state["target_products"] (already verified
+    by ProductResolver), produces an OrchestrationResult that drives all
+    downstream nodes.
 
     Returns a partial state update with:
         - orchestration_result: OrchestrationResult dict
         - complexity: str
-        - target_products: list[str] (may be updated if products were auto-discovered)
 
     On failure: returns default fallback values so the pipeline never blocks.
     """
     from deerflow.competition.executor import execute_agent
 
     user_request = state.get("user_request", "")
-    existing_products = state.get("target_products") or []
+    products = state.get("target_products") or []
 
     if not user_request:
         logger.warning("Orchestrator called with empty user_request — using defaults")
-        orch = _build_default_result(existing_products)
-        return _build_return(orch, existing_products)
+        orch = _build_default_result()
+        return _build_return(orch)
+
+    if not products:
+        logger.warning("Orchestrator called with empty target_products — ProductResolver failed, degrading")
+        orch = _build_default_result()
+        return _build_return(orch)
 
     # ── Build task prompt ──
     system_prompt = _load_prompt()
+    products_str = ", ".join(products) if products else "(none — ProductResolver failed)"
     task = (
         f"User query: {user_request}\n\n"
-        f"Explicit products provided: {json.dumps(existing_products) if existing_products else '(none — extract from query)'}\n\n"
-        "Analyze the query and output the routing instruction as a single JSON object "
+        f"Verified products: {products_str}\n\n"
+        "Analyze the query intent and output a strategy routing instruction as a single JSON object "
         "following the format in your system prompt. "
         "Do NOT wrap in markdown code blocks — output raw JSON only."
     )
@@ -117,64 +172,45 @@ def orchestrator_node(state: dict) -> dict:
             system_prompt,
             task,
             temperature=0.0,
-            max_tokens=800,
+            max_tokens=600,
             agent_name="Orchestrator",
         )
-        logger.info("Orchestrator LLM call: %d tokens", tokens)
+        logger.info("Orchestrator LLM call: %d tokens for %d products", tokens, len(products))
     except Exception:
         logger.exception("Orchestrator LLM call failed — degrading to default pipeline")
-        orch = _build_default_result(existing_products)
-        return _build_return(orch, existing_products)
+        orch = _build_default_result()
+        return _build_return(orch)
 
     if not raw:
         logger.warning("Orchestrator returned empty content — degrading to default pipeline")
-        orch = _build_default_result(existing_products)
-        return _build_return(orch, existing_products)
+        orch = _build_default_result()
+        return _build_return(orch)
 
     # ── Parse & validate ──
     parsed = _parse_orchestrator_output(raw)
     if parsed is None:
         logger.warning("Orchestrator JSON parse failed — raw output: %.200s", raw)
-        orch = _build_default_result(existing_products)
-        return _build_return(orch, existing_products)
+        orch = _build_default_result()
+        return _build_return(orch)
 
     try:
         orch = OrchestrationResult(**parsed)
     except Exception:
         logger.exception("OrchestrationResult model_validate failed — degrading")
-        orch = _build_default_result(existing_products)
-        return _build_return(orch, existing_products)
+        orch = _build_default_result()
+        return _build_return(orch)
 
-    # ── Merge explicit products with auto-discovered ──
-    all_products: list[str] = list(existing_products) if existing_products else []
-
-    for p in orch.products:
-        if p not in all_products:
-            all_products.append(p)
-    for p in orch.auto_discovered_competitors:
-        if p not in all_products:
-            all_products.append(p)
-
-    if not all_products and existing_products:
-        all_products = list(existing_products)
-        orch.products = all_products
-        logger.info("Orchestrator resolved no products — keeping explicit: %s", all_products)
-    elif not all_products:
-        logger.warning("Orchestrator resolved 0 products — will attempt fallback extraction in gateway")
-
-    orch.products = all_products
     logger.info(
-        "Orchestrator resolved: products=%s complexity=%s schema=%s variant=%s summary=%s",
-        all_products, orch.complexity, orch.schema_profile, orch.pipeline_variant, orch.summary,
+        "Orchestrator: complexity=%s schema=%s summary=%s",
+        orch.complexity, orch.schema_profile, orch.summary,
     )
 
-    return _build_return(orch, all_products)
+    return _build_return(orch)
 
 
-def _build_return(orch: OrchestrationResult, products: list[str]) -> dict:
+def _build_return(orch: OrchestrationResult) -> dict:
     """Build the partial state return dict."""
     return {
         "orchestration_result": orch.model_dump(),
         "complexity": orch.complexity,
-        "target_products": products,
     }
