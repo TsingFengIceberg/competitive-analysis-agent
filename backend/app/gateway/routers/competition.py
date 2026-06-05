@@ -825,6 +825,70 @@ def _render_report_markdown(entry: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Survey Response `[§14, feature flag]` ──
+
+
+class SurveyResponseRequest(BaseModel):
+    """Single survey response submission. `[§14 问卷回传]`"""
+
+    question_id: str
+    answer: str | list[str]
+    respondent_label: str = "anonymous"
+
+
+@router.post("/report/{thread_id}/survey-response")
+async def submit_survey_response(thread_id: str, response: SurveyResponseRequest) -> dict:
+    """Submit a survey response for a running questionnaire. `[§14 问卷调研]`
+
+    Responses are accumulated in state["survey_responses"] (Annotated[list, op_add]).
+    When sufficient responses are collected, Collector can be re-invoked to
+    structure them as CollectedDataPoint[] for Analyst consumption.
+
+    Currently gated: enable_questionnaire=False by default. This endpoint is
+    reserved for the §14 questionnaire feedback loop.
+    """
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    state = entry.get("state", {})
+    if not state.get("enable_questionnaire"):
+        raise HTTPException(
+            status_code=409,
+            detail="问卷功能未开启（enable_questionnaire=False）。请先启用。",
+        )
+
+    questionnaire = state.get("questionnaire")
+    if not questionnaire:
+        raise HTTPException(status_code=409, detail="该分析尚未生成问卷。请等待 Collector 完成后重试。")
+
+    # Validate question_id exists in questionnaire
+    valid_ids = {q.get("id") for q in questionnaire.get("questions", [])}
+    if response.question_id not in valid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"无效的 question_id: {response.question_id}。有效 ID: {valid_ids}",
+        )
+
+    entry_data = {
+        "question_id": response.question_id,
+        "answer": response.answer,
+        "respondent_label": response.respondent_label,
+        "submitted_at": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+    }
+
+    # Append to survey_responses (op_add accumulator in state)
+    existing = state.get("survey_responses") or []
+    existing.append(entry_data)
+    state["survey_responses"] = existing
+    _store[thread_id]["state"] = state
+
+    logger.info("Survey response submitted: thread=%s q=%s label=%s",
+                thread_id[:12], response.question_id, response.respondent_label)
+
+    return {"status": "received", "total_responses": len(existing)}
+
+
 @router.get("/report/{thread_id}/export")
 async def export_report(thread_id: str, format: str = "md"):
     """Export an approved report as Markdown (md) or JSON (json)."""

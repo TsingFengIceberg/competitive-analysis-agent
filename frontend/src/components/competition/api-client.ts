@@ -96,7 +96,7 @@ export interface ReportSection {
   content: string;
   content_type: "text" | "table" | "chart" | "what-if-form";
   source_ids: string[];
-  chart_path: string | null;
+  chart_path: Record<string, unknown> | null;
   subsections: ReportSection[] | null;
 }
 

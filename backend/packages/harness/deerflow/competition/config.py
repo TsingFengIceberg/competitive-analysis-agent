@@ -32,6 +32,7 @@ class CollectorConfig(AgentConfig):
     soft_stop_min_source_types: int = Field(default=3, description="Soft stop: min source diversity (§3.4.3)")
     empty_result_limit: int = Field(default=3, description="Consecutive empty results → hard stop")
     search_timeout_per_call: int = Field(default=30, description="Per-search-API timeout in seconds")
+    enable_questionnaire: bool = Field(default=False, description="§14: Enable automatic questionnaire generation after search (P2, default OFF)")
     skills: list[str] = Field(
         default_factory=lambda: ["deep-research", "github-deep-research", "data-normalizer"],
     )

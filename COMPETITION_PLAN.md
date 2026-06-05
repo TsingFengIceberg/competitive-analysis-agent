@@ -64,10 +64,11 @@
 | R21 | 前段展示页面，可现场演示 | 开题 + 会议纪要 | [§7](#七答辩呈现设计--内部工作流可视化) + [§8 Week 2](#week-2-527--63-前端--可观测--飞书集成) | Gradio/Next.js + DAG 可视化 |
 | R22 | 细分方向可做，系统需具备扩展性 | 会议纪要 | [§3.2](#32-双模定位对比) + config.yaml workflows | 双模架构 + 可配置 workflow |
 | **O1** `**[v4 新增]**` | **Orchestrator Agent：单次 LLM 统一意图解析+产品名解析+路由决策，下游动态响应** | 判标 §4 前瞻性 | [§3.3 Orchestrator 角色](#33-5-个-agent-角色定义) + [§3.18](#318-orchestrator-agent--query-driven-动态-pipeline-v4-核心架构重构) | Query-Driven 动态 Pipeline |
-| **O2** `**[v4 新增]**` | **Pipeline 变体路由：3 种路径 (full/collect_write_only/skip_reviewer)** | 判标 §4 前瞻性 | [§3.13 路由逻辑](#313-路由逻辑orchestrator-入口--普通模式--深度模式流水线) + [§3.18.2](#3182-pipeline-变体) | Orchestrator → route_after_orchestrator() |
-| **O3** `**[v4 新增]**` | **Schema 裁剪：5 种 schema_profile** | 判标 §4 前瞻性 | [§3.18.3 Schema 裁剪](#3183-schema-裁剪) | Writer 按 profile 动态生成 section |
-| **O4** `**[v4 新增]**` | **竞品自动发现：单产品 query → 自动搜索补全** | 判标 §4 前瞻性 | [§3.18.4 自动竞品发现](#3184-自动竞品发现) | 搜索 "{product} competitors" |
+| **O2** `**[v4 更新]**` | **复杂度驱动执行深度：审查轮次 quick=1/std=2/deep=3（v4 Plan D: 固定图结构，不跳过节点）** | 判标 §4 前瞻性 | [§3.13 路由逻辑](#313-路由逻辑orchestrator-入口--普通模式--深度模式流水线) | route_after_reviewer 轮次上限关联 complexity |
+| **O3** `**[v4 更新]**` | **Schema 深度：baseline/deep 两档（6 vs 9 sections）** | 判标 §4 前瞻性 | [§3.18.3 Schema 深度](#3183-schema-深度) | Writer 按 profile 动态生成 deep sections |
+| **O4** `**[v4 更新]**` | **竞品自动发现：单产品 query → 自动搜索补全（已归入 ProductResolver 图前）** | 判标 §4 前瞻性 | ProductResolver pre-graph | 搜索 "{product} competitors" |
 | **O5** `**[v4 新增]**` | **Orchestrator 降级：三层降级确保不阻塞** | 判标 §4 工程完整度 | [§3.18.5 降级策略](#3185-降级策略) | Orchestrator 失败→默认 pipeline |
+| **O6** `**[§17 预留]**` | **三层 Schema 模型 + 行业选择：通用固定 + 行业专属 + 动态，可换行业可换竞品** | 判标 §3 业务价值 20% | [§3.20 三层 Schema 模型](#320-三层-schema-模型--行业选择-17-预留设计) | industry_profile → Prompt注入 + 固定Section + 冲突降级general |
 
 > **标记说明**：文档中 `**[竞赛要求]**` 标记表示该段落/设计直接对应上述某条竞赛要求。评审可搜索此标记快速验证覆盖率。
 
@@ -223,7 +224,7 @@
 - ✅ 语义判定复杂度 quick/standard/deep（替代 `_assess_complexity()` 关键词匹配）
 - ✅ 分配维度权重 `dimension_weights`：定价/功能/用户/市场各占多少搜索预算
 - ✅ 决定 Schema 裁剪 `schema_profile`：full / feature_only / pricing_only / no_swot / minimal
-- ✅ 决定 Pipeline 变体 `pipeline_variant`：full / collect_write_only / skip_reviewer
+- ✅ 决定分析深度 `complexity`：quick / standard / deep（控制搜索预算 + 审查轮次 + 报告深度）
 - ❌ 不执行搜索、不生产分析结论、不写报告
 
 **输出 Schema**：
@@ -241,8 +242,7 @@ class OrchestrationResult(BaseModel):
     dimension_weights: list[DimensionWeight]
     schema_profile: Literal["full", "feature_only", "pricing_only", "no_swot", "minimal"]
     emphasized_aspects: list[str]           # 用户强调的分析方面
-    pipeline_variant: Literal["full", "collect_write_only", "skip_reviewer"]
-    auto_discovered_competitors: list[str]  # 自动发现的竞品
+    schema_profile: Literal["baseline", "deep"]  # baseline: 6 sections | deep: 9 sections
     summary: str                            # 意图解析的一句话摘要
 ```
 
@@ -253,7 +253,7 @@ class OrchestrationResult(BaseModel):
 - Writer 读 `schema_profile` → 按需生成 Section
 - Reviewer 读 `schema_profile` → 调整 G4/G5 校验标准
 
-**降级策略**：Orchestrator LLM 调用失败 / JSON parse 失败 / model_validate 失败 → 降级为默认 pipeline（`complexity="standard"`, `schema_profile="full"`, `pipeline_variant="full"`），产品名解析降级为现有 `_llm_extract_products()` + `_verify_products_via_search()`。 |
+**降级策略**：Orchestrator LLM 调用失败 / JSON parse 失败 / model_validate 失败 → 降级为默认 pipeline（`complexity="standard"`, `schema_profile="baseline"`），产品名解析降级为现有 `_llm_extract_products()` + `_verify_products_via_search()`。 |
 
 #### Collector 的双轨采集能力 `**[竞赛要求 R2]**`
 
@@ -1369,45 +1369,42 @@ Agent LLM 输出 (JSON string)
 # ── Orchestrator 路由 `**[v4 新增]**` ──
 
 def route_after_orchestrator(state: CompetitionState) -> str:
-    """Orchestrator → Collector（默认）或按 pipeline_variant 跳过节点。"""
+    """Orchestrator → Collector（始终, v4 Plan D: 固定图结构）。"""
     if state.get("error"):
         return "error_handler"
-    orch = state.get("orchestration_result") or {}
-    variant = orch.get("pipeline_variant", "full")
-    if variant == "collect_write_only":
-        return "writer"           # 跳过 Analyst + Reviewer（简单信息收集）
-    elif variant == "skip_reviewer":
-        return "collector"        # Collector → Analyst → Writer（跳过 Reviewer）
-    return "collector"            # 默认：完整 pipeline
+    return "collector"            # 固定：O→C 永远不变
 
 # ── 普通模式路由 ──
 
 def route_after_collector(state: CompetitionState) -> str:
+    """Collector → Analyst / error_handler（无数据时）。"""
     if state.get("error"):
         return "error_handler"
-    orch = state.get("orchestration_result") or {}
-    variant = orch.get("pipeline_variant", "full")
-    if variant == "collect_write_only":
-        return "writer"           # 跳过 Analyst + Reviewer
+    collected = state.get("collected_data") or []
+    if len(collected) == 0:
+        return "error_handler"
     return "analyst"
 
 def route_after_analyst(state: CompetitionState) -> str:
-    """普通模式: 始终进入 Reviewer（不跳过）。"""
+    """Analyst → Reviewer（始终）。"""
     if state.get("error"):
         return "error_handler"
-    orch = state.get("orchestration_result") or {}
-    variant = orch.get("pipeline_variant", "full")
-    if variant == "skip_reviewer":
-        return "writer"           # 跳过 Reviewer（快速概览）
     return "reviewer"
 
 def route_after_reviewer(state: CompetitionState) -> str:
-    """校验通过 → Writer / 有 gap → 打回 Collector / 超轮 → 带着问题进 Writer。"""
+    """校验通过 → Writer / 有 gap → 打回 Collector / 超轮 → 带着问题进 Writer。
+
+    v4: 审查轮次上限关联 complexity（quick=1 / standard=2 / deep=3）。
+    """
     verdict: ReviewVerdict | None = state.get("review_verdict")
     if verdict and verdict.passed:
         return "writer"
+    orch = state.get("orchestration_result") or {}
+    complexity = orch.get("complexity", "standard")
+    max_rounds = {"quick": 1, "standard": 2, "deep": 3}
+    cap = max_rounds.get(complexity, 2)
     review_round = state.get("review_round", 0)
-    if review_round >= 2:
+    if review_round >= cap:
         return "writer"           # 超过上限 → 标注不确定性后继续
     return "collector"            # 打回重新采集
 
@@ -1491,12 +1488,10 @@ def build_competition_graph(checkpointer=None) -> CompiledStateGraph:
     builder.set_entry_point("orchestrator")  # v4: Orchestrator 作为入口
     builder.add_conditional_edges("orchestrator", route_after_orchestrator, {
         "collector": "collector",
-        "writer": "writer",                     # collect_write_only 快速通道
         "error_handler": "error_handler",
     })
     builder.add_conditional_edges("collector", route_after_collector, {
         "analyst": "analyst",
-        "writer": "writer",                     # collect_write_only 跳过
         "error_handler": "error_handler",
     })
     builder.add_edge("analyst", "reviewer")
@@ -2252,21 +2247,30 @@ def error_handler_node(state: CompetitionState) -> dict:
 - DAG 图中每个 Agent 节点旁边显示自评分数圆点（绿 ≥0.8 / 黄 ≥0.6 / 红 <0.6）
 - 前端点击展开自评详情（gap 列表、confidence breakdown）
 
-#### 3.17.3 动态 Schema 演化
+#### 3.17.3 动态 Schema 演化 `**[v4 DynamicBlock 升级]**`
 
-**目标**：Schema 不写死字段，根据分析行业自动扩充，同时保持向后兼容。
+> **v4 升级**：从 flat `extra_fields: dict` 升级为 `dynamic_blocks: list[DynamicBlock]`。
+> 每种 block 自带类型声明（`block_type`），前端按类型选渲染器，Reviewer 按类型选校验策略。
+> 旧 `extra_fields` 保留兼容。
 
-**领域自适应 Schema 扩展**：
-- `AnalysisResult` 增加 `extra_fields: dict[str, Any]` 预留字段
-- LLM 在 analysis 阶段识别行业特有维度：
-  - SaaS → 集成生态数量、API 开放度、SLA 保证
-  - 硬件 → 芯片型号、功耗、尺寸重量
-  - 游戏 → 引擎、平台、付费模式
-- Reviewer 校验 extra_fields 合理性后合入最终输出
+**DynamicBlock 四种类型**：
+
+| block_type | 前端渲染 | Reviewer 校验 | 使用场景 |
+|-----------|---------|-------------|---------|
+| `kv_list` | text (key-value list) | source_ids + evidence | 行业特有指标（SaaS→集成数/API开放度） |
+| `comparison_table` | table (sortable) | headers/rows 列数匹配 | 多维功能矩阵对比 |
+| `stat_chart` | chart (radar/bar/pie) | labels/series 值数匹配 | 评分雷达图、份额饼图 |
+| `insight_text` | text (markdown) | content 非空 | 跨维度定性洞察 |
+
+**上下游自适应**：
+- Writer: `_render_dynamic_blocks()` 按 block_type→content_type 映射 + chart_path 提取
+- Reviewer: `_check_dynamic_blocks()` 按 block_type 四项专项校验（通用 source_ids + 表格列匹配 + 图表值匹配 + 文本空检查）
+- 前端: table→HTML table，chart→柱状图，kv_list/insight→ReactMarkdown
 
 **Schema 版本管理**：
 - `FeatureTree` / `PricingModel` 带 `schema_version: int`
 - 旧版分析报告兼容读取（missing fields → default None）
+- 旧 `extra_fields` 格式保留兼容，Reviewer 双轨校验
 
 **用户自定义 Schema（P2，答辩口头提）**：
 - 前端 Schema 模板编辑器，用户可定义自己关注的维度字段
@@ -2290,18 +2294,17 @@ def error_handler_node(state: CompetitionState) -> dict:
 
 **Orchestrator 解法**：单次 LLM 调用 → 结构化 `OrchestrationResult` → 下游节点消费。
 
-#### 3.18.2 Pipeline 变体
+#### 3.18.2 复杂度驱动的执行深度（Plan D: 固定图结构）
 
-| variant | Graph 路径 | 使用场景 |
-|---------|-----------|---------|
-| `full` | Orchestrator → Collector → Analyst → Reviewer → Writer → HITL | 默认，完整分析 |
-| `collect_write_only` | Orchestrator → Collector → Writer → HITL | "收集一下 X 产品的功能列表" |
-| `skip_reviewer` | Orchestrator → Collector → Analyst → Writer → HITL | 快速概览，跳过质检 |
+Pipeline 节点图固定（O→C→A→R→W→H），复杂度在节点内部增强执行深度：
 
-Orchestrator 根据 query 语义自动判定 variant：
-- "帮我查一下" / "有哪些功能" → `collect_write_only`
-- "快速对比" / "简单看看" → `skip_reviewer`
-- "深度分析" / "竞争格局" → `full`
+| complexity | 搜索预算 | 审查轮次 | 报告结构 | 使用场景 |
+|-----------|---------|---------|---------|---------|
+| `quick` | ~15K tokens (12 results) | 1 轮 | baseline (6 sections) | 1-2 产品简单对比 |
+| `standard` | ~30K tokens (20 results) | 2 轮 | baseline (6 sections) | 2-4 产品正常分析 |
+| `deep` | ~60K tokens (30 results) | 3 轮 | deep (9 sections) | 5+ 产品 / 战略 / 预测 |
+
+增强是叠加而非替换——deep 包含 quick 的全部内容，额外增加趋势、预测、行业附录。
 
 #### 3.18.3 Schema 裁剪
 
@@ -2336,7 +2339,7 @@ Orchestrator 根据 query 语义自动判定 variant：
 降级后 pipeline 参数：
 - `complexity` = `"standard"` (fallback to `_assess_complexity()`)
 - `schema_profile` = `"full"`
-- `pipeline_variant` = `"full"`
+- `schema_profile` = `"baseline"`
 - `dimension_weights` = 默认均分 4 维
 
 #### 3.18.6 Token 成本对比
@@ -2348,6 +2351,138 @@ Orchestrator 根据 query 语义自动判定 variant：
 | **节省** | — | **30-50%** |
 
 ---
+
+### 3.19 问卷/访谈采集框架 `[§14, 开关关闭]`
+
+> 开题材料原文：「支持信息采集 Agent（包括问卷设计，问卷调研，用户访谈等）」。
+> 核心框架已实现，`enable_questionnaire=False` 默认关闭。打开后 Collector 在 web search 完成后自动生成问卷。
+
+**架构位置**：
+
+```
+Collector
+  ├── 轨1: Web Search (已有, 自动, 始终运行)
+  └── 轨2: 问卷/访谈 (新增, enable_questionnaire=True 时触发)
+           ├── _generate_questionnaire() → LLM 生成结构化问卷
+           ├── 前端展示问卷卡片 → 用户分发
+           ├── POST /survey-response → 回传答案
+           └── LLM 结构化 → CollectedDataPoint[] → 进 Analyst
+```
+
+**已实现组件**：
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Question/Questionnaire/SurveyResponse | `schema.py` | 3 个 Pydantic 模型 |
+| enable_questionnaire 开关 | `config.py` → `CollectorConfig` | 默认 False |
+| 问卷生成 | `collector.py` → `_generate_questionnaire()` | LLM 根据 query+gaps 生成 5-8 题 |
+| 回传端点 | `competition.py` → `POST /survey-response` | 验证 question_id + 累积到 state |
+| State 字段 | `state.py` | enable_questionnaire / questionnaire / survey_responses |
+
+**未完成**：问卷模板库、飞书表单导出、访谈提纲/纪要/脱敏、前端问卷卡片渲染。
+
+---
+
+### 3.20 三层 Schema 模型 + 行业选择 `[§17 预留设计，待实现]`
+
+> 对应评分维度"可换行业、可换竞品对象"（20%）。用户可选行业，系统注入行业专属 Prompt + 固定 Section，
+> 同时 DynamicBlock 继续自适应。三层互不冲突，叠加而非替换。
+
+#### 3.20.1 三层 Schema 架构
+
+```
+Layer 1: 通用固定层 (always, 所有查询)
+  → 执行摘要 · 对比矩阵 · SWOT · 建议 · 来源 · 质量附录
+  → 代码: writer.py REQUIRED_SECTIONS
+  → 确定性: 100%，所有竞品分析必有
+
+Layer 2: 行业专属固定层 (用户选了行业 + 验证通过才加)
+  → 行业预设分析维度，100% 结构固定
+  → 代码: industry_profile → 注入 Collector/Analyst prompt + 追加固定 Section
+  → 确定性: 100%（行业匹配时），不匹配 → 降级 "general"
+
+Layer 3: DynamicBlock 动态层 (LLM 自适应，总是运行)
+  → 当前已实现的 4 种 block_type
+  → 代码: analyst.py → dynamic_blocks → writer.py _render_dynamic_blocks
+  → 确定性: 取决于数据
+```
+
+**三层之间的关系**：叠加，非替换。Layer 2 是"我知道 SaaS 行业应该看什么，帮你盯着"，Layer 3 是"发现预设之外的维度，也加上"。最终一份报告可能同时有通用 section + SaaS 行业 section + LLM 动态生成的图表/对比表/洞察文本。
+
+#### 3.20.2 行业选择与冲突检测
+
+```
+POST /analyze { query, target_products, industry: "saas" | "hardware" | "gaming" | ... | "general" }
+
+1. industry="general" (默认)
+   → Layer 1 only + Layer 3 (DynamicBlock)
+   → 就是当前的完整行为
+
+2. industry="saas" (或其他具体行业)
+   → ProductResolver 解析产品后:
+      搜索 "{product} SaaS" → 验证标题是否含 SaaS/Cloud/API 等信号
+   → 匹配: 注入 SaaS prompt + 追加 SaaS 固定 Section
+   → 不匹配: logger.warning("产品X与行业SaaS不符，降级为general")
+             → 回退到 industry="general"，不报错阻塞
+   → Layer 3 始终运行，不冲突
+```
+
+#### 3.20.3 行业专属 Profile 设计
+
+```python
+# 每个行业一套 profile，决定 Layer 2 的行为
+INDUSTRY_PROFILES = {
+    "saas": {
+        "label": "SaaS / 企业软件",
+        "search_keywords": ["pricing", "SLA", "integration", "API", "enterprise"],
+        "analyst_dimensions": ["集成生态", "API开放度", "SLA保障", "安全合规"],
+        "fixed_sections": ["sec-saas-integration", "sec-saas-compliance"],
+        "prompt_bias": "重点关注 API 开放程度、SLA 保障条款、企业级安全合规认证",
+    },
+    "hardware": {
+        "label": "硬件 / 消费电子",
+        "search_keywords": ["specs", "chip", "battery", "benchmark", "price"],
+        "analyst_dimensions": ["芯片型号", "功耗", "尺寸重量", "散热"],
+        "fixed_sections": ["sec-hardware-specs", "sec-hardware-benchmark"],
+        "prompt_bias": "重点关注芯片型号、性能跑分、功耗散热、物料成本",
+    },
+    "gaming": {
+        "label": "游戏",
+        "search_keywords": ["engine", "platforms", "monetization", "player count"],
+        "analyst_dimensions": ["引擎", "平台覆盖", "付费模式", "用户规模"],
+        "fixed_sections": ["sec-gaming-engine", "sec-gaming-monetization"],
+        "prompt_bias": "重点关注游戏引擎、平台覆盖、付费模式、DAU/MAU 数据",
+    },
+    "general": {
+        "label": "通用（默认）",
+        "search_keywords": [],
+        "analyst_dimensions": [],
+        "fixed_sections": [],
+        "prompt_bias": "",
+    },
+}
+```
+
+#### 3.20.4 Prompt 注入点
+
+| Agent | 注入方式 | 效果 |
+|-------|---------|------|
+| **Collector** | `search_keywords` 追加到每个产品的搜索词中 | 行业专属搜索覆盖 |
+| **Analyst** | `analyst_dimensions` 加入 MANDATORY_DIMENSIONS + `prompt_bias` 注入 System Prompt | 行业维度强制对比 |
+| **Writer** | `fixed_sections` 在 baseline 6 sections 之后追加生成 | 行业专属固定报告内容 |
+| **Orchestrator** | `dimension_weights` 中增加行业相关维度的权重 | 搜索预算向行业关键维度倾斜 |
+
+#### 3.20.5 与 DynamicBlock 的分工
+
+| | Layer 2 (行业固定) | Layer 3 (DynamicBlock) |
+|---|---|---|
+| 谁定义 | 开发者预设 | LLM 自适应 |
+| 何时生效 | 用户选行业 + 验证通过 | 总是 |
+| 结构 | 固定 Section 模板 | 可变 block_type |
+| 内容 | 每个行业可控、可预期 | 有惊喜也可能为空 |
+| 冲突风险 | 有（产品不合行业 → 降级） | 无 |
+
+两者不冲突——Layer 2 保证了最低的行业覆盖度（像"菜谱里有固定配菜"），Layer 3 提供了灵活性（"厨师看到今天食材好，多加了一道"）。
 
 ## 四、数据源矩阵 — Collector 信息采集体系
 
@@ -2971,7 +3106,7 @@ Writer 完成报告
 | **产品名解析** | 多次 LLM 调用分散处理 | 单次 Orchestrator 统一完成提取+纠错 |
 | **搜索预算** | 固定配置（所有维度均分） | Orchestrator 按维度权重动态分配 |
 | **报告结构** | 硬编码 section 列表 | Orchestrator 按用户意图裁剪（5 种 schema_profile） |
-| **Pipeline 路径** | 固定 4 节点全跑 | 3 种 pipeline_variant：full / collect_write_only / skip_reviewer |
+| **Pipeline 执行深度** | 固定深度 | 复杂度驱动：quick/standard/deep 控制搜索预算 + 审查轮次 + 报告深度 |
 | **竞品发现** | 用户必须手动输入所有产品 | 单产品 → 自动搜索发现竞品 |
 
 **降级保障**：Orchestrator 失败 → 三层降级 → 不影响系统可用性（降至默认 pipeline）。

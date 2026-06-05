@@ -54,10 +54,21 @@ def collector_node(state: dict) -> dict:
     target_products = state.get("target_products", [])
     self_assessment = _build_collector_self_assessment(data_points, target_products)
 
+    # ── Questionnaire generation `[§14, feature flag: enable_questionnaire=False]` ──
+    questionnaire = None
+    if state.get("enable_questionnaire"):
+        try:
+            questionnaire = _generate_questionnaire(state, data_points)
+            if questionnaire:
+                logger.info("Collector generated questionnaire: %s", questionnaire.get("title"))
+        except Exception:
+            logger.exception("Questionnaire generation failed — continuing without it")
+
     return {
         "collected_data": [dp.model_dump() for dp in data_points],
         "collection_summary": summary,
         "collector_self_assessment": self_assessment,
+        "questionnaire": questionnaire,
     }
 
 
@@ -573,3 +584,71 @@ def _salvage_json_objects(text: str) -> list[dict]:
                     pass
                 start = -1
     return objects
+
+
+# ── Questionnaire Generation `[§14, feature flag: enable_questionnaire=False]` ──
+
+
+def _generate_questionnaire(state: dict, data_points: list) -> dict | None:
+    """Generate a structured questionnaire based on query + collected search data.
+
+    Gated behind state["enable_questionnaire"] (default False). Reserves the
+    Collector→HITL→Collector feedback loop for subjective data that web search
+    cannot capture: user preferences, satisfaction, pain points, feature priorities.
+
+    The questionnaire is rendered in the frontend, distributed to users, and
+    responses flow back via POST /api/competition/{thread_id}/survey-response.
+    LLM then structures responses as CollectedDataPoint[] for Analyst consumption.
+    """
+    from deerflow.competition.executor import execute_agent
+
+    user_request = state.get("user_request", "")
+    products = state.get("target_products", [])
+    gaps = state.get("knowledge_gaps") or []
+
+    # Only generate questionnaire when web search can't cover subjective data
+    subjective_signals = ["偏好", "满意度", "痛点", "体验", "评价", "感受", "survey", "questionnaire", "问卷", "调研"]
+    has_subjective_intent = any(s in user_request for s in subjective_signals)
+    has_data_gaps = len(data_points) < 10 or gaps
+
+    if not has_subjective_intent and not has_data_gaps:
+        return None
+
+    system_prompt = (
+        "You are a survey designer for competitive analysis. "
+        "Generate a structured questionnaire to collect subjective user data "
+        "that web search cannot provide: user preferences, satisfaction scores, "
+        "pain points, feature priorities. Output raw JSON only."
+    )
+    task = (
+        f"User query: {user_request}\n"
+        f"Products being analyzed: {', '.join(products) if products else '(unknown)'}\n"
+        f"Data points already collected via web: {len(data_points)}\n"
+        f"Knowledge gaps: {json.dumps(gaps[:3]) if gaps else '(none)'}\n\n"
+        "Generate a 5-8 question questionnaire mixing:\n"
+        "- single_choice: for categorical preferences ('most important feature')\n"
+        "- rating: for 1-5 scores ('satisfaction with X')\n"
+        "- open: for qualitative feedback ('what is your biggest pain point?')\n\n"
+        'Output format: {"title": "...", "description": "...", "target_audience": "...", '
+        '"questions": [{"id": "q1", "type": "rating", "title": "...", "options": null, "required": true}, ...], '
+        '"estimated_time_minutes": 5}'
+    )
+
+    try:
+        raw, tokens = execute_agent(
+            system_prompt, task,
+            temperature=0.3, max_tokens=600, agent_name="QuestionnaireGenerator",
+        )
+        if raw:
+            from deerflow.competition.nodes.orchestrator import _parse_orchestrator_output
+            parsed = _parse_orchestrator_output(raw)
+            if parsed and parsed.get("questions"):
+                parsed["_generated_at"] = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
+                parsed["_token_count"] = tokens
+                logger.info("Generated questionnaire: '%s' (%d questions, %d tokens)",
+                           parsed.get("title"), len(parsed.get("questions", [])), tokens)
+                return parsed
+    except Exception:
+        logger.exception("Questionnaire generation failed")
+
+    return None

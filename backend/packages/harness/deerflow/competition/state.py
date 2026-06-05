@@ -49,6 +49,12 @@ class CompetitionState(AgentState):
     """Per-round summary: total_data_points, products_covered, stopped_by, etc. (§3.4.6)."""
     knowledge_gaps: NotRequired[list[dict] | None]
     """Gaps discovered by Reviewer → deep mode Collector re-targets these."""
+    enable_questionnaire: NotRequired[bool | None]
+    """§14: Enable automatic questionnaire generation. Default False. Reserved for future use."""
+    questionnaire: NotRequired[dict | None]
+    """Generated Questionnaire, if enable_questionnaire=True. Awaiting external response."""
+    survey_responses: Annotated[list[dict], op_add]
+    """Collected survey responses (§14 questionnaire feedback loop)."""
 
     # ── Analyst Output ── [竞赛要求 R4]
     analysis_result: NotRequired[dict | None]
