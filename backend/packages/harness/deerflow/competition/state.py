@@ -33,6 +33,8 @@ class CompetitionState(AgentState):
     """Products to compare, e.g. ['cursor', 'copilot', 'windsurf']."""
     persona: NotRequired[str | None]
     """"pm" | "entrepreneur" | "both" — drives Writer dual-perspective output."""
+    industry: NotRequired[str | None]
+    """"saas" | "devtools" | "ai" | "database" | "hardware" | "gaming" | "general" — §17 industry selection."""
     deep_mode: NotRequired[bool | None]
     """False = normal mode only, True = normal + deep mode pipeline."""
 

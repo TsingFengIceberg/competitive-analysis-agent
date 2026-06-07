@@ -806,3 +806,76 @@
 
 - [ ] **前端行业选择器**：analyze 页面前端下拉框
 - [ ] **test_competition_industry.py**：行业匹配/冲突降级/Prompt注入/Section生成
+
+---
+
+## 十八、分析持久化 + 多分析并行 `[待实现]`
+
+> **动机**：1) 当前只持久化 approved 报告，需要全部保存 2) 支持后台多分析同时运行 3) 用户可离开界面
+> 详见 PLAN §3.21
+
+### 18.1 数据库改造
+
+- [ ] **analysis_history 表扩展**：+user_id / +industry / +status / +current_node / +progress / +updated_at
+- [ ] **状态机实现**：running → completed → approved | failed
+- [ ] **_save_to_db() 改为 _upsert_analysis()**：INSERT OR REPLACE，每次状态变更都写
+
+### 18.2 写入时机
+
+- [ ] **POST /analyze 时 INSERT**：创建记录（status="running", user_id）
+- [ ] **每个 node 完成时 UPDATE**：current_node, progress, token_usage
+- [ ] **分析完成时 UPDATE**：status="completed", report_data
+- [ ] **分析失败时 UPDATE**：status="failed", error
+- [ ] **HITL approve 时 UPDATE**：status="approved"
+
+### 18.3 多分析并行
+
+- [ ] **ThreadPoolExecutor 独立线程**：每个分析在独立线程中运行，互不阻塞
+- [ ] **并发控制**：最多 3 个分析同时运行（服务器内存 7.1GB 限制）
+- [ ] **后台挂起**：用户可发起分析后关闭页面，回来再查看
+
+### 18.4 前端分析列表
+
+- [ ] **左侧栏分析列表**：展示用户所有分析（运行中/已完成/失败）
+- [ ] **切换分析**：点击列表项切换到对应 thread_id
+- [ ] **状态图标**：🔄运行中 / ✅已完成 / ✅已批准 / ❌失败
+- [ ] **新建分析按钮**：始终可点击，不等待当前分析完成
+
+---
+
+## 十九、实时流时间轴 `[待实现]`
+
+> **动机**：当前只有 2 秒轮询，用户看不到分析进行到哪一步。需要 SSE 实时推送事件。
+> 详见 PLAN §3.22
+
+### 19.1 后端 SSE 事件系统
+
+- [ ] **_stream_queues: dict[str, asyncio.Queue]**：每个 thread_id 一个事件队列
+- [ ] **_emit_event(thread_id, type, data)**：线程安全的事件发射器（call_soon_threadsafe）
+- [ ] **graph.stream() 循环中注入事件**：node_start / search_query / data_point / token_update / node_end / error
+- [ ] **SSE endpoint**：`GET /stream/{thread_id}` → `text/event-stream`
+- [ ] **事件格式**：`event: <type>\ndata: <JSON>\n\n`
+
+### 19.2 前端时间轴组件
+
+- [ ] **EventSource 连接** `/api/competition/stream/{thread_id}`
+- [ ] **时间轴渲染**：按事件类型渲染不同行组件
+  - node_start → 节点开始横幅（绿色脉冲）
+  - search_query → 搜索行（🔍 + 查询内容 + 结果数）
+  - data_point → 数据行（📊 + 产品 + 类别 + 标签）
+  - token_update → Token 消耗更新
+  - node_end → 节点完成横幅（✅ + 耗时）
+  - node_progress → 进度描述行（🔄 + 描述文本）
+  - error → 错误行（❌ + 错误信息）
+- [ ] **自动滚动**：新事件出现时自动滚到底部
+- [ ] **折叠/展开**：已完成的节点可折叠
+
+### 19.3 轮询降级
+
+- [ ] **EventSource 不可用检测**：自动降级为 2 秒轮询
+- [ ] **断线重连**：SSE 断线后自动重连
+
+---
+
+> **使用方式**：编码时对照此 TODO，每完成一项标记 `[x]`。每个条目后的链接指向 COMPETITION_PLAN.md 对应设计章节。
+> 状态：`[ ]` 待完成 | `[x]` 已完成

@@ -2,6 +2,10 @@
 
 Bridges the gap between placeholder stubs and full SubagentExecutor integration.
 Uses langchain ChatOpenAI directly with the Doubao model from config.yaml.
+
+Streaming support (§19 SSE): When a stream callback is set via ``set_stream_callback``,
+``execute_agent()`` uses ``llm.stream()`` and invokes the callback for each token
+chunk, enabling chat-like SSE streaming.
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,35 @@ DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 # Global token counter for competition analysis session
 _total_tokens_used = 0
 _agent_tokens: dict[str, int] = {}
+
+# Thread-local storage for SSE streaming callback (§19)
+# Simpler than contextvars — the entire graph runs on one executor thread,
+# so thread-local storage correctly isolates concurrent analyses.
+_tl = threading.local()
+
+
+def set_stream_callback(cb) -> None:
+    """Set the SSE stream callback for the current thread."""
+    _tl.stream_callback = cb
+
+
+def clear_stream_callback() -> None:
+    """Remove the SSE stream callback."""
+    _tl.stream_callback = None
+
+
+def set_cancel_checker(checker) -> None:
+    """Set a cancellation checker for the current thread.
+
+    The checker is a callable that returns True when the analysis should stop.
+    Called inside LLM streaming loops for responsive cancellation.
+    """
+    _tl.cancel_checker = checker
+
+
+def clear_cancel_checker() -> None:
+    """Remove the cancellation checker."""
+    _tl.cancel_checker = None
 
 
 def get_total_tokens() -> int:
@@ -52,6 +86,12 @@ def execute_agent(
 
     Set disable_thinking=True to use non-thinking mode (faster, for simple tasks).
     """
+    # Check for cancellation before any LLM call
+    cancel_checker = getattr(_tl, "cancel_checker", None)
+    if cancel_checker and cancel_checker():
+        logger.info("LLM call cancelled before start for %s", agent_name)
+        return (None, 0)
+
     try:
         from langchain_openai import ChatOpenAI
 
@@ -74,14 +114,68 @@ def execute_agent(
             {"role": "user", "content": task},
         ]
 
-        response = llm.invoke(messages)
-        content = _extract_content(response)
-        usage = _extract_usage(response)
+        # Check for SSE streaming callback (§19)
+        cb = getattr(_tl, "stream_callback", None)
+        if cb is not None:
+            # Emit a thinking indicator immediately so the UI doesn't look frozen.
+            # Thinking models (Doubao seed) may spend 30-60s reasoning with zero
+            # content chunks — the sentinel tells the SSE layer to show a progress
+            # event while the real content is generated.
+            if not disable_thinking:
+                try:
+                    cb(agent_name, "\x00THINK\x00")
+                except Exception:
+                    pass
 
-        # If LangChain dropped the content (thinking model), retry via raw HTTP
-        if not content:
-            logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
-            content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
+            # Streaming mode — yield token chunks to the callback
+            full_content: list[str] = []
+            total_usage = 0
+            last_chunk_usage = 0
+            for chunk in llm.stream(messages):
+                # Check cancellation flag — allows responsive termination
+                if cancel_checker and cancel_checker():
+                    logger.info("Streaming cancelled for %s", agent_name)
+                    break
+                chunk_content = _extract_content(chunk)
+                if chunk_content:
+                    full_content.append(str(chunk_content))
+                    try:
+                        cb(agent_name, str(chunk_content))
+                    except Exception:
+                        pass  # callback failure shouldn't break the LLM call
+                # Try to extract usage from every chunk (last chunk often has it)
+                chunk_usage = _extract_usage(chunk)
+                if chunk_usage:
+                    last_chunk_usage = chunk_usage
+
+            content = "".join(full_content)
+            # Prefer usage from last chunk, fall back to character-based estimate
+            # (Doubao API often doesn't include usage in streaming responses)
+            usage = last_chunk_usage if last_chunk_usage > 0 else (len(content) // 4)
+
+            # Fallback: if streaming produced empty content (thinking models may
+            # put output in reasoning_content, inaccessible via streaming chunks),
+            # retry via raw HTTP which properly extracts reasoning_content.
+            if not content:
+                logger.info("Streaming returned empty content — retrying via raw HTTP for %s", agent_name)
+                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
+                # Stream the fallback content through the callback so SSE clients
+                # receive it (the streaming loop above produced nothing).
+                if content and cb is not None:
+                    try:
+                        cb(agent_name, content)
+                    except Exception:
+                        pass
+        else:
+            # Non-streaming mode (original behavior)
+            response = llm.invoke(messages)
+            content = _extract_content(response)
+            usage = _extract_usage(response)
+
+            # If LangChain dropped the content (thinking model), retry via raw HTTP
+            if not content:
+                logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
+                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
 
         logger.info("Agent response: %d chars (%d tokens)", len(str(content)), usage)
         global _total_tokens_used

@@ -8,6 +8,7 @@ import pytest
 
 from deerflow.competition.db import (
     CREDIBILITY_DELTA,
+    upsert_analysis,
     DEFAULT_CREDIBILITY_SCORE,
     get_all_credibilities,
     get_baseline,
@@ -48,12 +49,19 @@ def conn():
             user_id TEXT DEFAULT 'default',
             query TEXT,
             products TEXT,
+            industry TEXT DEFAULT 'general',
             persona TEXT,
             deep_mode INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'running',
+            current_node TEXT,
+            progress TEXT,
             created_at TEXT,
+            updated_at TEXT,
             key_findings TEXT,
             report_path TEXT,
-            metrics TEXT
+            metrics TEXT,
+            report_data TEXT,
+            token_usage TEXT
         );
     """)
     c.commit()
@@ -123,9 +131,10 @@ class TestProductBaseline:
 
 class TestAnalysisHistory:
     def test_record_and_list(self, conn):
-        record_analysis(
-            "thread-1", "analyze Cursor", ["Cursor"], "pm", False,
-            ["finding 1"], "/reports/r1.md", {"coverage": 0.9}, conn,
+        upsert_analysis(
+            "thread-1", status="completed", query="analyze Cursor",
+            products=["Cursor"], persona="pm",
+            key_findings=["finding 1"], metrics={"coverage": 0.9}, conn=conn,
         )
         history = list_history(conn)
         assert len(history) == 1
@@ -133,15 +142,17 @@ class TestAnalysisHistory:
 
     def test_multiple_entries(self, conn):
         for i in range(3):
-            record_analysis(
-                f"thread-{i}", f"query {i}", ["A"], "pm", False,
-                [f"f{i}"], f"/r{i}.md", {"c": i}, conn,
+            upsert_analysis(
+                f"thread-{i}", status="completed", query=f"query {i}",
+                products=["A"], persona="pm",
+                key_findings=[f"f{i}"], metrics={"c": i}, conn=conn,
             )
         assert len(list_history(conn, limit=2)) == 2  # respects limit
         assert len(list_history(conn, limit=10)) == 3
 
     def test_deep_mode_recorded(self, conn):
-        record_analysis("t-deep", "q", ["A"], "pm", True, [], "/r.md", {}, conn)
+        upsert_analysis("t-deep", status="completed", query="q",
+                        products=["A"], persona="pm", conn=conn)
         history = list_history(conn)
         # deep_mode was True (1)
         assert history[0]["thread_id"] == "t-deep"

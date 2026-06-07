@@ -13,6 +13,7 @@ import { useCompetitionAPI } from "@/components/competition/api-client";
 import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
 import MessageFlowPanel from "@/components/competition/message-flow-timeline";
+import AnalysisTimeline from "@/components/competition/analysis-timeline";
 import ReplaySlider from "@/components/competition/replay-slider";
 import { SourceCard, VersionDiff, SideBySideDiff, type SourceInfo } from "@/components/competition/source-card";
 import TokenPanel from "@/components/competition/token-panel";
@@ -321,10 +322,179 @@ export default function CompetitionPage() {
   const [query, setQuery] = useState("对比 Slack 和 飞书");
   const [products, setProducts] = useState("");
   const [persona, setPersona] = useState<Persona>("pm");
+  const [industry, setIndustry] = useState<string>("general");
   const [deepMode, setDeepMode] = useState(false);
+
+  // ── User state (§User System) ──
+  const [userId, setUserId] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Check auth state on mount; auto-login with demo account if not authenticated
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/competition/me")
+      .then((r) => r.json())
+      .then(async (d) => {
+        if (cancelled) return;
+        if (d.authenticated) {
+          setUserId(d.user_id);
+          setIsAuthenticated(true);
+          setAuthLoading(false);
+        } else {
+          // Auto-login with demo account: register first (auto-sets cookie),
+          // fall back to login if account already exists.
+          try {
+            let loginOk = false;
+            // Try register first (auto-logs in on success)
+            const regRes = await fetch("/api/v1/auth/register", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ email: "demo@deerflow.demo", password: "demo1234" }),
+              credentials: "include",
+            });
+            if (regRes.ok) {
+              loginOk = true;
+            } else {
+              // Account already exists, try login
+              const loginRes = await fetch("/api/v1/auth/login/local", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: "username=demo%40deerflow.demo&password=demo1234",
+                credentials: "include",
+              });
+              loginOk = loginRes.ok;
+            }
+            if (loginOk && !cancelled) {
+              const meRes = await fetch("/api/competition/me");
+              const meData = await meRes.json();
+              if (!cancelled) {
+                setUserId(meData.user_id || "demo@deerflow.demo");
+                setIsAuthenticated(true);
+              }
+            }
+          } catch {
+            // Auto-login failed; user can still use the page unauthenticated
+          }
+          if (!cancelled) setAuthLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAuthLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const [threadId, setThreadId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
+  const [timelineEvents, setTimelineEvents] = useState<{type: string; data: Record<string, unknown>}[]>([]);
+  const [sseConnected, setSseConnected] = useState(false);
+  const [streamingContent, setStreamingContent] = useState<Record<string, string>>({});
+  const [currentStreamAgent, setCurrentStreamAgent] = useState<string | null>(null);
+  const streamingRef = useRef<Record<string, string>>({});
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+
+  // SSE connection with auto-reconnect (DF-style)
+  useEffect(() => {
+    if (!threadId || status !== "running") return;
+
+    let destroyed = false;
+    const maxReconnectDelay = 30000;  // 30s max backoff
+
+    function connect() {
+      if (destroyed) return;
+      streamingRef.current = {};
+
+      const es = new EventSource(`/api/competition/stream/${threadId}`);
+      eventSourceRef.current = es;
+
+      es.addEventListener("metadata", () => {
+        setSseConnected(true);
+        reconnectAttemptRef.current = 0;
+      });
+
+      es.addEventListener("values", () => {
+        setSseConnected(true);
+      });
+
+      es.addEventListener("messages-tuple", (e) => {
+        try {
+          const chunks = JSON.parse(e.data);
+          if (Array.isArray(chunks)) {
+            const updated = { ...streamingRef.current };
+            let lastAgent: string | null = null;
+            for (const chunk of chunks) {
+              const agent = chunk.name || "analysis";
+              updated[agent] = (updated[agent] || "") + (chunk.content || "");
+              lastAgent = agent;
+            }
+            streamingRef.current = updated;
+            setStreamingContent({ ...updated });
+            if (lastAgent) setCurrentStreamAgent(lastAgent);
+          }
+        } catch { /* ignore malformed chunks */ }
+      });
+
+      es.addEventListener("progress", (e) => {
+        setTimelineEvents((prev) => [...prev, { type: "progress", data: JSON.parse(e.data) }]);
+      });
+
+      es.addEventListener("node_end", (e) => {
+        const data = JSON.parse(e.data);
+        const current = streamingRef.current;
+        if (Object.keys(current).length > 0) {
+          setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
+        }
+        setTimelineEvents((prev) => [...prev, { type: "node_end", data }]);
+        streamingRef.current = {};
+        setStreamingContent({});
+        setCurrentStreamAgent(null);
+      });
+
+      es.addEventListener("end", (e) => {
+        const current = streamingRef.current;
+        if (Object.keys(current).length > 0) {
+          setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
+        }
+        setTimelineEvents((prev) => [...prev, { type: "end", data: JSON.parse(e.data) }]);
+        streamingRef.current = {};
+        setStreamingContent({});
+        setCurrentStreamAgent(null);
+        es.close();
+        eventSourceRef.current = null;
+        setSseConnected(false);
+      });
+
+      es.addEventListener("error", () => {
+        es.close();
+        eventSourceRef.current = null;
+        setSseConnected(false);
+
+        if (destroyed) return;
+
+        // Exponential backoff reconnect (DF-style)
+        const attempt = reconnectAttemptRef.current + 1;
+        reconnectAttemptRef.current = attempt;
+        const delay = Math.min(1000 * Math.pow(2, attempt), maxReconnectDelay);
+        reconnectTimerRef.current = setTimeout(connect, delay);
+      });
+    }
+
+    connect();
+
+    return () => {
+      destroyed = true;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      setSseConnected(false);
+    };
+  }, [threadId, status]);
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenEntry[]>([]);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
@@ -383,6 +553,11 @@ export default function CompetitionPage() {
     const productList = products.split(",").map((p) => p.trim()).filter(Boolean);
 
     setStatus("running");
+    setActivePanel("timeline");  // auto-switch to see real-time progress
+    setTimelineEvents([]);
+    setStreamingContent({});
+    setCurrentStreamAgent(null);
+    setSseConnected(false);
     setReportData(null);
     setTokenUsage([]);
     setDbLoadedReport(null);
@@ -395,6 +570,7 @@ export default function CompetitionPage() {
         query: query.trim(),
         target_products: productList,
         persona,
+        industry,
         deep_mode: deepMode,
       });
       setThreadId(res.thread_id);
@@ -403,6 +579,15 @@ export default function CompetitionPage() {
       console.error("Analysis start failed:", err);
     }
   }, [query, products, persona, deepMode, api]);
+
+  const handleCancel = useCallback(async () => {
+    if (!threadId) return;
+    try {
+      await api.cancelAnalysis(threadId);
+    } catch (err) {
+      console.error("Cancel failed:", err);
+    }
+  }, [threadId, api]);
 
   // Fetch full history entries for tree display when count changes
   useEffect(() => {
@@ -648,6 +833,7 @@ function escapeAttr(s: string): string {
     : status === "running" ? <Badge variant="default">运行中…</Badge>
     : status === "completed" ? <Badge variant="secondary">✅ 完成</Badge>
     : status === "approved" ? <Badge variant="secondary">✅ 已批准</Badge>
+    : status === "interrupted" ? <Badge variant="outline">⏸ 已终止</Badge>
     : <Badge variant="destructive">❌ 失败</Badge>;
 
   const formatElapsed = (s: number): string => {
@@ -668,8 +854,19 @@ function escapeAttr(s: string): string {
       {/* Header */}
       <div className="flex items-center gap-4 border-b px-6 py-3">
         <h1 className="text-lg font-bold">CI-Agent 竞品分析</h1>
+        {/* Build version marker — confirms hard-refresh loaded the latest code */}
+        <span className="text-[10px] text-muted-foreground/40 select-none" title="构建时间">
+          {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") || "dev"}
+        </span>
         {statusBadge}
         {elapsedBadge}
+        {authLoading ? (
+          <span className="ml-auto text-xs text-muted-foreground">登录中...</span>
+        ) : isAuthenticated ? (
+          <Badge variant="outline" className="ml-auto">👤 {userId}</Badge>
+        ) : (
+          <span className="ml-auto text-xs text-muted-foreground">未登录 · 数据不会保存</span>
+        )}
         <Button variant="ghost" size="sm" onClick={async () => {
           setShowDbHistory(true);
           try {
@@ -719,6 +916,20 @@ function escapeAttr(s: string): string {
               </SelectContent>
             </Select>
           </div>
+          <div className="flex-1">
+            <Select value={industry} onValueChange={setIndustry} disabled={status === "running"}>
+              <SelectTrigger><SelectValue placeholder="行业（通用）" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="general">通用（默认）</SelectItem>
+                <SelectItem value="saas">SaaS / 企业软件</SelectItem>
+                <SelectItem value="devtools">开发者工具 / DevOps</SelectItem>
+                <SelectItem value="ai">AI / 大模型</SelectItem>
+                <SelectItem value="database">数据库 / 基础设施</SelectItem>
+                <SelectItem value="hardware">硬件 / 消费电子</SelectItem>
+                <SelectItem value="gaming">游戏</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex items-center gap-2 pb-1">
             <Switch checked={deepMode} onCheckedChange={setDeepMode} disabled={status === "running"} />
             <span className="text-xs">深度</span>
@@ -727,6 +938,11 @@ function escapeAttr(s: string): string {
             {status === "running" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
             {status === "running" ? "分析中…" : "开始分析"}
           </Button>
+          {status === "running" && threadId && (
+            <Button variant="outline" size="sm" onClick={handleCancel} className="text-red-600 border-red-300 hover:bg-red-50">
+              终止分析
+            </Button>
+          )}
         </div>
       </div>
 
@@ -971,6 +1187,7 @@ function escapeAttr(s: string): string {
                   <TabsTrigger value="detail" className="text-xs">Agent 详情</TabsTrigger>
                   <TabsTrigger value="flow" className="text-xs">消息流</TabsTrigger>
                   <TabsTrigger value="trace" className="text-xs">溯源</TabsTrigger>
+                  <TabsTrigger value="timeline" className="text-xs">实时</TabsTrigger>
                   <TabsTrigger value="replay" className="text-xs">回放</TabsTrigger>
                 </TabsList>
                 <TabsContent value="dag" className="flex-1 p-0">
@@ -978,6 +1195,9 @@ function escapeAttr(s: string): string {
                 </TabsContent>
                 <TabsContent value="detail" className="flex-1 overflow-auto p-3">
                   <AgentDetailPanel threadId={threadId} />
+                </TabsContent>
+                <TabsContent value="timeline" className="flex-1 overflow-hidden" forceMount>
+                  <AnalysisTimeline events={timelineEvents} connected={sseConnected} streamingContent={streamingContent} currentAgent={currentStreamAgent} />
                 </TabsContent>
                 <TabsContent value="flow" className="flex-1 overflow-auto p-3">
                   <MessageFlowPanel threadId={threadId} />

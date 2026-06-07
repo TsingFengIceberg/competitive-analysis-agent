@@ -69,6 +69,8 @@
 | **O4** `**[v4 更新]**` | **竞品自动发现：单产品 query → 自动搜索补全（已归入 ProductResolver 图前）** | 判标 §4 前瞻性 | ProductResolver pre-graph | 搜索 "{product} competitors" |
 | **O5** `**[v4 新增]**` | **Orchestrator 降级：三层降级确保不阻塞** | 判标 §4 工程完整度 | [§3.18.5 降级策略](#3185-降级策略) | Orchestrator 失败→默认 pipeline |
 | **O6** `**[§17 预留]**` | **三层 Schema 模型 + 行业选择：通用固定 + 行业专属 + 动态，可换行业可换竞品** | 判标 §3 业务价值 20% | [§3.20 三层 Schema 模型](#320-三层-schema-模型--行业选择-17-预留设计) | industry_profile → Prompt注入 + 固定Section + 冲突降级general |
+| **O7** `**[§18 预留]**` | **分析持久化 + 多分析并行：全部分析入库（含未批准），后台多分析同时跑** | 判标 §4 工程完整度 25% + §3 产品体验 20% | [§3.21 持久化](#321-分析持久化与多分析并行-18-待实现) | DB schema 扩展 + 状态机 + ThreadPoolExecutor |
+| **O8** `**[§19 预留]**` | **实时流时间轴：SSE 推送每个节点事件，前端时间轴可视化** | 判标 §3 产品体验 20% | [§3.22 实时流](#322-实时流时间轴-19-待实现) | asyncio.Queue + EventSource + 按事件类型渲染 |
 
 > **标记说明**：文档中 `**[竞赛要求]**` 标记表示该段落/设计直接对应上述某条竞赛要求。评审可搜索此标记快速验证覆盖率。
 
@@ -2430,35 +2432,70 @@ POST /analyze { query, target_products, industry: "saas" | "hardware" | "gaming"
 #### 3.20.3 行业专属 Profile 设计
 
 ```python
-# 每个行业一套 profile，决定 Layer 2 的行为
-INDUSTRY_PROFILES = {
+# 7 种行业，覆盖 90% 的真实竞品分析场景
+INDUSTRY_PROFILES: dict[str, dict] = {
     "saas": {
         "label": "SaaS / 企业软件",
-        "search_keywords": ["pricing", "SLA", "integration", "API", "enterprise"],
+        "search_keywords": ["pricing tiers", "SLA", "integration", "API", "enterprise", "compliance"],
         "analyst_dimensions": ["集成生态", "API开放度", "SLA保障", "安全合规"],
-        "fixed_sections": ["sec-saas-integration", "sec-saas-compliance"],
-        "prompt_bias": "重点关注 API 开放程度、SLA 保障条款、企业级安全合规认证",
+        "fixed_sections": ["sec-industry-integration", "sec-industry-compliance"],
+        "section_titles": {"sec-industry-integration": "集成生态与 API 开放度", "sec-industry-compliance": "安全合规与 SLA 保障"},
+        "prompt_bias": "重点关注 API 开放程度、SLA 保障条款、企业级安全合规认证、定价层级结构",
+        "dimension_weight_hint": {"integration_count": 0.85, "api_openness": 0.80, "sla_guarantee": 0.75},
+    },
+    "devtools": {
+        "label": "开发者工具 / DevOps",
+        "search_keywords": ["GitHub stars", "API docs", "community", "plugins", "open source", "performance"],
+        "analyst_dimensions": ["社区活跃度", "API文档质量", "插件生态", "开源协议"],
+        "fixed_sections": ["sec-industry-community", "sec-industry-api"],
+        "section_titles": {"sec-industry-community": "社区活跃度与生态", "sec-industry-api": "API 质量与文档完善度"},
+        "prompt_bias": "重点关注 GitHub Stars/Issues/PR 数据、API 设计质量、插件/扩展生态、文档完善度",
+        "dimension_weight_hint": {"community_activity": 0.85, "api_quality": 0.80, "plugin_ecosystem": 0.75},
+    },
+    "ai": {
+        "label": "AI / 大模型",
+        "search_keywords": ["benchmark", "API pricing", "context window", "multimodal", "tokens per second", "fine-tuning"],
+        "analyst_dimensions": ["模型能力Benchmark", "API定价(per-token)", "上下文窗口", "多模态支持"],
+        "fixed_sections": ["sec-industry-benchmark", "sec-industry-pricing"],
+        "section_titles": {"sec-industry-benchmark": "模型能力 Benchmark 对比", "sec-industry-pricing": "API 定价与 Token 成本分析"},
+        "prompt_bias": "重点关注模型 benchmark 评分、API 调用定价(per-token)、上下文窗口大小、多模态能力、微调支持",
+        "dimension_weight_hint": {"benchmark_score": 0.90, "api_pricing": 0.85, "context_window": 0.75},
+    },
+    "database": {
+        "label": "数据库 / 基础设施",
+        "search_keywords": ["TPS", "latency", "scalability", "consistency", "deployment", "benchmark"],
+        "analyst_dimensions": ["TPS/延迟", "扩展性", "一致性模型", "部署复杂度"],
+        "fixed_sections": ["sec-industry-performance", "sec-industry-architecture"],
+        "section_titles": {"sec-industry-performance": "性能指标对比 (TPS/延迟/扩展性)", "sec-industry-architecture": "架构与部署复杂度"},
+        "prompt_bias": "重点关注 TPS/延迟基准测试、水平扩展能力、一致性模型（CP/AP）、部署运维复杂度",
+        "dimension_weight_hint": {"tps_latency": 0.90, "scalability": 0.80, "consistency": 0.70},
     },
     "hardware": {
         "label": "硬件 / 消费电子",
-        "search_keywords": ["specs", "chip", "battery", "benchmark", "price"],
-        "analyst_dimensions": ["芯片型号", "功耗", "尺寸重量", "散热"],
-        "fixed_sections": ["sec-hardware-specs", "sec-hardware-benchmark"],
-        "prompt_bias": "重点关注芯片型号、性能跑分、功耗散热、物料成本",
+        "search_keywords": ["specs", "chip", "battery", "benchmark", "price", "weight"],
+        "analyst_dimensions": ["芯片型号", "功耗散热", "尺寸重量", "性能跑分"],
+        "fixed_sections": ["sec-industry-specs", "sec-industry-benchmark"],
+        "section_titles": {"sec-industry-specs": "硬件规格对比", "sec-industry-benchmark": "性能跑分与实测数据"},
+        "prompt_bias": "重点关注芯片型号、性能跑分（Geekbench/AnTuTu）、功耗散热、尺寸重量、物料成本",
+        "dimension_weight_hint": {"chip_performance": 0.90, "power_consumption": 0.75, "build_quality": 0.70},
     },
     "gaming": {
         "label": "游戏",
-        "search_keywords": ["engine", "platforms", "monetization", "player count"],
+        "search_keywords": ["engine", "platforms", "monetization", "DAU", "MAU", "revenue"],
         "analyst_dimensions": ["引擎", "平台覆盖", "付费模式", "用户规模"],
-        "fixed_sections": ["sec-gaming-engine", "sec-gaming-monetization"],
-        "prompt_bias": "重点关注游戏引擎、平台覆盖、付费模式、DAU/MAU 数据",
+        "fixed_sections": ["sec-industry-tech", "sec-industry-monetization"],
+        "section_titles": {"sec-industry-tech": "技术架构与引擎对比", "sec-industry-monetization": "付费模式与营收分析"},
+        "prompt_bias": "重点关注游戏引擎、平台覆盖（PC/主机/移动）、付费模式（买断/内购/订阅）、DAU/MAU 数据",
+        "dimension_weight_hint": {"engine_capability": 0.85, "platform_coverage": 0.80, "monetization_model": 0.80},
     },
     "general": {
         "label": "通用（默认）",
         "search_keywords": [],
         "analyst_dimensions": [],
         "fixed_sections": [],
+        "section_titles": {},
         "prompt_bias": "",
+        "dimension_weight_hint": {},
     },
 }
 ```
@@ -2483,6 +2520,80 @@ INDUSTRY_PROFILES = {
 | 冲突风险 | 有（产品不合行业 → 降级） | 无 |
 
 两者不冲突——Layer 2 保证了最低的行业覆盖度（像"菜谱里有固定配菜"），Layer 3 提供了灵活性（"厨师看到今天食材好，多加了一道"）。
+
+---
+
+### 3.21 分析持久化与多分析并行 `[§18, 待实现]`
+
+> **动机**：当前只持久化 approved 报告。需要所有分析（无论批准与否）都入库，支持后台多分析并行、中途离开再回来。
+
+#### 3.21.1 数据库 Schema 扩展
+
+```sql
+ALTER TABLE analysis_history ADD COLUMN user_id TEXT;
+ALTER TABLE analysis_history ADD COLUMN industry TEXT;
+ALTER TABLE analysis_history ADD COLUMN status TEXT DEFAULT 'running';
+ALTER TABLE analysis_history ADD COLUMN current_node TEXT;
+ALTER TABLE analysis_history ADD COLUMN progress TEXT;
+ALTER TABLE analysis_history ADD COLUMN updated_at TEXT;
+```
+
+状态机：`running → completed → approved | failed`
+
+#### 3.21.2 写入时机
+
+| 时机 | 操作 |
+|------|------|
+| `POST /analyze` 返回前 | `INSERT`（status="running", user_id=当前用户） |
+| `_run_graph_sync` 每个 node 完成 | `UPDATE` current_node, progress, token_usage |
+| 分析完成 | `UPDATE` status="completed", report_data |
+| 分析失败 | `UPDATE` status="failed", error |
+| HITL approve | `UPDATE` status="approved" |
+
+#### 3.21.3 后台多分析并行
+
+当前 `_resolve_and_run_graph()` 在 thread_executor 同步阻塞。改造为每个分析独立线程，多分析可同时跑。
+
+#### 3.21.4 前端分析列表
+
+左侧栏展示用户所有分析（运行中/已完成），点击切换 thread_id。
+
+---
+
+### 3.22 实时流时间轴 `[§19, 待实现]`
+
+> **动机**：当前只有轮询 `/report/{thread_id}`，前端每 2 秒拉一次。需要 SSE 实时推送每个节点的执行事件。
+
+#### 3.22.1 SSE 事件格式
+
+```
+event: node_start     → {"node": "orchestrator", "timestamp": "..."}
+event: search_query   → {"query": "Cursor pricing...", "results": 5, "backend": "volcengine"}
+event: data_point     → {"product": "Cursor", "category": "pricing", "label": "..."}
+event: token_update   → {"agent": "collector", "tokens": 15230}
+event: node_end       → {"node": "collector", "status": "done", "duration_seconds": 77.3}
+event: node_progress  → {"node": "analyst", "action": "生成对比矩阵...", "detail": "..."}
+event: error          → {"node": "analyst", "error": "JSON parse failed, retrying..."}
+event: end            → {"status": "completed", "total_duration_seconds": 182.5}
+```
+
+#### 3.22.2 后端实现
+
+```python
+# _run_graph_sync 中每个 graph.stream() event 触发 _emit_event()
+# _emit_event → asyncio.Queue → SSE consumer yield
+_stream_queues: dict[str, asyncio.Queue] = {}
+```
+
+#### 3.22.3 前端时间轴组件
+
+`competition/analysis-timeline.tsx`：EventSource 消费 SSE，按事件类型渲染不同行（搜索行、数据行、节点完成横幅）。
+
+#### 3.22.4 轮询降级
+
+SSE 不可用时降级为当前轮询机制。前端自动检测 EventSource 支持。
+
+---
 
 ## 四、数据源矩阵 — Collector 信息采集体系
 

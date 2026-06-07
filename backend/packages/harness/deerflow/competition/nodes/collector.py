@@ -464,6 +464,20 @@ def _run_searches(state: dict) -> str:
     # v4: If dimension_weights are available, adjust categories searched
     # Higher weight → include that dimension in the search explicitly
     queries = build_search_queries(target_products, complexity=complexity)
+
+    # Industry keyword injection (Layer 2 of §3.20)
+    from deerflow.competition.industry import get_industry_profile
+    industry = state.get("industry", "general")
+    profile = get_industry_profile(industry)
+    industry_kw = profile.get("search_keywords", [])
+    if industry_kw and industry != "general":
+        # Append industry keywords to the first 2 queries per product for coverage
+        extra = []
+        for product in target_products:
+            for kw in industry_kw[:3]:
+                extra.append(f"{product} {kw}")
+        queries = queries + extra[:6]
+        logger.info("Industry '%s': added %d keyword-augmented queries", industry, len(extra[:6]))
     if dimension_weights:
         weighted_dims = {dw["dimension"]: dw["weight"] for dw in dimension_weights}
         logger.info("Orchestrator dimension weights: %s", weighted_dims)

@@ -27,6 +27,7 @@ export interface AnalyzeRequest {
   query: string;
   target_products: string[];
   persona: Persona;
+  industry?: string;  // §17: Industry selection — saas|devtools|ai|database|hardware|gaming|general
   deep_mode: boolean;
   context_report?: Record<string, unknown> | null;
   uploaded_files?: string[] | null;
@@ -226,6 +227,16 @@ export function useCompetitionAPI() {
     return res.json();
   }, []);
 
+  const cancelAnalysis = useCallback(async (threadId: string): Promise<{status: string; message: string}> => {
+    const res = await fetch(`${API_BASE}/${threadId}/cancel`, {
+      method: "POST",
+      headers: csrfHeaders(),
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
+    return res.json();
+  }, []);
+
   const pollReport = useCallback(async (threadId: string): Promise<ReportResponse> => {
     const res = await fetch(`${API_BASE}/report/${threadId}`);
     if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
@@ -287,5 +298,5 @@ export function useCompetitionAPI() {
     return res.json();
   }, []);
 
-  return { loading, startAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getCheckpointState };
+  return { loading, startAnalysis, cancelAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getCheckpointState };
 }

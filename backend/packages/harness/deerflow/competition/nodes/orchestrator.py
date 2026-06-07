@@ -158,9 +158,22 @@ def orchestrator_node(state: dict) -> dict:
     # ── Build task prompt ──
     system_prompt = _load_prompt()
     products_str = ", ".join(products) if products else "(none — ProductResolver failed)"
+
+    # Industry context (Layer 2 of §3.20)
+    from deerflow.competition.industry import get_industry_profile
+    industry = state.get("industry", "general")
+    profile = get_industry_profile(industry)
+    industry_hint = ""
+    if industry != "general" and profile.get("prompt_bias"):
+        industry_hint = (
+            f"\n\nINDUSTRY CONTEXT: {profile['label']}\n"
+            f"Bias: {profile['prompt_bias']}\n"
+        )
+
     task = (
         f"User query: {user_request}\n\n"
-        f"Verified products: {products_str}\n\n"
+        f"Verified products: {products_str}"
+        f"{industry_hint}\n\n"
         "Analyze the query intent and output a strategy routing instruction as a single JSON object "
         "following the format in your system prompt. "
         "Do NOT wrap in markdown code blocks — output raw JSON only."

@@ -157,6 +157,18 @@ def _build_analyst_task(state: dict) -> str:
         if cat in categories_present and dim not in dimensions:
             dimensions.append(dim)
 
+    # Industry dimensions (Layer 2 of §3.20)
+    from deerflow.competition.industry import get_industry_profile
+    industry = state.get("industry", "general")
+    industry_profile = get_industry_profile(industry)
+    industry_dims = industry_profile.get("analyst_dimensions", [])
+    for dim in industry_dims:
+        if dim not in dimensions:
+            dimensions.append(dim)
+    industry_bias = industry_profile.get("prompt_bias", "")
+    if industry_bias:
+        emphasis_hint = (emphasis_hint or "") + f"\nINDUSTRY FOCUS ({industry_profile['label']}): {industry_bias}\n"
+
     # Tier 4: only available when replan has been attempted (review_round >= 1)
     tier4_section = ""
     if review_round >= 1:

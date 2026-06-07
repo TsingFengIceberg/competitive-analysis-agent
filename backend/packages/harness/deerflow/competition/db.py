@@ -34,6 +34,10 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Create tables if they don't exist. Returns a connection (caller must close)."""
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
+    # IOPS optimisation: NORMAL synchronous only fsyncs at WAL checkpoints,
+    # not on every commit. Dramatically reduces IOPS on low-quota cloud disks.
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS source_credibility (
             source_domain TEXT PRIMARY KEY,
@@ -59,17 +63,43 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             user_id TEXT DEFAULT 'default',
             query TEXT,
             products TEXT,
+            industry TEXT DEFAULT 'general',
             persona TEXT,
             deep_mode INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'running',
+            current_node TEXT,
+            progress TEXT,
             created_at TEXT,
+            updated_at TEXT,
             key_findings TEXT,
             report_path TEXT,
             metrics TEXT,
-            report_data TEXT
+            report_data TEXT,
+            token_usage TEXT
         );
     """)
+    # Migration: add columns that may not exist in older DBs
+    _migrate_analysis_history(conn)
     conn.commit()
     return conn
+
+
+def _migrate_analysis_history(conn: sqlite3.Connection) -> None:
+    """Add new columns to analysis_history if missing (safe for existing DBs)."""
+    migrations = [
+        "ALTER TABLE analysis_history ADD COLUMN user_id TEXT DEFAULT 'default'",
+        "ALTER TABLE analysis_history ADD COLUMN industry TEXT DEFAULT 'general'",
+        "ALTER TABLE analysis_history ADD COLUMN status TEXT DEFAULT 'completed'",
+        "ALTER TABLE analysis_history ADD COLUMN current_node TEXT",
+        "ALTER TABLE analysis_history ADD COLUMN progress TEXT",
+        "ALTER TABLE analysis_history ADD COLUMN updated_at TEXT",
+        "ALTER TABLE analysis_history ADD COLUMN token_usage TEXT",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 # ── Source Credibility (§3.14.2) ──
@@ -167,7 +197,102 @@ def set_baseline(
     conn.commit()
 
 
-# ── Analysis History (§3.14.4) ──
+# ── Analysis History (§3.14.4 + §18 persistence upgrade) ──
+
+
+def upsert_analysis(
+    thread_id: str,
+    status: str | None = None,
+    user_id: str | None = None,
+    query: str | None = None,
+    products: list[str] | None = None,
+    industry: str | None = None,
+    persona: str | None = None,
+    current_node: str | None = None,
+    progress: str | None = None,
+    key_findings: list[str] | None = None,
+    metrics: dict | None = None,
+    report_data: dict | None = None,
+    token_usage: list[dict] | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """INSERT or UPDATE an analysis record at any lifecycle stage (§18).
+
+    Called at: analyze start / node completion / analysis done / HITL approved.
+    Only updates the fields that are explicitly provided (partial update).
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+
+    now = datetime.now(UTC).isoformat()
+
+    # Check if record exists
+    existing = conn.execute(
+        "SELECT thread_id FROM analysis_history WHERE thread_id = ?", (thread_id,)
+    ).fetchone()
+
+    if existing is None:
+        # INSERT new record
+        conn.execute(
+            """INSERT INTO analysis_history
+               (thread_id, user_id, query, products, industry, persona, status,
+                current_node, progress, created_at, updated_at, token_usage)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                thread_id,
+                user_id or "default",
+                query or "",
+                json.dumps(products or []),
+                industry or "general",
+                persona or "pm",
+                status or "running",
+                current_node or "",
+                progress or "",
+                now, now,
+                json.dumps(token_usage or []),
+            ),
+        )
+    else:
+        # UPDATE: only set fields that are provided
+        updates = ["updated_at = ?"]
+        params: list = [now]
+
+        field_map = {
+            "status": status, "user_id": user_id, "query": query,
+            "industry": industry, "persona": persona,
+            "current_node": current_node, "progress": progress,
+        }
+        for field, value in field_map.items():
+            if value is not None:
+                updates.append(f"{field} = ?")
+                params.append(value)
+
+        if products is not None:
+            updates.append("products = ?")
+            params.append(json.dumps(products))
+        if key_findings is not None:
+            updates.append("key_findings = ?")
+            params.append(json.dumps(key_findings))
+        if metrics is not None:
+            updates.append("metrics = ?")
+            params.append(json.dumps(metrics))
+        if report_data is not None:
+            updates.append("report_data = ?")
+            params.append(json.dumps(report_data, ensure_ascii=False, default=str))
+        if token_usage is not None:
+            updates.append("token_usage = ?")
+            params.append(json.dumps(token_usage))
+
+        params.append(thread_id)
+        conn.execute(
+            f"UPDATE analysis_history SET {', '.join(updates)} WHERE thread_id = ?",
+            params,
+        )
+
+    conn.commit()
+    if close_conn:
+        conn.close()
 
 
 def record_analysis(
@@ -175,17 +300,22 @@ def record_analysis(
     deep_mode: bool, key_findings: list[str], report_path: str,
     metrics: dict, report_data: dict | None = None, conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Record a completed analysis in history. Stores full report_data JSON for later retrieval."""
+    """Record a completed analysis in history (§18 upgrade)."""
     if conn is None:
         conn = init_db()
+    now = datetime.now(UTC).isoformat()
+    # 13 cols = 12 ?s + 1 literal
     conn.execute(
         """INSERT OR REPLACE INTO analysis_history
-           (thread_id, user_id, query, products, persona, deep_mode, created_at, key_findings, report_path, metrics, report_data)
-           VALUES (?, 'default', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (thread_id, user_id, query, products, persona, deep_mode, status,
+            created_at, key_findings, report_path, metrics, report_data, updated_at)
+           VALUES (?, 'default', ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)""",
         (
             thread_id, query, json.dumps(products), persona, int(deep_mode),
-            datetime.now(UTC).isoformat(), json.dumps(key_findings), report_path,
-            json.dumps(metrics), json.dumps(report_data, ensure_ascii=False, default=str) if report_data else None,
+            now, json.dumps(key_findings), report_path,
+            json.dumps(metrics),
+            json.dumps(report_data, ensure_ascii=False, default=str) if report_data else None,
+            now,
         ),
     )
     conn.commit()
@@ -216,17 +346,22 @@ def get_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> dict
 
 
 def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """List recent analysis history entries."""
+    """List recent analysis history entries (§18: +status +industry)."""
     rows = conn.execute(
-        "SELECT thread_id, query, products, persona, created_at, key_findings, metrics "
+        "SELECT thread_id, user_id, query, products, industry, persona, status, "
+        "current_node, progress, created_at, key_findings, metrics "
         "FROM analysis_history ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [
         {
-            "thread_id": row[0], "query": row[1], "products": json.loads(row[2]),
-            "persona": row[3], "created_at": row[4], "key_findings": json.loads(row[5]),
-            "metrics": json.loads(row[6]),
+            "thread_id": row[0], "user_id": row[1], "query": row[2],
+            "products": json.loads(row[3]) if row[3] else [],
+            "industry": row[4], "persona": row[5], "status": row[6],
+            "current_node": row[7], "progress": row[8],
+            "created_at": row[9],
+            "key_findings": json.loads(row[10]) if row[10] else [],
+            "metrics": json.loads(row[11]) if row[11] else {},
         }
         for row in rows
     ]

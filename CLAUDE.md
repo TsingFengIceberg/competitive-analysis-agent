@@ -35,12 +35,59 @@ CI-Agent 是一个**竞品分析 Agent 协作系统**，4 个专职 Agent（Coll
 
 **前端必须用 `pnpm build && pnpm start`，严禁 `pnpm dev`。** Turbopack dev 模式吃 1.5-2.5GB 内存，会导致 SSH 断开。
 
+**云盘 IOPS 限制说明**：本机阿里云 ESSD Entry 40G NVMe，**IOPS 硬顶 2,120**（无突发池）。前端 build 产生上万次文件读写会瞬间占满 IOPS，导致系统全局卡顿。
+
+### 2.0 推荐启动方式：restart-light.sh（含 IO 防护）
+
+```bash
+# 日常重启（智能检测前端源码变更，无变化则跳过 build）
+./scripts/restart-light.sh
+
+# 仅重启后端（最常用，0 IO）
+./scripts/restart-light.sh --backend
+
+# 前端代码变更后重建
+./scripts/restart-light.sh --frontend
+
+# 强制重建（即使源码未变）
+./scripts/restart-light.sh --force-build
+
+# 构建时冻结阿里云监控进程省 IOPS
+./scripts/restart-light.sh --frontend --stop-agents
+```
+
+**IO 防护机制**（全部内置于脚本中）：
+
+| 层级 | 手段 | 效果 |
+|------|------|------|
+| 内存构建 | `.next/` 构建在 `/tmp`(tmpfs) 中，完成后一次性拷回 | 构建期间零磁盘 IO |
+| 避免构建 | 检查 `src/` 文件时间戳，无变化跳过 | 减少 90%+ 构建次数 |
+| 消除同步写 | `eatmydata` 拦截所有 `fsync`/`O_SYNC` | write-through 盘上收益最大，写入只到页缓存 |
+| 降低优先级 | `ionice -c 2 -n 7` + `nice -n 10` | 构建不会抢其他进程的 IO/CPU |
+| Python 优化 | `PYTHONDONTWRITEBYTECODE=1` + pycache→`/dev/shm` | Python 不做磁盘写入 |
+
+**进程清理协议**：每次修改代码后重启服务前，`restart-light.sh` 的第一步就是执行 `scripts/cleanup-all.sh`。该脚本会：
+
+1. 释放端口 8001/3000/2026
+2. 杀死所有项目相关的 pnpm/node/uvicorn 进程及其孤儿子进程
+3. 清理 `/tmp/next-build-*` tmpfs 构建残留
+4. 清理 `__pycache__` 和 `/dev/shm/pycache`
+5. 输出端口状态 + IO wait + 内存余量
+
+也可单独运行：
+```bash
+./scripts/cleanup-all.sh              # 完整清理
+./scripts/cleanup-all.sh --dry-run    # 仅预览，不实际 kill
+```
+
+### 2.1 手动启动（备用）
+
 ```bash
 # 1. 启动后端 Gateway（端口 8001）
-cd backend && PYTHONPATH=packages/harness nohup uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 > /tmp/gateway.log 2>&1 &
+cd backend && PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/dev/shm/pycache PYTHONPATH=packages/harness nohup uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 --log-level warning > /tmp/gateway.log 2>&1 &
 
 # 2. 构建前端（仅前端代码变更时需要重新 build）
-cd frontend && pnpm build
+cd frontend && NEXT_PUBLIC_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) PYTHONDONTWRITEBYTECODE=1 eatmydata ionice -c 2 -n 7 nice -n 10 pnpm build
 
 # 3. 启动前端生产模式（端口 2026）
 cd frontend && PORT=2026 nohup pnpm start > /tmp/frontend.log 2>&1 &
@@ -56,7 +103,7 @@ cd frontend && PORT=2026 nohup pnpm start > /tmp/frontend.log 2>&1 &
 - 查看日志：`tail -f /tmp/gateway.log` / `tail -f /tmp/frontend.log`
 - 页面地址：`http://<服务器公网IP>:2026/competition`
 
-### 2.1 密钥管理（强制）
+### 2.2 密钥管理（强制）
 
 **除 `.env` 和 `config.yaml` 外，任何文件不得包含明文 API Key。**
 

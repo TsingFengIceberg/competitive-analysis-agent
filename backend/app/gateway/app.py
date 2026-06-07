@@ -182,6 +182,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Must run AFTER langgraph_runtime so app.state.store is available for thread migration
         await _ensure_admin_user(app)
 
+        # Create competition demo account (§User System)
+        from app.gateway.routers.competition import _ensure_demo_user
+        await _ensure_demo_user()
+
         # Start IM channel service if any channels are configured
         try:
             from app.channels.service import start_channel_service

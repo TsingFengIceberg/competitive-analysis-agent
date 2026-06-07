@@ -14,9 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
@@ -37,6 +36,10 @@ _history_store = BranchSnapshotStore()
 _replay_saver = InMemorySaver()
 _replay_ops = CheckpointOps(_replay_saver)
 
+# ── User-aware storage (§User System) ──
+
+_thread_owners: dict[str, str] = {}  # thread_id → user_id
+
 
 # ── Request / Response Models ──
 
@@ -45,7 +48,8 @@ class AnalyzeRequest(BaseModel):
     """Request body for starting a competitive analysis."""
 
     query: str = Field(..., description="Natural language analysis request")
-    target_products: list[str] = Field(default_factory=list, description="Products to compare. Optional — leave empty for AI auto-detection. e.g. ['Cursor', 'Copilot']")
+    target_products: list[str] = Field(default_factory=list, description="Products to compare. Optional — leave empty for AI auto-detection.")
+    industry: str = Field(default="general", description="Industry selection: 'saas' | 'devtools' | 'ai' | 'database' | 'hardware' | 'gaming' | 'general'")
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
     deep_mode: bool = Field(default=False, description="Enable deep mode pipeline after normal mode")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
@@ -84,6 +88,124 @@ class StreamEvent(BaseModel):
 # Version history is persisted in _history_store (SQLite branch_snapshots).
 
 _store: dict[str, dict] = {}
+_cancel_flags: dict[str, bool] = {}  # thread_id → cancelled (cooperative cancellation)
+
+# ── SSE streaming (§19) ──
+import queue as _queue_mod
+_stream_queues: dict[str, _queue_mod.Queue] = {}
+_event_counters: dict[str, int] = {}  # thread_id → monotonic event id
+_event_buffers: dict[str, list[tuple[int, str]]] = {}  # thread_id → [(id, formatted_sse_line)]
+MAX_BUFFERED_EVENTS = 64
+
+
+def _get_or_create_queue(thread_id: str) -> _queue_mod.Queue:
+    """Get or create a thread-safe queue for a thread's SSE stream."""
+    if thread_id not in _stream_queues:
+        _stream_queues[thread_id] = _queue_mod.Queue(maxsize=256)
+    return _stream_queues[thread_id]
+
+
+def _format_sse(event: str, data, *, event_id: str | None = None) -> str:
+    """Format a single SSE frame matching DF's wire format.
+
+    Field order: event: -> data: -> id: (optional) -> blank line.
+    """
+    payload = json.dumps(data, default=str, ensure_ascii=False)
+    parts = [f"event: {event}", f"data: {payload}"]
+    if event_id:
+        parts.append(f"id: {event_id}")
+    parts.append("")
+    parts.append("")
+    return "\n".join(parts)
+
+
+def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
+    """Emit an SSE event into the thread's stream queue (thread-safe).
+
+    Events are assigned monotonic IDs and buffered for Last-Event-ID replay.
+    Uses _get_or_create_queue so events are buffered even if the SSE client
+    hasn't connected yet — critical for the ~2min product-resolution phase.
+    """
+    try:
+        # Assign monotonic event ID
+        seq = _event_counters.get(thread_id, 0) + 1
+        _event_counters[thread_id] = seq
+        event_id = f"{thread_id[-8:]}-{seq:05d}"
+
+        # Format and buffer
+        frame = _format_sse(event_type, data, event_id=event_id)
+
+        # Circular buffer for replay
+        buf = _event_buffers.get(thread_id)
+        if buf is None:
+            buf = []
+            _event_buffers[thread_id] = buf
+        buf.append((seq, frame))
+        if len(buf) > MAX_BUFFERED_EVENTS:
+            buf.pop(0)
+
+        # Push to live queue
+        q = _get_or_create_queue(thread_id)
+        q.put_nowait(frame)
+    except Exception:
+        pass  # queue full or no listener — non-critical
+
+
+# ── User helpers (§User System) ──
+
+
+async def _get_user_id(request: Request | None = None) -> str:
+    """Get the current user ID from auth context, falling back to 'default'.
+
+    Uses DeerFlow's existing auth middleware. Returns 'default' when:
+    - No request provided (background thread)
+    - User is not authenticated (public access)
+    """
+    if request is None:
+        return "default"
+    try:
+        from app.gateway.deps import get_optional_user_from_request
+
+        user = await get_optional_user_from_request(request)
+        if user and hasattr(user, "id"):
+            return str(user.id)
+    except Exception:
+        pass
+    return "default"
+
+
+async def _ensure_demo_user() -> None:
+    """Create a demo account if it doesn't exist (`demo@deerflow.demo` / `demo1234`).
+
+    For competition submission: judges can log in with demo@deerflow.demo / demo1234
+    and see pre-populated analysis history. Also used for auto-login on the
+    competition page.
+    """
+    try:
+        from app.gateway.deps import get_local_provider
+
+        provider = get_local_provider()
+        existing = await provider.get_user_by_email("demo@deerflow.demo")
+        if existing:
+            logger.info("Demo user already exists")
+            return
+        await provider.create_user("demo@deerflow.demo", "demo1234", system_role="user")
+        logger.info("Created demo user: demo@deerflow.demo / demo1234")
+    except Exception:
+        logger.warning("Demo user creation skipped (auth DB may not be ready)")
+
+
+def _associate_thread(thread_id: str, user_id: str) -> None:
+    """Record which user owns a thread."""
+    if user_id and user_id != "default":
+        _thread_owners[thread_id] = user_id
+
+
+def _get_user_threads(user_id: str) -> list[str]:
+    """Return all thread_ids belonging to a user."""
+    if user_id == "default":
+        return list(_store.keys())
+    return [tid for tid, uid in _thread_owners.items() if uid == user_id]
 
 
 def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
@@ -536,7 +658,7 @@ def _parse_json_safe(raw: str) -> dict | list | None:
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeResponse:
     """Start a competitive analysis. Returns thread_id immediately.
 
     Product resolution (LLM + search, ~2min) runs in background thread,
@@ -547,6 +669,8 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     from datetime import UTC, datetime
 
     thread_id = f"comp-{uuid.uuid4().hex[:12]}"
+    user_id = await _get_user_id(fastapi_request)
+    _associate_thread(thread_id, user_id)
 
     # Store entry immediately — frontend can start polling right away
     _store[thread_id] = {
@@ -556,6 +680,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             "user_request": request.query,
             "target_products": request.target_products or [],
             "persona": request.persona,
+            "industry": request.industry,
             "deep_mode": request.deep_mode,
             "collected_data": [],
             "context_report": request.context_report,
@@ -565,6 +690,14 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         "products": [],
     }
 
+    # Persist to DB on creation (§18)
+    from deerflow.competition.db import upsert_analysis
+    upsert_analysis(
+        thread_id=thread_id, status="running", user_id=user_id,
+        query=request.query, products=request.target_products or [],
+        industry=request.industry, persona=request.persona,
+    )
+
     # Resolve products + run graph entirely in background thread
     # (sync LLM + search calls take ~2min and would block the event loop)
     asyncio.get_event_loop().run_in_executor(
@@ -572,6 +705,51 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     )
 
     return AnalyzeResponse(thread_id=thread_id, status="running")
+
+
+@router.post("/{thread_id}/cancel")
+async def cancel_analysis(thread_id: str) -> dict:
+    """Cancel a running analysis. Data is preserved with status='interrupted'.
+
+    Uses cooperative cancellation — the background thread checks the flag
+    at node boundaries and exits gracefully, saving current state to DB.
+    """
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    if entry.get("status") != "running":
+        return {"thread_id": thread_id, "status": entry["status"], "message": "Analysis is not running"}
+
+    # Set cooperative cancellation flag — the worker thread checks this
+    _cancel_flags[thread_id] = True
+
+    # Immediately mark as interrupted in the store so the frontend sees the
+    # status change right away (polling every 2s). The background thread will
+    # also call _finalize_cancelled when it reaches a check point, which is
+    # idempotent.
+    _store[thread_id]["status"] = "interrupted"
+    _store[thread_id]["state"]["error"] = "用户手动终止分析"
+    try:
+        from deerflow.competition.db import upsert_analysis
+        upsert_analysis(
+            thread_id=thread_id, status="interrupted",
+            user_id=_thread_owners.get(thread_id, "default"),
+            query=_store[thread_id].get("query", ""),
+            products=_store[thread_id].get("products", []),
+        )
+    except Exception:
+        pass
+
+    # Notify SSE clients
+    q = _stream_queues.get(thread_id)
+    if q:
+        try:
+            q.put_nowait(_format_sse("end", {"status": "interrupted", "message": "分析已终止"}, event_id=f"{thread_id[-8:]}-cancel"))
+        except Exception:
+            pass
+
+    return {"thread_id": thread_id, "status": "cancelling", "message": "Cancellation requested"}
 
 
 @router.get("/report/{thread_id}", response_model=ReportResponse)
@@ -919,14 +1097,21 @@ async def export_report(thread_id: str, format: str = "md"):
 
 
 @router.get("/stream/{thread_id}")
-async def stream(thread_id: str):
-    """SSE stream of graph execution events."""
+async def stream(thread_id: str, fastapi_request: Request):
+    """SSE stream of graph execution events.
+
+    Supports Last-Event-ID header for reconnection (DF-compatible).
+    Events are formatted with event:, data:, and id: fields matching
+    the DF chat SSE wire format.
+    """
     entry = _store.get(thread_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
+    last_event_id = fastapi_request.headers.get("Last-Event-ID")
+
     return StreamingResponse(
-        _stream_events(thread_id),
+        _stream_events_sync(thread_id, last_event_id=last_event_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -937,10 +1122,16 @@ async def stream(thread_id: str):
 
 
 @router.get("/history")
-async def list_history(limit: int = Query(default=10, le=50)):
-    """List recent analysis history (from runtime store)."""
+async def list_history(limit: int = Query(default=10, le=50), fastapi_request: Request = None):
+    """List recent analysis history, filtered by current user if authenticated."""
+    user_id = await _get_user_id(fastapi_request) if fastapi_request else "default"
     history = []
-    for tid, entry in list(_store.items())[-limit:]:
+    for tid, entry in list(_store.items()):
+        # Filter by user if authenticated
+        if user_id != "default":
+            owner = _thread_owners.get(tid, "default")
+            if owner != user_id:
+                continue
         history.append({
             "thread_id": tid,
             "query": entry.get("query", ""),
@@ -949,7 +1140,22 @@ async def list_history(limit: int = Query(default=10, le=50)):
             "created_at": entry.get("created_at", ""),
             "versions": len(_history_store.list_by_thread(tid)),
         })
-    return {"history": history, "total": len(history)}
+    # Return most recent first, limited
+    history.sort(key=lambda h: h.get("created_at", ""), reverse=True)
+    history = history[:limit]
+    return {"history": history, "total": len(history), "user_id": user_id}
+
+
+@router.get("/me")
+async def current_user(fastapi_request: Request):
+    """Return current user info for the frontend auth state."""
+    user_id = await _get_user_id(fastapi_request)
+    thread_count = len(_get_user_threads(user_id))
+    return {
+        "user_id": user_id,
+        "authenticated": user_id != "default",
+        "thread_count": thread_count,
+    }
 
 
 @router.get("/db-history")
@@ -1063,6 +1269,25 @@ def _add_token_entry(thread_id: str, label: str) -> None:
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
 
 
+def _finalize_cancelled(thread_id: str) -> None:
+    """Mark an analysis as interrupted and persist current state to DB."""
+    if thread_id not in _store:
+        return
+    _store[thread_id]["status"] = "interrupted"
+    _store[thread_id]["state"]["error"] = "用户手动终止分析"
+    try:
+        from deerflow.competition.db import upsert_analysis
+        upsert_analysis(
+            thread_id=thread_id, status="interrupted",
+            user_id=_thread_owners.get(thread_id, "default"),
+            query=_store[thread_id].get("query", ""),
+            products=_store[thread_id].get("products", []),
+        )
+    except Exception:
+        pass
+    _emit_event(thread_id, "end", {"status": "interrupted", "message": "分析已终止"})
+
+
 def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str]) -> None:
     """ProductResolver (pre-graph) → Orchestrator (graph entry) `[v4 Plan D]`.
 
@@ -1072,12 +1297,32 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
 
     Runs in background thread because LLM + search calls are synchronous and
     take ~2min total, which would block the event loop.
+
+    Checks _cancel_flags at key points for cooperative cancellation.
     """
     import logging
     _log = logging.getLogger(__name__)
 
+    def _cancelled() -> bool:
+        return _cancel_flags.pop(thread_id, False)
+
+    # Set cancel checker so LLM calls during product resolution can be interrupted
+    from deerflow.competition.executor import set_cancel_checker, clear_cancel_checker
+    set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
+
     try:
         # ── Phase 1: ProductResolver (pre-graph) ──
+        if _cancelled():
+            clear_cancel_checker()
+            _finalize_cancelled(thread_id)
+            return
+        # ── Phase 1: ProductResolver (pre-graph) ──
+        _emit_event(thread_id, "progress", {
+            "phase": "resolving",
+            "message": "正在解析竞品名称...",
+            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+        })
+
         products: list[str] = []
 
         if explicit_products:
@@ -1113,7 +1358,16 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
                 _store[thread_id]["state"]["error"] = (
                     "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
                 )
+            _emit_event(thread_id, "error", {"error": "无法解析竞品名称", "status": "failed"})
             return
+
+        # Emit products resolved event
+        _emit_event(thread_id, "progress", {
+            "phase": "resolved",
+            "message": f"竞品解析完成: {', '.join(products)}",
+            "products": products,
+            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+        })
 
         # Update store with verified products
         if thread_id in _store:
@@ -1122,7 +1376,13 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             _store[thread_id]["state"]["target_products"] = products
             _store[thread_id]["state"]["complexity"] = "standard"
 
+        if _cancelled():
+            clear_cancel_checker()
+            _finalize_cancelled(thread_id)
+            return
+
         # ── Phase 2: Graph (Orchestrator → Collector → ...) ──
+        clear_cancel_checker()  # _run_graph_sync sets its own
         _run_graph_sync(thread_id)
 
     except Exception as e:
@@ -1169,35 +1429,136 @@ def _run_graph_sync(thread_id: str) -> None:
         graph = build_competition_graph(checkpointer=_replay_saver)
         initial_state = CompetitionState(**entry["state"])
 
-        # Stream execution — updates store on each node completion
+        # ── Set up SSE streaming callback (§19) ──
+        # Each LLM call inside nodes will stream token chunks to the frontend
+        # via this callback, matching DF chat's messages-tuple SSE format.
+        from deerflow.competition.executor import set_stream_callback, clear_stream_callback
+        from deerflow.competition.executor import set_cancel_checker, clear_cancel_checker
+
+        _chunk_seq = 0
+
+        def _stream_chunk(agent_name: str, chunk_text: str) -> None:
+            nonlocal _chunk_seq
+            _chunk_seq += 1
+            _emit_event(thread_id, "messages-tuple", [{
+                "type": "AIMessageChunk",
+                "name": agent_name or "analysis",
+                "content": chunk_text,
+                "id": f"comp-{thread_id[-8:]}-chunk-{_chunk_seq}",
+            }])
+
+        _current_agent: list = [""]
+
+        # Agent display names for the thinking progress events
+        _AGENT_LABELS = {
+            "Orchestrator": "解析意图", "Collector": "信息采集",
+            "Analyst": "对比分析", "Reviewer": "质量审查",
+            "Writer": "报告生成",
+        }
+
+        def _stream_chunk_labeled(agent_name: str, chunk_text: str) -> None:
+            nonlocal _chunk_seq
+            # Thinking sentinel: emitted before streaming starts for thinking models.
+            # Show a progress indicator so the user knows the agent is working.
+            if chunk_text == "\x00THINK\x00":
+                label = _AGENT_LABELS.get(agent_name, agent_name or "分析")
+                _emit_event(thread_id, "progress", {"message": f"{label} 正在深度思考..."})
+                return
+            if agent_name and agent_name != _current_agent[0]:
+                _current_agent[0] = agent_name
+                # Emit agent label as a system chunk
+                _emit_event(thread_id, "messages-tuple", [{
+                    "type": "AIMessageChunk",
+                    "name": "system",
+                    "content": f"\n\n**[{agent_name}]** ",
+                    "id": f"comp-{thread_id[-8:]}-label-{_chunk_seq}",
+                }])
+            _stream_chunk(agent_name, chunk_text)
+
+        set_stream_callback(_stream_chunk_labeled)
+        set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
+
+        # Stream execution — updates store + DB on each node completion (§18)
         event_num = 0
+        prev_state: dict = {}
+        _NODE_LABELS = {
+            "orchestrator": "解析意图", "collector": "信息采集",
+            "analyst": "对比分析", "reviewer": "质量审查",
+            "writer": "报告生成", "hitl_gate": "等待审批",
+        }
         for event in graph.stream(initial_state, {"configurable": {"thread_id": thread_id}}, stream_mode=["values"]):
             event_num += 1
-            # LangGraph stream returns (mode, data) tuple or dict
+
+            # Cooperative cancellation — check flag before processing each node boundary
+            if _cancel_flags.pop(thread_id, False):
+                _finalize_cancelled(thread_id)
+                clear_stream_callback()
+                clear_cancel_checker()
+                return
+
             if isinstance(event, tuple):
-                update = event[-1]  # last element is always the data
+                update = event[-1]
             else:
                 update = event
             if isinstance(update, dict):
                 _store[thread_id]["state"] = update
-                # Log key fields present in this event to trace pipeline
+
+                # Detect which node just completed by diffing against previous state
+                current_node = None
+                progress = None
+                if update.get("orchestration_result") and not prev_state.get("orchestration_result"):
+                    current_node = "orchestrator"
+                elif update.get("collection_summary") and not prev_state.get("collection_summary"):
+                    current_node = "collector"
+                    progress = f"已采集 {update['collection_summary'].get('total_data_points', 0)} 条数据"
+                elif update.get("analysis_result") and not prev_state.get("analysis_result"):
+                    current_node = "analyst"; progress = "对比矩阵+SWOT已生成"
+                elif update.get("review_verdict") and not prev_state.get("review_verdict"):
+                    current_node = "reviewer"; progress = "质量审查完成"
+                elif update.get("report_data") and not prev_state.get("report_data"):
+                    current_node = "writer"; progress = "报告已生成"
+                prev_state = update
+
+                if current_node:
+                    from deerflow.competition.db import upsert_analysis
+                    upsert_analysis(
+                        thread_id=thread_id, status="running",
+                        current_node=current_node, progress=progress or _NODE_LABELS.get(current_node, ""),
+                    )
+                    # SSE event (§19)
+                    _emit_event(thread_id, "node_end", {
+                        "node": current_node,
+                        "status": "done",
+                        "progress": progress or _NODE_LABELS.get(current_node, ""),
+                        "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+                    })
+
                 flags = []
-                if update.get("collection_summary"):
-                    flags.append("collected")
-                if update.get("analysis_result"):
-                    flags.append("analyzed")
-                if update.get("review_verdict"):
-                    flags.append("reviewed")
-                if update.get("report_data"):
-                    flags.append("written")
-                if update.get("hitl_decision"):
-                    flags.append("hitl_decided")
+                if current_node:
+                    flags.append(current_node)
                 if update.get("error"):
                     flags.append(f"error={update['error'][:50]}")
                 logger.info("Analysis %s event#%d: %s", thread_id[:12], event_num, " → ".join(flags) if flags else "init")
 
+        # Emit completion
+        _emit_event(thread_id, "end", {"status": "completed"})
+        clear_stream_callback()
+        clear_cancel_checker()
+
         _add_token_entry(thread_id, "初始分析")
         _store[thread_id]["status"] = "completed"
+
+        # Persist completion to DB (§18)
+        from deerflow.competition.db import upsert_analysis
+        state = _store[thread_id]["state"]
+        rd = state.get("report_data")
+        upsert_analysis(
+            thread_id=thread_id, status="completed",
+            current_node="", progress="分析完成",
+            report_data=rd.model_dump() if hasattr(rd, "model_dump") else rd,
+            metrics=(rd.get("metrics") if isinstance(rd, dict) else None),
+            token_usage=_store[thread_id].get("token_usage", []),
+        )
 
         # Record initial version in history store
         if _current_db_version(thread_id) is None and _store[thread_id].get("state", {}).get("report_data"):
@@ -1209,39 +1570,77 @@ def _run_graph_sync(thread_id: str) -> None:
 
     except Exception as e:
         logger.exception("Analysis %s failed: %s", thread_id, e)
+        clear_stream_callback()
+        clear_cancel_checker()
+        _emit_event(thread_id, "error", {"error": str(e)[:200], "status": "failed"})
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
+            from deerflow.competition.db import upsert_analysis
+            upsert_analysis(thread_id=thread_id, status="failed", progress=f"失败: {str(e)[:100]}")
 
 
-async def _stream_events(thread_id: str) -> AsyncGenerator[str, None]:
-    """Generate SSE events for a running analysis."""
-    last_status = "running"
+def _stream_events_sync(thread_id: str, last_event_id: str | None = None):
+    """SSE event stream — sync generator matching DF's SSE wire format.
 
-    while last_status == "running":
-        entry = _store.get(thread_id)
-        if entry is None:
-            yield f"event: error\ndata: {json.dumps({'error': 'Thread not found'})}\n\n"
-            return
+    - Uses pre-formatted SSE frames from _emit_event (event: + data: + id:)
+    - Supports Last-Event-ID replay for reconnection
+    - Heartbeat via SSE comment lines (: heartbeat) every 15s
+    - No hard timeout — stays alive as long as the analysis is running
+    """
+    import time as _time
 
-        current_status = entry.get("status", "unknown")
-        if current_status != last_status:
-            last_status = current_status
+    q = _get_or_create_queue(thread_id)
 
-        state = entry.get("state", {})
-        event_data = {
+    # ── Replay buffered events after Last-Event-ID ──
+    if last_event_id:
+        buf = _event_buffers.get(thread_id, [])
+        replay_started = False
+        for seq, frame in buf:
+            if not replay_started:
+                if f"id: {last_event_id}" in frame:
+                    replay_started = True
+                continue
+            yield frame
+        if replay_started:
+            pass  # Client is catching up — continue to live stream
+
+    # ── Initial metadata + state ──
+    entry = _store.get(thread_id)
+    if entry:
+        init_id = f"{thread_id[-8:]}-init"
+        yield _format_sse("metadata", {
+            "run_id": thread_id,
             "thread_id": thread_id,
-            "status": current_status,
-            "collected_count": len(state.get("collected_data") or []),
-            "review_round": state.get("review_round", 0),
-            "has_analysis": state.get("analysis_result") is not None,
-            "has_report": state.get("report_data") is not None,
-        }
+            "query": entry.get("query", ""),
+            "products": entry.get("products", []),
+        }, event_id=init_id)
+        yield _format_sse("values", {
+            "status": entry.get("status", "unknown"),
+            "thread_id": thread_id,
+        }, event_id=f"{thread_id[-8:]}-values")
+    else:
+        yield _format_sse("error", {"error": "Thread not found"}, event_id=f"{thread_id[-8:]}-err")
+        return
 
-        yield f"event: state_update\ndata: {json.dumps(event_data, default=str)}\n\n"
+    # ── Live event loop ──
+    last_heartbeat = _time.monotonic()
+    heartbeat_interval = 15
 
-        if current_status in ("completed", "failed"):
-            yield f"event: end\ndata: {json.dumps({'status': current_status})}\n\n"
-            return
+    while True:
+        try:
+            frame = q.get(timeout=heartbeat_interval)
+            yield frame
+            last_heartbeat = _time.monotonic()
 
-        await asyncio.sleep(1.0)  # Poll every second
+            # Detect end/error to terminate stream
+            if 'event: error' in frame or 'event: end' in frame:
+                return
+
+        except _queue_mod.Empty:
+            # No event — send SSE comment heartbeat (same format as DF)
+            elapsed = _time.monotonic() - last_heartbeat
+            if elapsed >= 300:  # 5 min of total idle → terminate
+                yield _format_sse("end", {"status": "timeout"}, event_id=f"{thread_id[-8:]}-timeout")
+                return
+            yield ": heartbeat\n\n"

@@ -79,6 +79,12 @@ def writer_node(state: dict) -> dict:
     schema_mode = _get_schema_mode(state)
     sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
 
+    # Industry fixed sections (Layer 2 of §3.20)
+    industry_sections = _build_industry_sections(state, analysis)
+    if industry_sections:
+        sections.extend(industry_sections)
+        logger.info("Added %d industry sections for '%s'", len(industry_sections), state.get("industry", "general"))
+
     # Generate executive summary via LLM for all actions (not just rewrite)
     try:
         _llm_generate_section(sections, "sec-executive-summary", analysis, target_products, persona)
@@ -278,9 +284,84 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
         "source_ids": [], "chart_path": None, "subsections": None,
     })
 
-    # 9. Dynamic blocks — domain-adaptive analysis `[v4 动态 Schema]`
-    dynamic_blocks = analysis.get("dynamic_blocks") or []
-    if dynamic_blocks:
+    # 8.5 Industry fixed sections (Layer 2 of §3.20)
+    from deerflow.competition.industry import get_industry_profile  # noqa: E402
+    industry_id = persona_state.get("industry", "general") if 'persona_state' in dir() else "general"
+    # Read industry from the state dict passed through the node
+    _industry = "general"
+    # We need to reach the state from here — use the parameters already available
+    # Actually, let's just read from the persona/industry state
+    # The industry comes from state dict, so we need to pass it through _build_sections
+    # For now, the industry sections are appended in writer_node after _build_sections
+
+    return sections
+
+
+def _build_industry_sections(state: dict, analysis: dict) -> list[dict]:
+    """Generate Layer 2 industry-specific fixed sections (§3.20)."""
+    from deerflow.competition.industry import get_industry_profile
+
+    industry = state.get("industry", "general")
+    if industry == "general":
+        return []
+
+    profile = get_industry_profile(industry)
+    fixed_ids = profile.get("fixed_sections", [])
+    titles = profile.get("section_titles", {})
+    sections: list[dict] = []
+
+    for i, sec_id in enumerate(fixed_ids):
+        title = titles.get(sec_id, sec_id)
+        bias = profile.get("prompt_bias", "")
+
+        # Generate content via LLM based on industry-specific prompt
+        content = _generate_industry_section_content(state, analysis, sec_id, bias)
+        sections.append({
+            "id": sec_id,
+            "title": title,
+            "content": content,
+            "content_type": "text",
+            "source_ids": [],
+            "chart_path": None,
+            "subsections": None,
+        })
+
+    return sections
+
+
+def _generate_industry_section_content(state: dict, analysis: dict, section_id: str, prompt_bias: str) -> str:
+    """Generate an industry-specific section via lightweight LLM call."""
+    try:
+        from deerflow.competition.executor import execute_agent
+
+        products = state.get("target_products", [])
+        user_request = state.get("user_request", "")
+
+        data_summary = ""
+        collected = state.get("collected_data") or []
+        for dp in collected[:10]:
+            if isinstance(dp, dict):
+                data_summary += f"- {dp.get('product', '?')} | {dp.get('category', '?')} | {dp.get('label', '?')} | {dp.get('value', '?')}\n"
+
+        task = (
+            f"Query: {user_request}\n"
+            f"Products: {', '.join(products) if products else 'unknown'}\n"
+            f"Industry focus: {prompt_bias}\n\n"
+            f"Collected data:\n{data_summary}\n\n"
+            f"Generate a concise analysis section (3-5 paragraphs) for the industry-specific "
+            f"section '{section_id}'. Focus on quantitative comparisons and cite data points. "
+            f"Output markdown text only, no JSON."
+        )
+        system = (
+            "You are a competitive analysis writer specializing in industry-specific analysis. "
+            "Write concise, data-driven sections. Cite specific data points."
+        )
+
+        raw, _ = execute_agent(system, task, temperature=0.3, max_tokens=600, agent_name="IndustrySectionWriter")
+        return raw.strip() if raw else f"_Industry section '{section_id}' — insufficient data to generate._"
+    except Exception:
+        logger.exception("Industry section generation failed for %s", section_id)
+        return f"_Industry section '{section_id}' — generation failed._"
         block_sections = _render_dynamic_blocks(dynamic_blocks, _src_ref)
         sections.extend(block_sections)
 

@@ -64,5 +64,8 @@ config.yaml.bak
 .gstack/
 .worktrees
 
+# Temporary workaround scripts (specific to low-IOPS Alibaba Cloud instance)
+scripts/restart-light.sh
+
 /#DEMO
 TEMP_IMG/
