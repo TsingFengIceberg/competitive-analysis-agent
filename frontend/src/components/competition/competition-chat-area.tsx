@@ -1,21 +1,25 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
 import { MessageSquare, ChevronDown, ChevronRight } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
 
 import type { ReportData, TokenEntry } from "@/components/competition/api-client";
+
 import CompetitionReportCard from "./competition-report-card";
 
-const NODE_LABELS: Record<string, string> = {
-  orchestrator: "解析意图", collector: "信息采集",
-  analyst: "对比分析", reviewer: "质量审查",
-  writer: "报告生成", hitl_gate: "等待审批",
-};
+// ── Phase state (matches page.tsx) ──
 
-const NODE_ICONS: Record<string, string> = {
-  orchestrator: "🎯", collector: "🔍", analyst: "📊",
-  reviewer: "✅", writer: "📝", hitl_gate: "👤",
-};
+interface PhaseState {
+  key: string;
+  label: string;
+  icon: string;
+  status: "running" | "completed";
+  startTime: number;
+  endTime: number | null;
+  tokens: number;
+  content: Record<string, string>;
+  details: Record<string, unknown>[];
+}
 
 const AGENT_DISPLAY: Record<string, string> = {
   Writer: "报告生成", Orchestrator: "解析意图",
@@ -29,7 +33,7 @@ interface UserMessage {
 }
 
 interface Props {
-  events: { type: string; data: Record<string, unknown> }[];
+  phases: PhaseState[];
   streamingContent: Record<string, string>;
   currentAgent: string | null;
   status: string;
@@ -40,6 +44,7 @@ interface Props {
   hitlVisible: boolean;
   hitlSubmitting: boolean;
   tokenUsage: TokenEntry[];
+  tick: number; // live-timer trigger
   onExpandReport: () => void;
   onApprove: () => void;
   onReanalyze: (action: string, comment: string) => void;
@@ -63,14 +68,22 @@ function totalTokens(usage: TokenEntry[]): number {
 }
 
 export default function CompetitionChatArea({
-  events, streamingContent, currentAgent, status, userMessages, isWelcome,
-  displayReport, threadId, hitlVisible, hitlSubmitting, tokenUsage,
+  phases, streamingContent, currentAgent, status, userMessages, isWelcome,
+  displayReport, threadId, hitlVisible, hitlSubmitting, tokenUsage, tick,
   onExpandReport, onApprove, onReanalyze, onExportMD, onExportJSON,
 }: Props) {
   const hasStreaming = Object.keys(streamingContent).length > 0;
   const isRunning = status === "running";
   const showReportCard = displayReport && !isRunning;
   const runningTokens = totalTokens(tokenUsage);
+
+  function totalElapsed(): number {
+    if (phases.length === 0) return 0;
+    const start = phases[0]!.startTime;
+    const lastEnd = phases[phases.length - 1]!.endTime;
+    if (!lastEnd) return Math.round((Date.now() - start) / 1000);
+    return Math.round((lastEnd - start) / 1000);
+  }
 
   // Scroll: track user position, auto-scroll only when at bottom
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -91,13 +104,13 @@ export default function CompetitionChatArea({
     if (el && userAtBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [events, streamingContent]);
+  }, [phases, streamingContent]);
 
   return (
     <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
       <div className="flex flex-col gap-5 p-4">
         {/* Welcome empty state */}
-        {isWelcome && userMessages.length === 0 && events.length === 0 && !hasStreaming && (
+        {isWelcome && userMessages.length === 0 && phases.length === 0 && !hasStreaming && (
           <div className="flex size-full flex-col items-center justify-center gap-3 py-32 text-center">
             <div className="text-muted-foreground"><MessageSquare className="size-8" /></div>
             <h3 className="text-sm font-medium">竞品分析</h3>
@@ -115,69 +128,10 @@ export default function CompetitionChatArea({
           </div>
         ))}
 
-        {/* SSE events */}
-        {events.map((event, i) => {
-          const elapsed = (event.data._elapsed as number) ?? 0;
-
-          if (event.type === "progress") {
-            const hasDetails = !!(event.data.phase || event.data.products || event.data.candidates || event.data.verified);
-            return (
-              <CollapsibleMessage key={i} label={event.data.message as string} elapsed={elapsed} tokens={runningTokens}>
-                {hasDetails ? (
-                  <div className="flex flex-col gap-1">
-                    {event.data.phase ? <span className="text-xs text-muted-foreground">阶段: {event.data.phase as string}</span> : null}
-                    {event.data.round ? <span className="text-xs text-muted-foreground">轮次: {String(event.data.round)}</span> : null}
-                    {event.data.candidates ? <span className="text-xs text-muted-foreground">候选: {(event.data.candidates as string[]).join(", ")}</span> : null}
-                    {event.data.verified ? <span className="text-xs text-muted-foreground">验证: {(event.data.verified as string[]).join(", ")}</span> : null}
-                    {event.data.products ? <span className="text-xs text-muted-foreground">竞品: {(event.data.products as string[]).join(", ")}</span> : null}
-                  </div>
-                ) : null}
-              </CollapsibleMessage>
-            );
-          }
-          if (event.type === "node_end") {
-            const node = event.data.node as string;
-            const label = NODE_LABELS[node] || node;
-            const icon = NODE_ICONS[node] || "⚙️";
-            return (
-              <CollapsibleMessage key={i} icon={icon} label={label} elapsed={elapsed} isCompleted tokens={runningTokens}>
-                <span className="text-xs text-muted-foreground">节点: {node}</span>
-              </CollapsibleMessage>
-            );
-          }
-          if (event.type === "messages") {
-            const content = event.data.content as Record<string, string>;
-            return (
-              <div key={i} className="flex flex-col gap-4">
-                {Object.entries(content).map(([name, text]) => (
-                  <CollapsibleMessage key={name} label={AGENT_DISPLAY[name] || name} elapsed={elapsed} tokens={runningTokens}>
-                    <div className="text-sm whitespace-pre-wrap leading-relaxed">{text.slice(0, 600)}{text.length > 600 && "…"}</div>
-                  </CollapsibleMessage>
-                ))}
-              </div>
-            );
-          }
-          if (event.type === "end") {
-            return (
-              <div key={i} className="flex justify-center py-1">
-                <span className="text-xs text-muted-foreground font-medium">
-                  分析完成 · 耗时 {fmtTime(elapsed)}
-                  {runningTokens > 0 && <> · Tokens: {fmtTokens(runningTokens)}</>}
-                </span>
-              </div>
-            );
-          }
-          if (event.type === "error") {
-            return (
-              <div key={i} className="flex flex-col items-start gap-1">
-                <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-2.5 max-w-[85%]">
-                  <span className="text-sm text-red-700">❌ {(event.data.error as string)?.slice(0, 150)}</span>
-                </div>
-              </div>
-            );
-          }
-          return null;
-        })}
+        {/* Phases — merged progress + streaming + node_end per phase */}
+        {phases.map((phase) => (
+          <PhaseMessage key={phase.key} phase={phase} tick={tick} />
+        ))}
 
         {/* Live streaming */}
         {hasStreaming && (
@@ -207,7 +161,7 @@ export default function CompetitionChatArea({
         )}
 
         {/* Empty running */}
-        {isRunning && events.length === 0 && !hasStreaming && (
+        {isRunning && phases.length === 0 && !hasStreaming && (
           <div className="flex justify-center py-8">
             <span className="text-sm text-muted-foreground animate-pulse">分析启动中…</span>
           </div>
@@ -225,10 +179,20 @@ export default function CompetitionChatArea({
           </div>
         )}
 
+        {/* End-of-analysis summary bar */}
+        {!isRunning && phases.length > 0 && (
+          <div className="flex justify-center py-1">
+            <span className="text-xs text-muted-foreground font-medium">
+              分析完成 · 耗时 {fmtTime(totalElapsed())}
+              {runningTokens > 0 && <> · Tokens: {fmtTokens(runningTokens)}</>}
+            </span>
+          </div>
+        )}
+
         {/* Report card */}
         {showReportCard && (
           <CompetitionReportCard
-            displayReport={displayReport!} threadId={threadId}
+            displayReport={displayReport} threadId={threadId}
             hitlVisible={hitlVisible} hitlSubmitting={hitlSubmitting} status={status}
             onExpand={onExpandReport} onApprove={onApprove} onReanalyze={onReanalyze}
             onExportMD={onExportMD} onExportJSON={onExportJSON}
@@ -239,33 +203,72 @@ export default function CompetitionChatArea({
   );
 }
 
-function CollapsibleMessage({
-  icon, label, elapsed, isCompleted, tokens, children,
-}: {
-  icon?: string;
-  label: string;
-  elapsed?: number;
-  isCompleted?: boolean;
-  tokens?: number;
-  children: React.ReactNode;
-}) {
+function PhaseMessage({ phase, tick: _tick }: { phase: PhaseState; tick: number }) {
   const [open, setOpen] = useState(false);
+  const isCompleted = phase.status === "completed";
+  const now = Date.now();
+  const elapsed = isCompleted
+    ? Math.round(((phase.endTime ?? phase.startTime) - phase.startTime) / 1000)
+    : Math.round((now - phase.startTime) / 1000);
+
+  const hasContent = Object.keys(phase.content).length > 0 || phase.details.length > 0;
+
   return (
     <div className="flex flex-col items-start gap-1">
       <div className="rounded-2xl bg-muted px-4 py-2.5 max-w-[85%]">
-        <button onClick={() => setOpen(!open)} className="flex items-center gap-2 w-full text-left">
-          {open ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
-          {icon && <span className="text-xs">{icon}</span>}
-          <span className="text-xs font-medium">{label}</span>
-          {isCompleted && <span className="text-[10px] text-green-600">✓</span>}
-          {tokens != null && tokens > 0 && (
-            <span className="text-[10px] text-muted-foreground ml-auto">{fmtTokens(tokens)} tok</span>
+        <div className="flex items-center gap-2">
+          {/* Status indicator */}
+          {isCompleted ? (
+            <span className="text-[10px] text-green-600 shrink-0">✓</span>
+          ) : (
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
           )}
-          {elapsed != null && elapsed > 0 && (
-            <span className="text-[10px] text-muted-foreground">{fmtTime(elapsed)}</span>
+          {/* Icon + Label */}
+          <span className="text-xs shrink-0">{phase.icon}</span>
+          <span className="text-xs font-medium">
+            {isCompleted ? phase.label : `正在${phase.label}`}
+          </span>
+          {/* Token count */}
+          {phase.tokens > 0 && (
+            <span className="text-[10px] text-muted-foreground">{fmtTokens(phase.tokens)} tok</span>
           )}
-        </button>
-        {open && <div className="mt-2 pt-2 border-t border-border/40">{children}</div>}
+          {/* Elapsed time */}
+          <span className="text-[10px] text-muted-foreground">{fmtTime(elapsed)}</span>
+          {/* Expand chevron */}
+          {hasContent && (
+            <button onClick={() => setOpen(!open)} className="ml-auto shrink-0">
+              {open
+                ? <ChevronDown className="size-3.5 text-muted-foreground" />
+                : <ChevronRight className="size-3.5 text-muted-foreground" />
+              }
+            </button>
+          )}
+        </div>
+        {/* Expanded details */}
+        {open && hasContent && (
+          <div className="mt-2 pt-2 border-t border-border/40 space-y-2">
+            {/* Progress details */}
+            {phase.details.map((d, i) => {
+              const msg = d.message as string | undefined;
+              if (!msg) return null;
+              return (
+                <div key={i} className="text-xs text-muted-foreground">
+                  {msg}
+                  {d.candidates ? <div className="mt-0.5 ml-2">候选: {(d.candidates as string[]).join(", ")}</div> : null}
+                  {d.verified ? <div className="mt-0.5 ml-2">验证通过: {(d.verified as string[]).join(", ")}</div> : null}
+                  {d.products ? <div className="mt-0.5 ml-2">竞品: {(d.products as string[]).join(", ")}</div> : null}
+                </div>
+              );
+            })}
+            {/* Streaming content */}
+            {Object.entries(phase.content).filter(([, text]) => text.trim()).map(([name, text]) => (
+              <div key={name} className="text-sm whitespace-pre-wrap leading-relaxed">
+                <div className="text-[10px] text-muted-foreground mb-0.5 font-medium">{name}</div>
+                {text.slice(0, 600)}{text.length > 600 && "…"}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

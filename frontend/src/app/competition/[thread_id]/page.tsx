@@ -1,18 +1,70 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
+import { useState, useCallback, useEffect, useRef } from "react";
 
+import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { Persona, ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
 import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
 import CompetitionReportPanel from "@/components/competition/competition-report-panel";
-import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
+
+// ── Phase-based SSE event merging ──
+// Merges progress → messages-tuple → node_end into a single evolving PhaseMessage.
+
+interface PhaseState {
+  key: string;
+  label: string;
+  icon: string;
+  status: "running" | "completed";
+  startTime: number;
+  endTime: number | null;
+  tokens: number;
+  content: Record<string, string>;   // agent → text
+  details: Record<string, unknown>[]; // progress event payloads
+}
+
+const PHASE_INFO: Record<string, { label: string; icon: string }> = {
+  resolving:  { label: "竞品解析", icon: "🔎" },
+  orchestrator: { label: "解析意图", icon: "🎯" },
+  collector:  { label: "信息采集", icon: "🔍" },
+  analyst:    { label: "对比分析", icon: "📊" },
+  reviewer:   { label: "质量审查", icon: "✅" },
+  writer:     { label: "报告生成", icon: "📝" },
+  hitl_gate:  { label: "等待审批", icon: "👤" },
+};
+
+// Map agent name (from messages-tuple chunks) → phase key
+const AGENT_TO_PHASE: Record<string, string> = {
+  Orchestrator: "orchestrator",
+  Collector: "collector",
+  Analyst: "analyst",
+  Reviewer: "reviewer",
+  Writer: "writer",
+};
+
+// Map progress message prefix → phase key (for agent "thinking" sentinel events)
+const PROGRESS_PREFIX_PHASE: [string, string][] = [
+  ["竞品解析", "resolving"],
+  ["解析意图", "orchestrator"],
+  ["信息采集", "collector"],
+  ["对比分析", "analyst"],
+  ["质量审查", "reviewer"],
+  ["报告生成", "writer"],
+];
+
+function progressMessageToPhase(msg: string): string | null {
+  if (msg.includes("竞品") || msg.includes("解析竞品")) return "resolving";
+  for (const [prefix, key] of PROGRESS_PREFIX_PHASE) {
+    if (msg.startsWith(prefix)) return key;
+  }
+  return null;
+}
 
 // ── Version Tree Component ──
 
@@ -385,7 +437,8 @@ export default function CompetitionPage() {
 
   const [threadId, setThreadId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
-  const [timelineEvents, setTimelineEvents] = useState<{type: string; data: Record<string, unknown>}[]>([]);
+  const [phaseMap, setPhaseMap] = useState<Map<string, PhaseState>>(new Map());
+  const [tick, setTick] = useState(0); // live timer trigger
   const [sseConnected, setSseConnected] = useState(false);
   const [streamingContent, setStreamingContent] = useState<Record<string, string>>({});
   const [currentStreamAgent, setCurrentStreamAgent] = useState<string | null>(null);
@@ -448,18 +501,63 @@ export default function CompetitionPage() {
       es.addEventListener("progress", (e) => {
         console.log("[SSE] progress:", e.data.slice(0, 80));
         const data = JSON.parse(e.data);
-        data._elapsed = Math.round((Date.now() - startTimeRef.current) / 1000);
-        setTimelineEvents((prev) => [...prev, { type: "progress", data }]);
+        const phaseKey = data.phase as string || progressMessageToPhase(data.message as string);
+
+        if (phaseKey) {
+          const info = PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
+          setPhaseMap((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(phaseKey);
+            if (existing) {
+              next.set(phaseKey, {
+                ...existing,
+                details: [...existing.details, data],
+                // Treat "resolved" phase marker as completion
+                ...(data.phase === "resolved" || data.products ? {
+                  status: "completed" as const,
+                  endTime: existing.endTime ?? Date.now(),
+                  tokens: existing.tokens, // tokens come from node_end
+                } : {}),
+              });
+            } else {
+              next.set(phaseKey, {
+                key: phaseKey, label: info.label, icon: info.icon,
+                status: (data.phase === "resolved" || data.products ? "completed" : "running"),
+                startTime: Date.now(),
+                endTime: data.phase === "resolved" || data.products ? Date.now() : null,
+                tokens: 0, content: {}, details: [data],
+              });
+            }
+            return next;
+          });
+        }
       });
 
       es.addEventListener("node_end", (e) => {
         const data = JSON.parse(e.data);
-        data._elapsed = Math.round((Date.now() - startTimeRef.current) / 1000);
-        const current = streamingRef.current;
-        if (Object.keys(current).length > 0) {
-          setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
-        }
-        setTimelineEvents((prev) => [...prev, { type: "node_end", data }]);
+        const node = data.node as string;
+        const phaseKey = node; // node name matches phase key directly
+        const info = PHASE_INFO[phaseKey];
+        const currentContent = { ...streamingRef.current };
+        const perPhaseTokens = (data.tokens as number) ?? 0;
+
+        setPhaseMap((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(phaseKey);
+          next.set(phaseKey, {
+            key: phaseKey,
+            label: info?.label ?? phaseKey,
+            icon: info?.icon ?? "⚙️",
+            status: "completed",
+            startTime: existing?.startTime ?? Date.now(),
+            endTime: Date.now(),
+            tokens: perPhaseTokens,
+            content: { ...(existing?.content ?? {}), ...currentContent },
+            details: existing?.details ?? [],
+          });
+          return next;
+        });
+
         streamingRef.current = {};
         setStreamingContent({});
         setCurrentStreamAgent(null);
@@ -467,12 +565,24 @@ export default function CompetitionPage() {
 
       es.addEventListener("end", (e) => {
         intentionalCloseRef.current = true;
-        const current = streamingRef.current;
-        if (Object.keys(current).length > 0) {
-          setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
-        }
+        const currentContent = { ...streamingRef.current };
         const endData = JSON.parse(e.data);
-        setTimelineEvents((prev) => [...prev, { type: "end", data: endData }]);
+
+        // Flush any remaining streaming content into the last active phase
+        if (Object.keys(currentContent).length > 0) {
+          setPhaseMap((prev) => {
+            const next = new Map(prev);
+            // Find last phase with running status or create analyzer fallback
+            for (const [key, ph] of next) {
+              if (ph.status === "running") {
+                next.set(key, { ...ph, content: { ...ph.content, ...currentContent } });
+                break;
+              }
+            }
+            return next;
+          });
+        }
+
         streamingRef.current = {};
         setStreamingContent({});
         setCurrentStreamAgent(null);
@@ -562,11 +672,18 @@ export default function CompetitionPage() {
       return;
     }
     const start = new Date(createdAt).getTime();
-    const tick = () => setElapsedSeconds(Math.floor((Date.now() - start) / 1000));
-    tick();
-    const interval = setInterval(tick, 1000);
+    const tickFn = () => setElapsedSeconds(Math.floor((Date.now() - start) / 1000));
+    tickFn();
+    const interval = setInterval(tickFn, 1000);
     return () => clearInterval(interval);
   }, [status, createdAt]);
+
+  // Phase live-timer tick — drives per-phase elapsed display while running
+  useEffect(() => {
+    if (status !== "running") return;
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [status]);
 
   const handleSubmit = useCallback(async (message: PromptInputMessage) => {
     const text = message.text.trim();
@@ -576,7 +693,7 @@ export default function CompetitionPage() {
     setUserMessages((prev) => [...prev, { text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) }]);
     startTimeRef.current = Date.now();
     setStatus("running");
-    setTimelineEvents([{ type: "progress", data: { message: "分析已启动", _elapsed: 0 } }]);
+    setPhaseMap(new Map());
     setStreamingContent({});
     setCurrentStreamAgent(null);
     setSseConnected(false);
@@ -613,10 +730,19 @@ export default function CompetitionPage() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    // Flush any remaining streaming content to timeline
+    // Flush remaining streaming content into the last running phase
     const current = streamingRef.current;
     if (Object.keys(current).length > 0) {
-      setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
+      setPhaseMap((prev) => {
+        const next = new Map(prev);
+        for (const [key, ph] of next) {
+          if (ph.status === "running") {
+            next.set(key, { ...ph, content: { ...ph.content, ...current }, status: "completed", endTime: Date.now() });
+            break;
+          }
+        }
+        return next;
+      });
       streamingRef.current = {};
       setStreamingContent({});
       setCurrentStreamAgent(null);
@@ -808,7 +934,7 @@ export default function CompetitionPage() {
             <div className="flex min-h-0 flex-1 justify-center">
               <div className={cn("flex flex-col flex-1 min-h-0 w-full", isWelcome ? "max-w-(--container-width-sm)" : "max-w-(--container-width-md)")}>
                 <CompetitionChatArea
-                  events={timelineEvents}
+                  phases={Array.from(phaseMap.values()).sort((a, b) => a.startTime - b.startTime)}
                   streamingContent={streamingContent}
                   currentAgent={currentStreamAgent}
                   status={status}
@@ -819,6 +945,7 @@ export default function CompetitionPage() {
                   hitlVisible={hitlVisible}
                   hitlSubmitting={hitlSubmitting}
                   tokenUsage={tokenUsage}
+                  tick={tick}
                   onExpandReport={handleExpandReport}
                   onApprove={handleApprove}
                   onReanalyze={handleReanalyze}
@@ -867,7 +994,7 @@ export default function CompetitionPage() {
 
         {/* Inline report panel — splits the chat area */}
         {reportPanelOpen && (
-          <div className="w-[42%] min-w-[420px]">
+          <div className="w-[42%] min-w-[420px] h-full">
             <CompetitionReportPanel
               open={reportPanelOpen}
               onClose={handleCloseReport}

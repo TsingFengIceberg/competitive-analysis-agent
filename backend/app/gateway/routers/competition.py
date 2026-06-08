@@ -1555,6 +1555,7 @@ def _run_graph_sync(thread_id: str) -> None:
         # Stream execution — updates store + DB on each node completion (§18)
         event_num = 0
         prev_state: dict = {}
+        prev_total_tokens = 0
         _NODE_LABELS = {
             "orchestrator": "解析意图", "collector": "信息采集",
             "analyst": "对比分析", "reviewer": "质量审查",
@@ -1595,6 +1596,10 @@ def _run_graph_sync(thread_id: str) -> None:
 
                 if current_node:
                     from deerflow.competition.db import upsert_analysis
+                    from deerflow.competition.executor import get_total_tokens
+                    current_total = get_total_tokens()
+                    delta_tokens = current_total - prev_total_tokens
+                    prev_total_tokens = current_total
                     upsert_analysis(
                         thread_id=thread_id, status="running",
                         current_node=current_node, progress=progress or _NODE_LABELS.get(current_node, ""),
@@ -1604,6 +1609,7 @@ def _run_graph_sync(thread_id: str) -> None:
                         "node": current_node,
                         "status": "done",
                         "progress": progress or _NODE_LABELS.get(current_node, ""),
+                        "tokens": max(delta_tokens, 0),
                         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
                     })
 

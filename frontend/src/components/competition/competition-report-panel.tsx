@@ -1,16 +1,16 @@
 "use client";
 
+import { X } from "lucide-react";
+import { useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { X } from "lucide-react";
-import { useState, useCallback } from "react";
 
 import type { ReportData, ReportSection, ReportHistoryItem } from "@/components/competition/api-client";
-import { VersionTree } from "@/components/competition/version-tree";
-import { SideBySideDiff, VersionDiff, SourceCard, type SourceInfo } from "@/components/competition/source-card";
 import ApprovalCard from "@/components/competition/hitl-card";
+import { SideBySideDiff, VersionDiff, SourceCard, type SourceInfo } from "@/components/competition/source-card";
+import { VersionTree } from "@/components/competition/version-tree";
 
 interface Props {
   open: boolean;
@@ -81,7 +81,7 @@ export default function CompetitionReportPanel({
 
   const renderSection = (section: ReportSection, depth = 0): React.ReactNode => {
     if (section.content_type === "table" && section.chart_path) {
-      const cp = section.chart_path as Record<string, unknown>;
+      const cp = section.chart_path;
       const headers = (cp.headers as string[]) || [];
       const rows = (cp.rows as string[][]) || [];
       return (
@@ -98,7 +98,7 @@ export default function CompetitionReportPanel({
       );
     }
     if (section.content_type === "chart" && section.chart_path) {
-      const cp = section.chart_path as Record<string, unknown>;
+      const cp = section.chart_path;
       const labels = (cp.labels as string[]) || [];
       const series = (cp.series as Record<string, number[]>) || {};
       return (
@@ -133,7 +133,9 @@ export default function CompetitionReportPanel({
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-2.5 shrink-0">
         <h2 className="text-sm font-semibold truncate">{displayReport?.title ?? "分析报告"}</h2>
-        <button onClick={onClose} className="rounded p-1 hover:bg-muted"><X className="size-4" /></button>
+        <button onClick={onClose} className="flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-medium hover:bg-muted hover:border-muted-foreground/30 transition-colors" title="关闭报告面板">
+          关闭 <X className="size-3.5" />
+        </button>
       </div>
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">

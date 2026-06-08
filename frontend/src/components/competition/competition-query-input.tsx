@@ -61,34 +61,32 @@ export default function CompetitionQueryInput({
   );
 
   return (
-    <div className="flex flex-col gap-2">
-      {/* Industry selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground shrink-0">行业</span>
-        <Select value={industry} onValueChange={onIndustryChange} disabled={disabled}>
-          <SelectTrigger className="h-7 text-xs w-fit min-w-[140px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(INDUSTRIES).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <PromptInput onSubmit={handleSubmit} disabled={disabled}>
-        <PromptInputBody>
-          <PromptInputTextarea
-            placeholder="输入竞品分析请求，例如：分析 Cursor vs Copilot vs Windsurf 的竞争力"
-          />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <PromptInputSubmit status={isStreaming ? "streaming" : "ready"} />
-        </PromptInputFooter>
-      </PromptInput>
-    </div>
+    <PromptInput onSubmit={handleSubmit} disabled={disabled}>
+      <PromptInputBody>
+        <PromptInputTextarea
+          placeholder="输入竞品分析请求，例如：分析 Cursor vs Copilot vs Windsurf 的竞争力"
+        />
+      </PromptInputBody>
+      <PromptInputFooter>
+        {/* Industry selector — left side */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground shrink-0">行业</span>
+          <Select value={industry} onValueChange={onIndustryChange} disabled={disabled}>
+            <SelectTrigger className="h-7 text-xs w-fit min-w-[120px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(INDUSTRIES).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {/* Submit/Stop button — right side */}
+        <PromptInputSubmit status={isStreaming ? "streaming" : "ready"} />
+      </PromptInputFooter>
+    </PromptInput>
   );
 }
