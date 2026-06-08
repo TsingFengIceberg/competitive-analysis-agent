@@ -126,6 +126,8 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
     Uses _get_or_create_queue so events are buffered even if the SSE client
     hasn't connected yet — critical for the ~2min product-resolution phase.
     """
+    import logging
+    _log = logging.getLogger(__name__)
     try:
         # Assign monotonic event ID
         seq = _event_counters.get(thread_id, 0) + 1
@@ -147,8 +149,9 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
         # Push to live queue
         q = _get_or_create_queue(thread_id)
         q.put_nowait(frame)
+        _log.info("SSE emit #%d [%s] queue_depth=%d", seq, event_type, q.qsize())
     except Exception:
-        pass  # queue full or no listener — non-critical
+        _log.exception("SSE emit failed for %s [%s]", thread_id, event_type)
 
 
 # ── User helpers (§User System) ──
@@ -308,7 +311,7 @@ def _assess_complexity(query: str, products: list[str]) -> str:
 
 # ── Product name extraction & correction ──
 
-def _llm_extract_products(query: str) -> list[str]:
+def _llm_extract_products(query: str, thread_id: str | None = None) -> list[str]:
     """Multi-round LLM+Search extraction with progressive relaxation.
 
     Round 1: LLM extracts → search strictly verifies each candidate
@@ -317,14 +320,39 @@ def _llm_extract_products(query: str) -> list[str]:
 
     Stops early once we have ≥2 verified products, or after round 3.
     Synchronous — caller must wrap in executor.
+
+    If thread_id is provided, emits intermediate SSE progress events
+    so the frontend shows live updates during the ~2-3min resolution phase.
     """
     all_candidates: list[str] = []
 
     for round_num in range(1, 4):
         remaining = _build_round_prompt(query, all_candidates, round_num)
+
+        if thread_id:
+            _emit_event(thread_id, "progress", {
+                "phase": "resolving",
+                "message": f"第 {round_num} 轮: LLM 提取竞品名称...",
+                "round": round_num,
+            })
+
         new_candidates = _llm_extract_candidates(remaining)
         if not new_candidates:
+            if thread_id:
+                _emit_event(thread_id, "progress", {
+                    "phase": "resolving",
+                    "message": f"第 {round_num} 轮: 未提取到新候选",
+                    "round": round_num,
+                })
             continue
+
+        if thread_id:
+            _emit_event(thread_id, "progress", {
+                "phase": "resolving",
+                "message": f"第 {round_num} 轮: 候选 {', '.join(new_candidates)} → 搜索验证...",
+                "round": round_num,
+                "candidates": new_candidates,
+            })
 
         verified = _verify_products_via_search(new_candidates, strictness=round_num, query_hint=query)
         for v in verified:
@@ -333,6 +361,14 @@ def _llm_extract_products(query: str) -> list[str]:
 
         logger.info("Product extraction round %d: got %d candidates, %d verified (total: %d)",
                      round_num, len(new_candidates), len(verified), len(all_candidates))
+
+        if thread_id:
+            _emit_event(thread_id, "progress", {
+                "phase": "resolving",
+                "message": f"第 {round_num} 轮: {len(verified)} 个验证通过 ({', '.join(verified) if verified else '无'})",
+                "round": round_num,
+                "verified": verified,
+            })
 
         if len(all_candidates) >= 2:
             break
@@ -1376,7 +1412,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
         if not products:
             # No explicit products — extract from query via LLM + search
             _log.info("No explicit products — extracting via ProductResolver")
-            products = _llm_extract_products(query)
+            products = _llm_extract_products(query, thread_id)
 
         # Deduplicate while preserving order
         seen: set[str] = set()

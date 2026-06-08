@@ -1,29 +1,16 @@
 "use client";
 
-import { User, Building2, Database } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
-import ReactMarkdown from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
+import { useParams } from "next/navigation";
 
-import AgentDetailPanel from "@/components/competition/agent-detail-panel";
-import type { Persona, ReportData, ReportSection, DagState, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
+import type { Persona, ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
 import { useCompetitionAPI } from "@/components/competition/api-client";
-import DagGraph from "@/components/competition/dag-graph";
-import ApprovalCard from "@/components/competition/hitl-card";
-import MessageFlowPanel from "@/components/competition/message-flow-timeline";
-import ReplaySlider from "@/components/competition/replay-slider";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
+import CompetitionReportPanel from "@/components/competition/competition-report-panel";
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
-import { SourceCard, VersionDiff, SideBySideDiff, type SourceInfo } from "@/components/competition/source-card";
-import TokenPanel from "@/components/competition/token-panel";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -314,7 +301,6 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
 export default function CompetitionPage() {
   const api = useCompetitionAPI();
   const params = useParams<{ thread_id: string }>();
-  const router = useRouter();
   const threadIdFromURL = params.thread_id;
 
   const [query, setQuery] = useState("对比 Slack 和 飞书");
@@ -408,6 +394,7 @@ export default function CompetitionPage() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const intentionalCloseRef = useRef(false);
+  const startTimeRef = useRef<number>(0);
 
   // SSE connection with auto-reconnect (DF-style)
   useEffect(() => {
@@ -420,16 +407,19 @@ export default function CompetitionPage() {
       if (destroyed) return;
       intentionalCloseRef.current = false;
       streamingRef.current = {};
+      console.log("[SSE] connecting to thread", threadId);
 
       const es = new EventSource(`/api/competition/stream/${threadId}`);
       eventSourceRef.current = es;
 
       es.addEventListener("metadata", () => {
+        console.log("[SSE] metadata received");
         setSseConnected(true);
         reconnectAttemptRef.current = 0;
       });
 
       es.addEventListener("values", () => {
+        console.log("[SSE] values received");
         setSseConnected(true);
       });
 
@@ -448,15 +438,23 @@ export default function CompetitionPage() {
             setStreamingContent({ ...updated });
             if (lastAgent) setCurrentStreamAgent(lastAgent);
           }
-        } catch { /* ignore malformed chunks */ }
+        } catch (err) { console.error("SSE messages-tuple parse error:", err); }
+      });
+
+      es.addEventListener("open", () => {
+        console.log("[SSE] connection opened");
       });
 
       es.addEventListener("progress", (e) => {
-        setTimelineEvents((prev) => [...prev, { type: "progress", data: JSON.parse(e.data) }]);
+        console.log("[SSE] progress:", e.data.slice(0, 80));
+        const data = JSON.parse(e.data);
+        data._elapsed = Math.round((Date.now() - startTimeRef.current) / 1000);
+        setTimelineEvents((prev) => [...prev, { type: "progress", data }]);
       });
 
       es.addEventListener("node_end", (e) => {
         const data = JSON.parse(e.data);
+        data._elapsed = Math.round((Date.now() - startTimeRef.current) / 1000);
         const current = streamingRef.current;
         if (Object.keys(current).length > 0) {
           setTimelineEvents((prev) => [...prev, { type: "messages", data: { content: { ...current } } }]);
@@ -487,6 +485,7 @@ export default function CompetitionPage() {
       });
 
       es.addEventListener("error", () => {
+        console.log("[SSE] error, destroyed:", destroyed, "intentional:", intentionalCloseRef.current);
         es.close();
         eventSourceRef.current = null;
         setSseConnected(false);
@@ -494,10 +493,15 @@ export default function CompetitionPage() {
         if (destroyed) return;
         if (intentionalCloseRef.current) return;
 
-        // Exponential backoff reconnect (DF-style)
+        // Exponential backoff reconnect (DF-style), max 5 attempts
         const attempt = reconnectAttemptRef.current + 1;
         reconnectAttemptRef.current = attempt;
+        if (attempt > 5) {
+          console.log("[SSE] max retries reached, giving up");
+          return;
+        }
         const delay = Math.min(1000 * Math.pow(2, attempt), maxReconnectDelay);
+        console.log("[SSE] reconnecting in", delay, "ms");
         reconnectTimerRef.current = setTimeout(connect, delay);
       });
     }
@@ -520,22 +524,18 @@ export default function CompetitionPage() {
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  const [dagState, setDagState] = useState<DagState | null>(null);
-  const [activePanel, setActivePanel] = useState<string>("dag");
   const [hitlVisible, setHitlVisible] = useState(false);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
   const [historyCount, setHistoryCount] = useState(0);
   const [historyEntries, setHistoryEntries] = useState<ReportHistoryItem[]>([]);
   const [viewingHistory, setViewingHistory] = useState<ReportHistoryItem | null>(null);
-  const [showDbHistory, setShowDbHistory] = useState(false);
-  const [dbRecords, setDbRecords] = useState<Array<{thread_id: string; query: string; products: string[]; persona: string; created_at: string; key_findings: string[]; metrics: Record<string,number>}>>([]);
   const [dbLoadedReport, setDbLoadedReport] = useState<ReportData | null>(null);
   const [dbLoadedThreadId, setDbLoadedThreadId] = useState<string | null>(null);
-  const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
-  const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
   const [selectedForDiff, setSelectedForDiff] = useState<Set<number>>(new Set());
   const [diffVersions, setDiffVersions] = useState<[number, number] | null>(null);
   const [diffViewMode, setDiffViewMode] = useState<"side-by-side" | "summary">("side-by-side");
+  const [reportPanelOpen, setReportPanelOpen] = useState(false);
+  const [userMessages, setUserMessages] = useState<{text: string; timestamp: string}[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
@@ -573,8 +573,10 @@ export default function CompetitionPage() {
     if (!text) return;
 
     setQuery(text);
+    setUserMessages((prev) => [...prev, { text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) }]);
+    startTimeRef.current = Date.now();
     setStatus("running");
-    setTimelineEvents([]);
+    setTimelineEvents([{ type: "progress", data: { message: "分析已启动", _elapsed: 0 } }]);
     setStreamingContent({});
     setCurrentStreamAgent(null);
     setSseConnected(false);
@@ -582,7 +584,6 @@ export default function CompetitionPage() {
     setTokenUsage([]);
     setDbLoadedReport(null);
     setDbLoadedThreadId(null);
-    setDagState(null);
     setHitlVisible(false);
     setHitlSubmitting(false);
     try {
@@ -594,12 +595,12 @@ export default function CompetitionPage() {
         deep_mode: false,
       });
       setThreadId(res.thread_id);
-      router.replace(`/competition/${res.thread_id}`, { scroll: false });
+      window.history.replaceState(null, "", `/competition/${res.thread_id}`);
     } catch (err) {
       setStatus("error");
       console.error("Analysis start failed:", err);
     }
-  }, [persona, industry, api, router]);
+  }, [persona, industry, api]);
 
   const handleCancel = useCallback(async () => {
     if (!threadId) return;
@@ -646,7 +647,15 @@ export default function CompetitionPage() {
     const poll = async () => {
       try {
         const res = await fetch(`/api/competition/report/${threadId}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          // Thread not found (stale URL, server restart, etc.) — reset to new
+          if (res.status === 404) {
+            setStatus("idle");
+            setThreadId(null);
+            window.history.replaceState(null, "", "/competition/new");
+          }
+          return;
+        }
         const report = await res.json();
         if (report.report_data) {
           setReportData(report.report_data);
@@ -710,168 +719,42 @@ export default function CompetitionPage() {
 
   const displayReport = viewingHistory?.report_data ?? dbLoadedReport ?? reportData;
 
-  const handlePersonaSwitch = useCallback(async (newPersona: Persona) => {
-    setPersona(newPersona);
-    if (threadId && reportData) {
-      setStatus("running");
-      try {
-        const res = await api.startAnalysis({
-          query: query.trim(),
-          target_products: reportData.products,
-          persona: newPersona,
-          industry,
-          deep_mode: false,
-        });
-        setThreadId(res.thread_id);
-        router.replace(`/competition/${res.thread_id}`, { scroll: false });
-      } catch { setStatus("error"); }
+  // Report panel + HITL callbacks
+  const handleExpandReport = useCallback(() => setReportPanelOpen(true), []);
+  const handleCloseReport = useCallback(() => setReportPanelOpen(false), []);
+
+  const handleApprove = useCallback(() => {
+    if (threadId) {
+      api.submitDecision(threadId, {
+        action: "approve", comment: "",
+        target_focus: null,
+        fork_version: viewingHistory ? viewingHistory.version : null,
+      }).catch((err) => console.error("Approve submit failed:", err));
+      setHitlVisible(false);
     }
-  }, [threadId, reportData, query, industry, api, router]);
+  }, [threadId, api, viewingHistory]);
 
-/** Escape string for insertion into an HTML data-* attribute value. */
-function escapeAttr(s: string): string {
-  return s.replace(/"/g, "&quot;").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-}
-
-/** Convert [n] references to HTML sup links with data-trace-id for hover preview. */
-  const preprocessContent = useCallback((content: string): string => {
-    return content.replace(/\[(\d+)\]/g, (_, id) => {
-      const trace = displayReport?.traceability_map?.[id];
-      const url = typeof trace === "object" ? trace.url : String(trace ?? "");
-      if (url) {
-        return `<sup class="ref-link" data-trace-id="${id}" data-trace-url="${url}" data-trace-snippet="${escapeAttr(typeof trace === "object" ? (trace.snippet ?? "") : "")}" data-trace-confidence="${typeof trace === "object" ? (trace.confidence ?? "") : ""}" data-trace-verified="${typeof trace === "object" ? (trace.verified ?? "") : ""}" data-trace-timestamp="${typeof trace === "object" ? (trace.timestamp ?? "") : ""}"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup>`;
-      }
-      return `<sup class="ref-link" data-trace-id="${id}">[${id}]</sup>`;
+  const handleReanalyze = useCallback((action: string, comment: string) => {
+    if (!threadId) return;
+    setHitlSubmitting(true);
+    setStatus("running");
+    api.submitDecision(threadId, {
+      action, comment, target_focus: null,
+      fork_version: viewingHistory ? viewingHistory.version : null,
+    }).catch((err) => {
+      console.error("HITL submit failed:", err);
+      setHitlSubmitting(false);
     });
-  }, [displayReport]);
+  }, [threadId, api, viewingHistory]);
 
-  /** Delegated hover handler: show SourceCard popup on .ref-link hover. */
-  const handleReportHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
-    if (!target) {
-      setHoveredSource(null);
-      setSourcePos(null);
-      return;
-    }
-    const traceId = target.dataset.traceId;
-    const traceUrl = target.dataset.traceUrl;
-    if (!traceId || !traceUrl) return;
-    const rect = target.getBoundingClientRect();
-    setHoveredSource({
-      id: traceId,
-      url: traceUrl,
-      snippet: target.dataset.traceSnippet ?? undefined,
-      confidence: target.dataset.traceConfidence ? parseFloat(target.dataset.traceConfidence) : undefined,
-      verified: target.dataset.traceVerified === "" ? undefined : target.dataset.traceVerified === "true",
-      timestamp: target.dataset.traceTimestamp ?? undefined,
-    });
-    setSourcePos({
-      top: rect.bottom + window.scrollY + 4,
-      left: rect.left + window.scrollX,
-    });
-  }, []);
+  const handleExportMD = useCallback(() => {
+    if (threadId) window.open(`/api/competition/report/${threadId}/export?format=md`, "_blank");
+  }, [threadId]);
 
-  const renderSection = (section: ReportSection, depth = 0) => {
-    // DynamicBlock tables — render from chart_path data
-    if (section.content_type === "table" && section.chart_path) {
-      const cp = section.chart_path as Record<string, unknown>;
-      const headers = (cp.headers as string[]) || [];
-      const rows = (cp.rows as string[][]) || [];
-      return (
-        <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
-          <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
-          <div className="overflow-x-auto rounded border">
-            <table className="w-full text-xs border-collapse">
-              <thead className="bg-muted">
-                <tr>
-                  {headers.map((h, i) => (
-                    <th key={i} className="border px-2 py-1 text-left font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, ri) => (
-                  <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-muted/30"}>
-                    {row.map((cell, ci) => (
-                      <td key={ci} className="border px-2 py-1">{cell}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
-        </div>
-      );
-    }
+  const handleExportJSON = useCallback(() => {
+    if (threadId) window.open(`/api/competition/report/${threadId}/export?format=json`, "_blank");
+  }, [threadId]);
 
-    // DynamicBlock charts — render from chart_path data
-    if (section.content_type === "chart" && section.chart_path) {
-      const cp = section.chart_path as Record<string, unknown>;
-      const chartType = (cp.chart as string) || "radar";
-      const labels = (cp.labels as string[]) || [];
-      const series = (cp.series as Record<string, number[]>) || {};
-      return (
-        <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
-          <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
-          <div className="rounded border bg-white p-3">
-            <div className="mb-2 text-xs text-muted-foreground">Chart: {chartType} · {labels.length} dimensions · {Object.keys(series).length} products</div>
-            <div className="space-y-2">
-              {Object.entries(series).map(([name, values]) => (
-                <div key={name} className="flex items-center gap-2">
-                  <span className="text-xs font-medium w-20 shrink-0">{name}</span>
-                  <div className="flex gap-1 flex-1">
-                    {values.map((v, vi) => (
-                      <div key={vi} className="flex-1 flex flex-col items-center">
-                        <div className="w-full bg-blue-100 rounded-t" style={{
-                          height: `${Math.max(4, (v / 5) * 60)}px`,
-                          backgroundColor: ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6"][vi % 5],
-                          opacity: 0.7,
-                        }} />
-                        <span className="text-[10px] text-muted-foreground mt-0.5">{labels[vi]}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <span className="text-[10px] text-muted-foreground w-24 text-right">{values.map((v, i) => `${labels[i]}=${v}`).join(", ")}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
-        </div>
-      );
-    }
-
-    return (
-    <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
-      <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
-      {section.content_type === "what-if-form" ? (
-        <div className="rounded border border-dashed border-orange-300 bg-orange-50 p-3">
-          <p className="mb-2 text-xs text-orange-700">{section.content}</p>
-          <WhatIfInput onAnalyze={(hypothesis) => {
-            if (threadId) {
-              setStatus("running");
-              void api.submitDecision(threadId, { action: "rewrite", comment: hypothesis, target_focus: null });
-            }
-          }} />
-        </div>
-      ) : (
-        <div
-          className="prose prose-sm max-w-none text-xs leading-relaxed [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
-          onMouseOver={handleReportHover}
-          onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}
-        >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkBreaks]}
-            rehypePlugins={[rehypeRaw]}
-          >
-            {preprocessContent(section.content)}
-          </ReactMarkdown>
-        </div>
-      )}
-      {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
-    </div>
-  );}
 
   const statusBadge = status === "idle" ? <Badge variant="outline">就绪</Badge>
     : status === "running" ? <Badge variant="default">运行中…</Badge>
@@ -893,402 +776,128 @@ function escapeAttr(s: string): string {
     ? <span className="font-mono text-xs text-muted-foreground">{formatElapsed(elapsedSeconds)}</span>
     : null;
 
+  const isWelcome = status === "idle";
+
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Slim status bar — moved from old header, sidebar now has branding */}
-      <div className="flex items-center gap-3 border-b px-6 py-2">
+      {/* Header — DF-style: transparent in welcome, visible otherwise */}
+      <header className={cn(
+        "absolute top-0 right-0 left-0 z-30 flex h-10 shrink-0 items-center gap-3 px-4",
+        isWelcome ? "bg-background/0" : "bg-background/80 shadow-xs backdrop-blur",
+      )}>
         {statusBadge}
         {elapsedBadge}
-        <span className="text-[10px] text-muted-foreground/40 select-none">
-          {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") || "dev"}
+        <span className="text-[11px] text-muted-foreground font-mono select-none ml-auto">
+          build {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") || "dev"}
         </span>
         {authLoading ? (
-          <span className="text-xs text-muted-foreground">登录中...</span>
+          <span className="text-xs text-muted-foreground ml-auto">登录中...</span>
         ) : isAuthenticated ? (
           <span className="text-xs text-muted-foreground">👤 {userId}</span>
         ) : (
-          <span className="text-xs text-muted-foreground">未登录</span>
+          <span className="text-xs text-muted-foreground ml-auto">未登录</span>
         )}
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={async () => {
-          setShowDbHistory(true);
-          try {
-            const res = await fetch("/api/competition/db-history");
-            if (res.ok) {
-              const data = await res.json();
-              setDbRecords(data.history ?? []);
-            }
-          } catch { /* ignore */ }
-        }}>
-          <Database className="mr-1 h-4 w-4" /> 已保存报告
-        </Button>
-        {reportData && (
-          <div className="flex items-center gap-2">
-            <TokenPanel tokenUsage={tokenUsage} />
-            <Button variant="ghost" size="sm" onClick={() => handlePersonaSwitch("pm")}>
-              <User className="mr-1 h-4 w-4" /> PM
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => handlePersonaSwitch("entrepreneur")}>
-              <Building2 className="mr-1 h-4 w-4" /> 创业
-            </Button>
+      </header>
+
+      {/* Main area: chat column [+ inline report panel when open] */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Chat column */}
+        <div className={cn("flex flex-col min-h-0", reportPanelOpen ? "flex-1" : "flex-1")}>
+          <main className="flex min-h-0 max-w-full grow flex-col">
+            {/* Messages */}
+            <div className="flex min-h-0 flex-1 justify-center">
+              <div className={cn("flex flex-col flex-1 min-h-0 w-full", isWelcome ? "max-w-(--container-width-sm)" : "max-w-(--container-width-md)")}>
+                <CompetitionChatArea
+                  events={timelineEvents}
+                  streamingContent={streamingContent}
+                  currentAgent={currentStreamAgent}
+                  status={status}
+                  userMessages={userMessages}
+                  isWelcome={isWelcome}
+                  displayReport={displayReport}
+                  threadId={threadId}
+                  hitlVisible={hitlVisible}
+                  hitlSubmitting={hitlSubmitting}
+                  tokenUsage={tokenUsage}
+                  onExpandReport={handleExpandReport}
+                  onApprove={handleApprove}
+                  onReanalyze={handleReanalyze}
+                  onExportMD={handleExportMD}
+                  onExportJSON={handleExportJSON}
+                />
+              </div>
+            </div>
+
+            {/* Input — centered in welcome mode, bottom in chat mode */}
+            {isWelcome ? (
+              <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
+                <div className="relative w-full max-w-(--container-width-sm) -translate-y-[calc(50vh-96px)]">
+                  <div className="mb-6 text-center">
+                    <h2 className="text-xl font-semibold">竞品分析</h2>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      CI-Agent 将自动完成采集 → 分析 → 质检 → 报告全流程
+                    </p>
+                  </div>
+                  <CompetitionQueryInput
+                    status="ready"
+                    disabled={false}
+                    industry={industry}
+                    onIndustryChange={setIndustry}
+                    onSubmit={handleSubmit}
+                    onStop={handleStop}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="shrink-0 flex justify-center px-4 pb-4">
+                <div className="w-full max-w-(--container-width-md)">
+                  <CompetitionQueryInput
+                    status="streaming"
+                    disabled
+                    industry={industry}
+                    onIndustryChange={setIndustry}
+                    onSubmit={handleSubmit}
+                    onStop={handleStop}
+                  />
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+
+        {/* Inline report panel — splits the chat area */}
+        {reportPanelOpen && (
+          <div className="w-[42%] min-w-[420px]">
+            <CompetitionReportPanel
+              open={reportPanelOpen}
+              onClose={handleCloseReport}
+              threadId={threadId}
+              displayReport={displayReport}
+              historyEntries={historyEntries}
+              viewingHistory={viewingHistory}
+              isViewingLatest={!viewingHistory}
+              onViewHistory={handleViewHistory}
+              selectedForDiff={selectedForDiff}
+              onToggleDiff={handleToggleDiff}
+              onCompare={handleCompare}
+              diffVersions={diffVersions}
+              diffViewMode={diffViewMode}
+              setDiffViewMode={setDiffViewMode}
+              setDiffVersions={setDiffVersions}
+              setSelectedForDiff={setSelectedForDiff}
+              dbLoadedThreadId={dbLoadedThreadId}
+              dbLoadedReport={dbLoadedReport}
+              hitlVisible={hitlVisible}
+              hitlSubmitting={hitlSubmitting}
+              status={status}
+              onApprove={handleApprove}
+              onReanalyze={handleReanalyze}
+              threadIdForApi={threadId}
+            />
           </div>
         )}
       </div>
-
-      {/* Query Input — welcome mode when idle, compact when running */}
-      <CompetitionQueryInput
-        status={status === "running" ? "streaming" : "ready"}
-        disabled={status === "running"}
-        industry={industry}
-        onIndustryChange={setIndustry}
-        onSubmit={handleSubmit}
-        onStop={handleStop}
-      />
-
-      {/* Main Content — shown when analysis is in progress or complete */}
-      {status !== "idle" && (
-        <div className="flex flex-1 overflow-hidden">
-          {/* Left: Chat progress + Report */}
-          <div className="flex w-7/12 flex-col border-r">
-            <CompetitionChatArea
-              events={timelineEvents}
-              streamingContent={streamingContent}
-              currentAgent={currentStreamAgent}
-              status={status}
-            />
-            {displayReport && (
-              <div className="overflow-y-auto border-t p-6">
-                {/* Version tree */}
-                {historyEntries.length > 0 && (
-                  <VersionTree
-                    entries={historyEntries}
-                    activeVersion={viewingHistory?.version ?? null}
-                    isViewingLatest={!viewingHistory}
-                    onSelect={(v) => handleViewHistory(v)}
-                    onViewLatest={() => handleViewHistory(null)}
-                    selectedForDiff={selectedForDiff}
-                    onToggleDiff={handleToggleDiff}
-                    onCompare={handleCompare}
-                  />
-                )}
-                {/* Version diff panel */}
-                {diffVersions && (() => {
-                  const [vA, vB] = diffVersions;
-                  const entryA = historyEntries.find((e) => e.version === vA);
-                  const entryB = historyEntries.find((e) => e.version === vB);
-                  if (!entryA || !entryB) return null;
-                  return (
-                    <div className="mb-3 rounded border-2 border-purple-300 bg-purple-50/30 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-purple-700">
-                            版本对比: v{vA} vs v{vB}
-                          </span>
-                          <button
-                            onClick={() => setDiffViewMode("side-by-side")}
-                            className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "side-by-side" ? "bg-purple-500 text-white" : "bg-muted hover:bg-muted/80"}`}
-                          >
-                            逐行对比
-                          </button>
-                          <button
-                            onClick={() => setDiffViewMode("summary")}
-                            className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "summary" ? "bg-purple-500 text-white" : "bg-muted hover:bg-muted/80"}`}
-                          >
-                            章节概览
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => { setDiffVersions(null); setSelectedForDiff(new Set()); }}
-                          className="text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          关闭
-                        </button>
-                      </div>
-                      {diffViewMode === "side-by-side" ? (
-                        <SideBySideDiff oldEntry={entryA} newEntry={entryB} />
-                      ) : (
-                        <VersionDiff oldEntry={entryA} newEntry={entryB} />
-                      )}
-                    </div>
-                  );
-                })()}
-                {viewingHistory && (
-                  <div className="mb-3 rounded border border-amber-300 bg-amber-50/50 p-2 text-xs text-amber-800">
-                    <div className="flex items-center justify-between">
-                      <span>
-                        查看历史版本 v{viewingHistory.version}
-                        {viewingHistory.parent_version ? ` (← v${viewingHistory.parent_version})` : " (初始)"}
-                        — {new Date(viewingHistory.timestamp ?? viewingHistory.created_at ?? "").toLocaleString("zh-CN")}
-                      </span>
-                      <button
-                        onClick={() => { setViewingHistory(null); }}
-                        className="text-amber-700 underline hover:text-amber-900"
-                      >
-                        返回最新
-                      </button>
-                    </div>
-                    <div className="mt-1 text-muted-foreground">
-                      因「{viewingHistory.hitl_decision?.comment?.slice(0, 60) ?? "无评论"}」生成
-                    </div>
-                  </div>
-                )}
-                {dbLoadedThreadId && !viewingHistory && (
-                  <div className="mb-3 flex items-center justify-between rounded border border-green-300 bg-green-50/50 p-2 text-xs text-green-800">
-                    <span>📁 查看已保存报告 ({dbLoadedThreadId.slice(0, 12)})</span>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={async () => {
-                          if (!dbLoadedReport) return;
-                          const oldProducts = (dbLoadedReport.products || []).join(", ");
-                          setQuery(`基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`);
-                          setPersona(dbLoadedReport.persona || "pm");
-                          setDbLoadedReport(null);
-                          setDbLoadedThreadId(null);
-                          setHitlVisible(false);
-                          setStatus("running");
-                          setReportData(null);
-                          setTokenUsage([]);
-                          setDagState(null);
-                          try {
-                            const res = await api.startAnalysis({
-                              query: `基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`,
-                              target_products: dbLoadedReport.products || [],
-                              persona: dbLoadedReport.persona || "pm",
-                              industry,
-                              deep_mode: false,
-                              context_report: dbLoadedReport as unknown as Record<string, unknown>,
-                            });
-                            setThreadId(res.thread_id);
-                            router.replace(`/competition/${res.thread_id}`, { scroll: false });
-                          } catch (err) {
-                            setStatus("error");
-                            console.error("Reanalysis start failed:", err);
-                          }
-                        }}
-                        className="rounded bg-blue-500 px-2 py-0.5 text-white hover:bg-blue-600"
-                      >
-                        基于此报告新建分析
-                      </button>
-                      <button onClick={() => { setDbLoadedReport(null); setDbLoadedThreadId(null); }}
-                        className="text-green-700 hover:text-green-900 underline">
-                        返回
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {displayReport.title && (
-                  <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
-                )}
-                {displayReport.sections.map((s) => renderSection(s))}
-                {/* Source hover card */}
-                {hoveredSource && sourcePos && (
-                  <SourceCard
-                    source={hoveredSource}
-                    position={sourcePos}
-                    onClose={() => { setHoveredSource(null); setSourcePos(null); }}
-                  />
-                )}
-                {/* HITL Approval Card */}
-                {hitlVisible && status === "approved" && !viewingHistory && (
-                  <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="font-semibold text-sm text-green-700">✅ 报告已批准发布</h3>
-                    </div>
-                    <p className="mb-3 text-xs text-muted-foreground">该报告已保存到数据库，可以导出下载。</p>
-                    <div className="flex gap-2">
-                      <a
-                        href={`/api/competition/report/${threadId}/export?format=md`}
-                        className="inline-flex items-center gap-1 rounded bg-blue-500 px-3 py-1.5 text-xs text-white hover:bg-blue-600"
-                        download
-                      >
-                        📥 导出 Markdown
-                      </a>
-                      <a
-                        href={`/api/competition/report/${threadId}/export?format=json`}
-                        className="inline-flex items-center gap-1 rounded bg-gray-500 px-3 py-1.5 text-xs text-white hover:bg-gray-600"
-                        download
-                      >
-                        📦 导出 JSON
-                      </a>
-                    </div>
-                  </div>
-                )}
-                {hitlVisible && status !== "approved" && (
-                  <div className={`mt-6 rounded-lg border-2 p-4 ${viewingHistory ? "border-purple-300 bg-purple-50/30" : "border-orange-300 bg-orange-50/30"}`}>
-                    {viewingHistory && (
-                      <div className="mb-2 rounded border border-purple-200 bg-purple-100/50 px-2 py-1 text-xs text-purple-700">
-                        🌿 从 v{viewingHistory.version} 分支 — 此操作将创建新分支，不影响当前版本
-                      </div>
-                    )}
-                    <div className="mb-2 flex items-center justify-between">
-                      <h3 className="font-semibold text-sm">
-                        {hitlSubmitting ? "⏳ 处理中..." : viewingHistory ? `📋 从 v${viewingHistory.version} 分支操作` : "📋 审批（HITL Gate）"}
-                      </h3>
-                      <button onClick={() => setHitlVisible(false)}
-                        className="text-xs text-muted-foreground hover:text-foreground">收起</button>
-                    </div>
-                    <ApprovalCard
-                      disabled={hitlSubmitting}
-                      executive_summary={displayReport.sections?.[0]?.content}
-                      key_findings={displayReport.sections
-                        ?.filter((s) => s.id === "sec-swot")
-                        .flatMap((s) => s.content.split("\n").filter((l) => l.startsWith("-")).slice(0, 3)) || []}
-                      data_stats={{ total_data_points: Object.keys(displayReport.traceability_map || {}).length }}
-                      quality_summary={displayReport.quality_summary}
-                      onSubmit={(action, comment) => {
-                        if (threadId) {
-                          if (action === "approve") {
-                            api.submitDecision(threadId, {
-                              action,
-                              comment,
-                              target_focus: null,
-                              fork_version: viewingHistory ? viewingHistory.version : null,
-                            }).catch((err) => console.error("Approve submit failed:", err));
-                            setHitlVisible(false);
-                          } else {
-                            setHitlSubmitting(true);
-                            setStatus("running");
-                            api.submitDecision(threadId, {
-                              action,
-                              comment,
-                              target_focus: null,
-                              fork_version: viewingHistory ? viewingHistory.version : null,
-                            }).catch((err) => {
-                              console.error("HITL submit failed:", err);
-                              setHitlSubmitting(false);
-                            });
-                          }
-                        }
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Right: DAG + Details */}
-          <div className="flex w-5/12 flex-col">
-            <div className="h-1/2 border-b">
-              <DagGraph dagState={dagState} onNodeClick={() => setActivePanel("detail")} />
-            </div>
-            <div className="flex h-1/2 flex-col">
-              <Tabs value={activePanel} onValueChange={setActivePanel} className="flex flex-1 flex-col">
-                <TabsList className="w-full justify-start rounded-none border-b px-2">
-                  <TabsTrigger value="dag" className="text-xs">DAG</TabsTrigger>
-                  <TabsTrigger value="detail" className="text-xs">Agent 详情</TabsTrigger>
-                  <TabsTrigger value="flow" className="text-xs">消息流</TabsTrigger>
-                  <TabsTrigger value="trace" className="text-xs">溯源</TabsTrigger>
-                  <TabsTrigger value="replay" className="text-xs">回放</TabsTrigger>
-                </TabsList>
-                <TabsContent value="dag" className="flex-1 p-0">
-                  <DagGraph dagState={dagState} />
-                </TabsContent>
-                <TabsContent value="detail" className="flex-1 overflow-auto p-3">
-                  <AgentDetailPanel threadId={threadId} />
-                </TabsContent>
-                <TabsContent value="flow" className="flex-1 overflow-auto p-3">
-                  <MessageFlowPanel threadId={threadId} />
-                </TabsContent>
-                <TabsContent value="trace" className="flex-1 overflow-auto p-3">
-                  {displayReport?.traceability_map ? (
-                    <div className="space-y-2 text-xs">
-                      <p className="font-semibold">溯源链 ({Object.keys(displayReport.traceability_map).length} 条)</p>
-                      {Object.entries(displayReport.traceability_map).slice(0, 10).map(([id, info]) => (
-                        <div key={id} className="rounded border p-2">
-                          <span className="font-mono text-blue-600">[{id}]</span>{" "}
-                          <span className="text-muted-foreground">
-                            {typeof info === "object" ? info.url : String(info)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">暂无溯源数据</p>
-                  )}
-                </TabsContent>
-                <TabsContent value="replay" className="flex-1 overflow-auto p-3">
-                  <ReplaySlider
-                    threadId={threadId}
-                    apiGetTimeline={api.getTimeline}
-                    apiGetState={api.getCheckpointState}
-                    onStateLoaded={(state) => console.log("Replay state loaded:", Object.keys(state))}
-                  />
-                </TabsContent>
-              </Tabs>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* DB History Modal */}
-      {showDbHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowDbHistory(false)}>
-          <div className="max-h-[80vh] w-[600px] overflow-y-auto rounded-lg bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold">已保存的分析报告</h2>
-              <button onClick={() => setShowDbHistory(false)} className="text-muted-foreground hover:text-foreground text-lg">✕</button>
-            </div>
-            {dbRecords.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无已批准保存的报告。完成分析后点击「批准发布」即可保存。</p>
-            ) : (
-              <div className="space-y-3">
-                {dbRecords.map((r) => (
-                  <div
-                    key={r.thread_id}
-                    className="cursor-pointer rounded border p-3 text-xs hover:border-blue-400 hover:bg-blue-50/30 transition-colors"
-                    onClick={async () => {
-                      try {
-                        const res = await fetch(`/api/competition/db-report/${r.thread_id}`);
-                        if (res.ok) {
-                          const data = await res.json();
-                          if (data.report_data) {
-                            setDbLoadedReport(data.report_data as ReportData);
-                            setDbLoadedThreadId(r.thread_id);
-                            setShowDbHistory(false);
-                          } else {
-                            alert("该历史记录缺少完整报告数据（可能是在升级前保存的）。请重新运行分析并批准发布。");
-                          }
-                        }
-                      } catch { /* ignore */ }
-                    }}
-                  >
-                    <div className="mb-1 flex items-center justify-between">
-                      <span className="font-semibold text-blue-600 hover:underline">{r.query}</span>
-                      <span className="text-muted-foreground">{new Date(r.created_at).toLocaleString("zh-CN")}</span>
-                    </div>
-                    <div className="mb-1 text-muted-foreground">
-                      产品: {Array.isArray(r.products) ? r.products.join(", ") : r.products} | 视角: {r.persona === "pm" ? "产品经理" : "创业者"}
-                    </div>
-                    {r.key_findings && Array.isArray(r.key_findings) && r.key_findings.length > 0 && (
-                      <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
-                        {r.key_findings.map((f, i) => <li key={i}>{f}</li>)}
-                      </ul>
-                    )}
-                    {r.metrics && (
-                      <div className="mt-1 flex gap-3 text-muted-foreground">
-                        <span>覆盖率: {((r.metrics.coverage ?? 0) * 100).toFixed(0)}%</span>
-                        <span>交叉验证: {((r.metrics.cross_validation_rate ?? 0) * 100).toFixed(0)}%</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function WhatIfInput({ onAnalyze }: { onAnalyze: (h: string) => void }) {
-  const [val, setVal] = useState("");
-  return (
-    <div className="flex gap-2">
-      <Input placeholder="例如：如果 Cursor 降价到 $10/月…" value={val}
-        onChange={(e) => setVal(e.target.value)} className="flex-1 text-xs" />
-      <Button size="sm" variant="outline" onClick={() => { if (val.trim()) onAnalyze(val.trim()); }}>
-        推演
-      </Button>
-    </div>
-  );
-}
