@@ -43,23 +43,8 @@ const AGENT_DISPLAY: Record<string, string> = {
 };
 
 function StreamingBlock({ content, agent }: { content: Record<string, string>; agent: string | null }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    // Only auto-scroll the streaming block into view if the user hasn't scrolled up
-    if (ref.current) {
-      const parent = ref.current.parentElement;
-      if (parent) {
-        const atBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < 60;
-        if (atBottom) {
-          ref.current.scrollIntoView({ behavior: "smooth", block: "end" });
-        }
-      }
-    }
-  });
-
   return (
-    <div ref={ref} className="rounded bg-blue-50 px-3 py-2 border border-blue-200 text-xs">
+    <div className="rounded bg-blue-50 px-3 py-2 border border-blue-200 text-xs">
       <div className="flex items-center gap-2 mb-1">
         <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
         <span className="font-medium text-blue-700">
@@ -84,17 +69,28 @@ function StreamingBlock({ content, agent }: { content: Record<string, string>; a
 
 export default function AnalysisTimeline({ events, connected, streamingContent, currentAgent }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const userAtBottomRef = useRef(true);
 
+  // Track user scroll position — only auto-scroll when user is at the very bottom.
+  // Using a scroll event listener instead of checking in useEffect means we remember
+  // the user's last scroll position even between rapid streaming re-renders.
   useEffect(() => {
-    if (containerRef.current) {
-      // Only auto-scroll if user is near the bottom; don't yank them up if they're reading
-      const el = containerRef.current;
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-      if (atBottom) {
-        el.scrollTop = el.scrollHeight;
-      }
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      userAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 10;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll when new content arrives — but only if user hasn't scrolled up
+  useEffect(() => {
+    const el = containerRef.current;
+    if (el && userAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [events, streamingContent]);
+  }, [streamingContent]);
 
   const hasStreaming = Object.keys(streamingContent).length > 0;
 
@@ -111,7 +107,7 @@ export default function AnalysisTimeline({ events, connected, streamingContent, 
           <span className="text-muted-foreground">等待连接...</span>
         ) : null}
       </div>
-      <div ref={containerRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5 text-xs">
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-1.5 text-xs">
         {events.length === 0 && !hasStreaming && (
           <div className="text-muted-foreground py-4 text-center">
             <span className="animate-pulse">分析启动中...</span>
