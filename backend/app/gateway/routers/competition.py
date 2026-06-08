@@ -1193,6 +1193,44 @@ async def get_db_report(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/db-report/{thread_id}")
+async def delete_db_report(thread_id: str):
+    """Delete a saved report from the SQLite database."""
+    try:
+        from deerflow.competition.db import delete_analysis, init_db
+
+        conn = init_db()
+        deleted = delete_analysis(thread_id, conn=conn)
+        conn.close()
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Report not found: {thread_id}")
+        return {"deleted": True, "thread_id": thread_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to delete DB report %s: %s", thread_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/db-report/{thread_id}/pin")
+async def pin_db_report(thread_id: str, pinned: bool = True):
+    """Pin or unpin a saved report (pinned reports sort first and cannot be deleted)."""
+    try:
+        from deerflow.competition.db import pin_analysis, init_db
+
+        conn = init_db()
+        updated = pin_analysis(thread_id, pinned, conn=conn)
+        conn.close()
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Report not found: {thread_id}")
+        return {"pinned": pinned, "thread_id": thread_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to pin DB report %s: %s", thread_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Execution Replay (P1) ──
 
 

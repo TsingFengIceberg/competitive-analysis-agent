@@ -94,6 +94,7 @@ def _migrate_analysis_history(conn: sqlite3.Connection) -> None:
         "ALTER TABLE analysis_history ADD COLUMN progress TEXT",
         "ALTER TABLE analysis_history ADD COLUMN updated_at TEXT",
         "ALTER TABLE analysis_history ADD COLUMN token_usage TEXT",
+        "ALTER TABLE analysis_history ADD COLUMN pinned INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         try:
@@ -345,12 +346,39 @@ def get_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> dict
     }
 
 
+def delete_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> bool:
+    """Delete an analysis record by thread_id. Returns True if deleted."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    cur = conn.execute("DELETE FROM analysis_history WHERE thread_id = ?", (thread_id,))
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return cur.rowcount > 0
+
+
+def pin_analysis(thread_id: str, pinned: bool, conn: sqlite3.Connection | None = None) -> bool:
+    """Set the pinned status of an analysis record. Returns True if updated."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    cur = conn.execute(
+        "UPDATE analysis_history SET pinned = ? WHERE thread_id = ?",
+        (1 if pinned else 0, thread_id),
+    )
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return cur.rowcount > 0
+
+
 def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """List recent analysis history entries (§18: +status +industry)."""
+    """List recent analysis history entries (§18: +status +industry +pinned)."""
     rows = conn.execute(
         "SELECT thread_id, user_id, query, products, industry, persona, status, "
-        "current_node, progress, created_at, key_findings, metrics "
-        "FROM analysis_history ORDER BY created_at DESC LIMIT ?",
+        "current_node, progress, created_at, key_findings, metrics, pinned "
+        "FROM analysis_history ORDER BY pinned DESC, created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [
@@ -362,6 +390,7 @@ def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
             "created_at": row[9],
             "key_findings": json.loads(row[10]) if row[10] else [],
             "metrics": json.loads(row[11]) if row[11] else {},
+            "pinned": bool(row[12]) if len(row) > 12 and row[12] else False,
         }
         for row in rows
     ]

@@ -1,6 +1,6 @@
 "use client";
 
-import { Trash2 } from "lucide-react";
+import { Pin, PinOff, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -11,7 +11,6 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
@@ -29,6 +28,7 @@ interface HistoryRecord {
   query: string;
   products: string[];
   created_at: string;
+  pinned?: boolean;
 }
 
 export function CompetitionHistoryList() {
@@ -45,7 +45,14 @@ export function CompetitionHistoryList() {
       const res = await fetch("/api/competition/db-history");
       if (res.ok) {
         const data = await res.json();
-        setRecords(data.history ?? []);
+        const list = (data.history ?? []) as HistoryRecord[];
+        // Sort: pinned first, then by created_at desc (backend does this, but double-check)
+        list.sort((a, b) => {
+          if (a.pinned && !b.pinned) return -1;
+          if (!a.pinned && b.pinned) return 1;
+          return 0;
+        });
+        setRecords(list);
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -61,15 +68,46 @@ export function CompetitionHistoryList() {
       const res = await fetch(`/api/competition/db-report/${deleteTarget.thread_id}`, { method: "DELETE" });
       if (res.ok) {
         setRecords((prev) => prev.filter((r) => r.thread_id !== deleteTarget.thread_id));
-        // If currently viewing the deleted record, navigate to new
         if (pathname === `/competition/${deleteTarget.thread_id}`) {
           router.push("/competition/new");
         }
         toast.success("已删除");
+      } else {
+        toast.error("删除失败");
       }
-    } catch { /* ignore */ }
+    } catch { toast.error("删除失败"); }
     setDeleteTarget(null);
   }, [deleteTarget, pathname, router]);
+
+  const handlePin = useCallback(async (record: HistoryRecord) => {
+    const newPinned = !record.pinned;
+    try {
+      const res = await fetch(`/api/competition/db-report/${record.thread_id}/pin?pinned=${newPinned}`, { method: "PATCH" });
+      if (res.ok) {
+        setRecords((prev) => {
+          const updated = prev.map((r) =>
+            r.thread_id === record.thread_id ? { ...r, pinned: newPinned } : r,
+          );
+          // Re-sort
+          updated.sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return 0;
+          });
+          return updated;
+        });
+        toast.success(newPinned ? "已置顶" : "已取消置顶");
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleDeleteClick = useCallback((record: HistoryRecord) => {
+    if (record.pinned) {
+      toast.error("请先取消置顶后再删除");
+      return;
+    }
+    setDeleteTarget(record);
+  }, []);
 
   return (
     <>
@@ -86,24 +124,48 @@ export function CompetitionHistoryList() {
             </div>
           ) : (
             <SidebarMenu>
-              {records.map((record) => (
-                <SidebarMenuItem key={record.thread_id}>
-                  <SidebarMenuButton
-                    isActive={pathname === `/competition/${record.thread_id}`}
-                    asChild
-                  >
-                    <Link href={`/competition/${record.thread_id}`}>
-                      <span className="truncate">{record.query}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  <SidebarMenuAction
-                    showOnHover
-                    onClick={() => setDeleteTarget(record)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </SidebarMenuAction>
-                </SidebarMenuItem>
-              ))}
+              {records.map((record, idx) => {
+                const showSep = record.pinned === false && idx > 0 && records[idx - 1]?.pinned === true;
+                return (
+                  <SidebarMenuItem key={record.thread_id} className="group/item relative">
+                    {showSep && (
+                      <div className="mx-2 mb-0.5 border-t border-border/50" />
+                    )}
+                    <SidebarMenuButton
+                      isActive={pathname === `/competition/${record.thread_id}`}
+                      asChild
+                      className={record.pinned ? "bg-amber-50/50 dark:bg-amber-950/20" : ""}
+                    >
+                      <Link href={`/competition/${record.thread_id}`}>
+                        {record.pinned && (
+                          <Pin className="mr-1 size-3 shrink-0 text-amber-500" />
+                        )}
+                        <span className="truncate">{record.query}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover/item:flex items-center gap-0.5">
+                      <button
+                        onClick={() => handlePin(record)}
+                        title={record.pinned ? "取消置顶" : "置顶"}
+                        className="flex size-6 items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {record.pinned ? (
+                          <PinOff className="size-3.5" />
+                        ) : (
+                          <Pin className="size-3.5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteClick(record)}
+                        title="删除"
+                        className="flex size-6 items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           )}
         </SidebarGroupContent>

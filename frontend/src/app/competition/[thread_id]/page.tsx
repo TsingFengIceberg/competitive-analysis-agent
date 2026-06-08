@@ -1,6 +1,6 @@
 "use client";
 
-import { Send, Loader2, User, Building2, Database } from "lucide-react";
+import { User, Building2, Database } from "lucide-react";
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -14,21 +14,15 @@ import { useCompetitionAPI } from "@/components/competition/api-client";
 import DagGraph from "@/components/competition/dag-graph";
 import ApprovalCard from "@/components/competition/hitl-card";
 import MessageFlowPanel from "@/components/competition/message-flow-timeline";
-import AnalysisTimeline from "@/components/competition/analysis-timeline";
 import ReplaySlider from "@/components/competition/replay-slider";
+import CompetitionChatArea from "@/components/competition/competition-chat-area";
+import CompetitionQueryInput from "@/components/competition/competition-query-input";
+import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { SourceCard, VersionDiff, SideBySideDiff, type SourceInfo } from "@/components/competition/source-card";
 import TokenPanel from "@/components/competition/token-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const POLL_INTERVAL_MS = 3000;
@@ -324,10 +318,17 @@ export default function CompetitionPage() {
   const threadIdFromURL = params.thread_id;
 
   const [query, setQuery] = useState("对比 Slack 和 飞书");
-  const [products, setProducts] = useState("");
   const [persona, setPersona] = useState<Persona>("pm");
   const [industry, setIndustry] = useState<string>("general");
-  const [deepMode, setDeepMode] = useState(false);
+
+  // Force idle state when navigating to /new (belt-and-suspenders)
+  useEffect(() => {
+    if (threadIdFromURL === "new") {
+      setStatus("idle");
+      setThreadId(null);
+      setReportData(null);
+    }
+  }, [threadIdFromURL]);
 
   // Auto-load existing analysis when navigating to a real thread_id
   useEffect(() => {
@@ -567,12 +568,12 @@ export default function CompetitionPage() {
     return () => clearInterval(interval);
   }, [status, createdAt]);
 
-  const handleStart = useCallback(async () => {
-    if (!query.trim()) return;
-    const productList = products.split(",").map((p) => p.trim()).filter(Boolean);
+  const handleSubmit = useCallback(async (message: PromptInputMessage) => {
+    const text = message.text.trim();
+    if (!text) return;
 
+    setQuery(text);
     setStatus("running");
-    setActivePanel("timeline");  // auto-switch to see real-time progress
     setTimelineEvents([]);
     setStreamingContent({});
     setCurrentStreamAgent(null);
@@ -586,11 +587,11 @@ export default function CompetitionPage() {
     setHitlSubmitting(false);
     try {
       const res = await api.startAnalysis({
-        query: query.trim(),
-        target_products: productList,
+        query: text,
+        target_products: [],  // LLM extracts products from query
         persona,
         industry,
-        deep_mode: deepMode,
+        deep_mode: false,
       });
       setThreadId(res.thread_id);
       router.replace(`/competition/${res.thread_id}`, { scroll: false });
@@ -598,7 +599,7 @@ export default function CompetitionPage() {
       setStatus("error");
       console.error("Analysis start failed:", err);
     }
-  }, [query, products, persona, deepMode, api]);
+  }, [persona, industry, api, router]);
 
   const handleCancel = useCallback(async () => {
     if (!threadId) return;
@@ -625,6 +626,10 @@ export default function CompetitionPage() {
       console.error("Cancel failed:", err);
     }
   }, [threadId, api]);
+
+  const handleStop = useCallback(() => {
+    handleCancel();
+  }, [handleCancel]);
 
   // Fetch full history entries for tree display when count changes
   useEffect(() => {
@@ -714,13 +719,14 @@ export default function CompetitionPage() {
           query: query.trim(),
           target_products: reportData.products,
           persona: newPersona,
-          deep_mode: deepMode,
+          industry,
+          deep_mode: false,
         });
         setThreadId(res.thread_id);
         router.replace(`/competition/${res.thread_id}`, { scroll: false });
       } catch { setStatus("error"); }
     }
-  }, [threadId, reportData, query, deepMode, api]);
+  }, [threadId, reportData, query, industry, api, router]);
 
 /** Escape string for insertion into an HTML data-* attribute value. */
 function escapeAttr(s: string): string {
@@ -928,73 +934,29 @@ function escapeAttr(s: string): string {
         )}
       </div>
 
-      {/* Input Bar */}
-      <div className="border-b px-6 py-3">
-        <div className="flex items-end gap-3">
-          <div className="flex-1">
-            <span className="mb-1 block text-xs">分析请求</span>
-            <Input placeholder="例如：分析 Cursor vs Copilot vs Windsurf 的竞争力"
-              value={query} onChange={(e) => setQuery(e.target.value)} disabled={status === "running"} />
-          </div>
-          <div className="w-48">
-            <span className="mb-1 block text-xs">竞品（逗号分隔）</span>
-            <Input placeholder="Cursor, Copilot, Windsurf"
-              value={products} onChange={(e) => setProducts(e.target.value)} disabled={status === "running"} />
-          </div>
-          <div className="w-40">
-            <span className="mb-1 block text-xs">视角</span>
-            <Select value={persona} onValueChange={(v) => setPersona(v as Persona)} disabled={status === "running"}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="pm">产品经理</SelectItem>
-                <SelectItem value="entrepreneur">创业者</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex-1">
-            <Select value={industry} onValueChange={setIndustry} disabled={status === "running"}>
-              <SelectTrigger><SelectValue placeholder="行业（通用）" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="general">通用（默认）</SelectItem>
-                <SelectItem value="saas">SaaS / 企业软件</SelectItem>
-                <SelectItem value="devtools">开发者工具 / DevOps</SelectItem>
-                <SelectItem value="ai">AI / 大模型</SelectItem>
-                <SelectItem value="database">数据库 / 基础设施</SelectItem>
-                <SelectItem value="hardware">硬件 / 消费电子</SelectItem>
-                <SelectItem value="gaming">游戏</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2 pb-1">
-            <Switch checked={deepMode} onCheckedChange={setDeepMode} disabled={status === "running"} />
-            <span className="text-xs">深度</span>
-          </div>
-          <Button onClick={handleStart} disabled={status === "running" || !query.trim()}>
-            {status === "running" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-            {status === "running" ? "分析中…" : "开始分析"}
-          </Button>
-          {status === "running" && threadId && (
-            <Button variant="outline" size="sm" onClick={handleCancel} className="text-red-600 border-red-300 hover:bg-red-50">
-              终止分析
-            </Button>
-          )}
-        </div>
-      </div>
+      {/* Query Input — welcome mode when idle, compact when running */}
+      <CompetitionQueryInput
+        status={status === "running" ? "streaming" : "ready"}
+        disabled={status === "running"}
+        industry={industry}
+        onIndustryChange={setIndustry}
+        onSubmit={handleSubmit}
+        onStop={handleStop}
+      />
 
-      {/* Main Content */}
-      {status === "idle" ? (
-        <div className="flex flex-1 items-center justify-center text-muted-foreground">
-          <div className="text-center">
-            <p className="text-lg">输入竞品分析请求开始</p>
-            <p className="mt-2 text-sm">CI-Agent 将自动完成采集 → 分析 → 质检 → 报告全流程</p>
-          </div>
-        </div>
-      ) : (
+      {/* Main Content — shown when analysis is in progress or complete */}
+      {status !== "idle" && (
         <div className="flex flex-1 overflow-hidden">
-          {/* Left: Report */}
-          <div className="w-7/12 overflow-y-auto border-r p-6">
-            {displayReport ? (
-              <div>
+          {/* Left: Chat progress + Report */}
+          <div className="flex w-7/12 flex-col border-r">
+            <CompetitionChatArea
+              events={timelineEvents}
+              streamingContent={streamingContent}
+              currentAgent={currentStreamAgent}
+              status={status}
+            />
+            {displayReport && (
+              <div className="overflow-y-auto border-t p-6">
                 {/* Version tree */}
                 {historyEntries.length > 0 && (
                   <VersionTree
@@ -1058,9 +1020,7 @@ function escapeAttr(s: string): string {
                         — {new Date(viewingHistory.timestamp ?? viewingHistory.created_at ?? "").toLocaleString("zh-CN")}
                       </span>
                       <button
-                        onClick={() => {
-                          setViewingHistory(null);
-                        }}
+                        onClick={() => { setViewingHistory(null); }}
                         className="text-amber-700 underline hover:text-amber-900"
                       >
                         返回最新
@@ -1080,7 +1040,6 @@ function escapeAttr(s: string): string {
                           if (!dbLoadedReport) return;
                           const oldProducts = (dbLoadedReport.products || []).join(", ");
                           setQuery(`基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`);
-                          setProducts((dbLoadedReport.products || []).join(", "));
                           setPersona(dbLoadedReport.persona || "pm");
                           setDbLoadedReport(null);
                           setDbLoadedThreadId(null);
@@ -1094,6 +1053,7 @@ function escapeAttr(s: string): string {
                               query: `基于上一轮「${dbLoadedReport.title || oldProducts}」的分析结论，进行新一轮竞品分析。`,
                               target_products: dbLoadedReport.products || [],
                               persona: dbLoadedReport.persona || "pm",
+                              industry,
                               deep_mode: false,
                               context_report: dbLoadedReport as unknown as Record<string, unknown>,
                             });
@@ -1115,7 +1075,9 @@ function escapeAttr(s: string): string {
                     </div>
                   </div>
                 )}
-                <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
+                {displayReport.title && (
+                  <h2 className="mb-6 text-xl font-bold">{displayReport.title}</h2>
+                )}
                 {displayReport.sections.map((s) => renderSection(s))}
                 {/* Source hover card */}
                 {hoveredSource && sourcePos && (
@@ -1125,7 +1087,7 @@ function escapeAttr(s: string): string {
                     onClose={() => { setHoveredSource(null); setSourcePos(null); }}
                   />
                 )}
-                {/* HITL Approval Card — shown on completed for current; export buttons on approved */}
+                {/* HITL Approval Card */}
                 {hitlVisible && status === "approved" && !viewingHistory && (
                   <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">
                     <div className="mb-3 flex items-center justify-between">
@@ -1193,8 +1155,6 @@ function escapeAttr(s: string): string {
                             }).catch((err) => {
                               console.error("HITL submit failed:", err);
                               setHitlSubmitting(false);
-                              // Don't touch status — polling is the source of truth.
-                              // A 409 (still running) means the previous action is in progress.
                             });
                           }
                         }
@@ -1202,25 +1162,6 @@ function escapeAttr(s: string): string {
                     />
                   </div>
                 )}
-              </div>
-            ) : status === "interrupted" ? (
-              <div className="flex h-full items-center justify-center">
-                <div className="text-center">
-                  <p className="text-lg font-medium text-muted-foreground">⏸ 分析已终止</p>
-                  <p className="mt-2 text-sm text-muted-foreground">已保存部分数据，可查看已生成的报告片段</p>
-                </div>
-              </div>
-            ) : status === "failed" || status === "error" ? (
-              <div className="flex h-full items-center justify-center">
-                <div className="text-center">
-                  <p className="text-lg font-medium text-red-600">❌ 分析失败</p>
-                  <p className="mt-2 text-sm text-muted-foreground">请检查网络连接后重试</p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex h-full items-center justify-center gap-3">
-                <Loader2 className="h-6 w-6 animate-spin" />
-                <span className="text-muted-foreground">分析进行中…</span>
               </div>
             )}
           </div>
@@ -1237,7 +1178,6 @@ function escapeAttr(s: string): string {
                   <TabsTrigger value="detail" className="text-xs">Agent 详情</TabsTrigger>
                   <TabsTrigger value="flow" className="text-xs">消息流</TabsTrigger>
                   <TabsTrigger value="trace" className="text-xs">溯源</TabsTrigger>
-                  <TabsTrigger value="timeline" className="text-xs">实时</TabsTrigger>
                   <TabsTrigger value="replay" className="text-xs">回放</TabsTrigger>
                 </TabsList>
                 <TabsContent value="dag" className="flex-1 p-0">
@@ -1245,9 +1185,6 @@ function escapeAttr(s: string): string {
                 </TabsContent>
                 <TabsContent value="detail" className="flex-1 overflow-auto p-3">
                   <AgentDetailPanel threadId={threadId} />
-                </TabsContent>
-                <TabsContent value="timeline" className="flex-1 min-h-0" forceMount>
-                  <AnalysisTimeline events={timelineEvents} connected={sseConnected} streamingContent={streamingContent} currentAgent={currentStreamAgent} />
                 </TabsContent>
                 <TabsContent value="flow" className="flex-1 overflow-auto p-3">
                   <MessageFlowPanel threadId={threadId} />
