@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo, useMemo } from "react";
 
 import type { ReportData, TokenEntry } from "@/components/competition/api-client";
 
@@ -181,33 +181,38 @@ export default function CompetitionChatArea({
 
 // ── PhaseMessage — single evolving message per phase ──
 
-function PhaseMessage({
+const PhaseMessage = memo(function PhaseMessage({
   phase, tick: _tick, streamingContent,
 }: {
   phase: PhaseState; tick: number; streamingContent: Record<string, string>;
 }) {
   const isCompleted = phase.status === "completed";
   const [open, setOpen] = useState(!isCompleted);
+
+  // Merge stored content with live streaming — memoized to avoid re-scanning on every tick
+  const { mergedEntries, hasContent, liveEntries } = useMemo(() => {
+    const live = !isCompleted
+      ? Object.entries(streamingContent)
+          .filter(([name]) => AGENT_TO_PHASE[name] === phase.key && name.trim())
+      : [];
+    const stored = Object.entries(phase.content)
+      .filter(([name, text]) => name !== "system" && text.trim());
+    const storedNames = new Set(stored.map(([n]) => n));
+    const merged = [
+      ...stored,
+      ...live.filter(([n]) => !storedNames.has(n)),
+    ];
+    return {
+      mergedEntries: merged,
+      hasContent: merged.length > 0 || phase.details.length > 0,
+      liveEntries: live,
+    };
+  }, [phase.content, phase.details, phase.key, isCompleted, streamingContent]);
+
   const now = Date.now();
   const elapsed = isCompleted
     ? Math.round(((phase.endTime ?? phase.startTime) - phase.startTime) / 1000)
     : Math.round((now - phase.startTime) / 1000);
-
-  // Merge stored content with live streaming content for this phase
-  const liveEntries = !isCompleted
-    ? Object.entries(streamingContent)
-        .filter(([name]) => AGENT_TO_PHASE[name] === phase.key && name.trim())
-    : [];
-  const storedEntries = Object.entries(phase.content)
-    .filter(([name, text]) => name !== "system" && text.trim());
-  // Stored entries take priority; live entries fill gaps
-  const storedNames = new Set(storedEntries.map(([n]) => n));
-  const mergedEntries = [
-    ...storedEntries,
-    ...liveEntries.filter(([n]) => !storedNames.has(n)),
-  ];
-
-  const hasContent = mergedEntries.length > 0 || phase.details.length > 0;
 
   return (
     <div className="flex flex-col items-start gap-1">
@@ -242,7 +247,7 @@ function PhaseMessage({
 
         {/* Expanded details — all content in small font, JSON parsed to structured blocks */}
         {open && hasContent && (
-          <div className="mt-2 pt-2 border-t border-border/40 space-y-3 text-xs">
+          <div className="mt-2 pt-2 border-t border-border/40 space-y-3 text-[11px]">
             {phase.details.map((d, i) => {
               const msg = d.message as string | undefined;
               if (!msg) return null;
@@ -258,16 +263,16 @@ function PhaseMessage({
             {mergedEntries.map(([name, text]) => {
               const cleaned = text.replace(/^\*\*\[.*?\]\*\*\s*/gm, "").trim();
               if (!cleaned) return null;
+              const isLive = !isCompleted && liveEntries.some(([n]) => n === name);
+              // Strip opening ```json fence — ContentRenderer will handle fenced blocks,
+              // but during live streaming the closing fence may not have arrived yet.
+              const content = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```$/, "");
               return (
                 <div key={name} className="leading-relaxed">
                   {mergedEntries.length > 1 && (
                     <div className="text-[10px] text-muted-foreground mb-0.5 font-medium">{name}</div>
                   )}
-                  <ContentRenderer content={cleaned} />
-                  {/* Blinking cursor for live entries */}
-                  {!isCompleted && liveEntries.some(([n]) => n === name) && (
-                    <span className="inline-block w-1.5 h-4 bg-blue-500 ml-0.5 animate-pulse align-middle" />
-                  )}
+                  <ContentRenderer content={content} live={isLive} />
                 </div>
               );
             })}
@@ -276,286 +281,672 @@ function PhaseMessage({
       </div>
     </div>
   );
-}
+});
 
 // ── Content Renderer: parse fenced + bare JSON into structured blocks ──
 
-function ContentRenderer({ content }: { content: string }) {
-  const parts = content.split(/(```json\s*[\s\S]*?```)/g);
+function ContentRenderer({ content, live }: { content: string; live?: boolean }) {
+  const parts = content.split(/(```(?:json)?\s*[\s\S]*?```)/g);
 
   return (
     <div className="space-y-2">
       {parts.map((part, i) => {
-        // Fenced JSON block
-        const jsonMatch = part.match(/^```json\s*([\s\S]*?)```$/);
+        // Fenced block — try ```json and bare ```
+        const jsonMatch = part.match(/^```(?:json)?\s*([\s\S]*?)```$/);
         if (jsonMatch) {
-          return <JsonBlock key={i} jsonText={jsonMatch[1]!.trim()} />;
+          const inner = jsonMatch[1]!.trim();
+          try { JSON.parse(inner); return <JsonBlock key={i} jsonText={inner} />; }
+          catch { /* not JSON — render as monospace */ }
+          return (
+            <div key={i} className="text-[11px] font-mono whitespace-pre-wrap break-all text-muted-foreground">
+              {inner.slice(0, 600)}{inner.length > 600 && "…"}
+            </div>
+          );
         }
         const trimmed = part.trim();
         if (!trimmed) return null;
-
-        // Try bare JSON detection on paragraphs
-        return <BareJsonAware key={i} text={trimmed} />;
+        return <BareJsonAware key={i} text={trimmed} live={live} />;
       })}
     </div>
   );
 }
 
-function BareJsonAware({ text }: { text: string }) {
-  const paragraphs = text.split(/\n\n+/);
+// Extract a balanced JSON object/array starting from position 0.
+// Returns the JSON substring spanning from 0 to matching bracket, or null.
+function extractBalancedJson(text: string): string | null {
+  if (text.length === 0) return null;
+  const open = text[0]!;
+  const close = open === "{" ? "}" : open === "[" ? "]" : null;
+  if (!close) return null;
+  let depth = 0, inString = false, escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === "\"") { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return text.slice(0, i + 1); }
+  }
+  return null;
+}
+
+/** Quick check: does the text look like a structurally complete JSON value? */
+function isCompleteJsonText(text: string): boolean {
+  const s = text.trim();
+  if (!s.startsWith("[") && !s.startsWith("{")) return true; // non-JSON → always "complete" (show as text)
+  const extracted = extractBalancedJson(s);
+  if (!extracted) return false; // unbalanced brackets → incomplete
+  try { JSON.parse(extracted); return true; } catch { return false; }
+}
+
+/** Extract the FIRST complete JSON object/value from text, even from inside an array.
+ *  For live streaming: we grab one item at a time so cards appear incrementally. */
+function extractFirstJsonItem(text: string): { json: string; consumed: number } | null {
+  const s = text.trim();
+  if (!s) return null;
+
+  // If starts with {, extract that single object
+  if (s[0] === "{") {
+    const extracted = extractBalancedJson(s);
+    if (extracted) {
+      try { JSON.parse(extracted); return { json: extracted, consumed: s.indexOf(extracted) + extracted.length }; }
+      catch { return null; }
+    }
+    return null;
+  }
+
+  // If starts with [, find the first complete element inside the array
+  if (s[0] === "[") {
+    let pos = 1;
+    // Skip whitespace
+    while (pos < s.length && /\s/.test(s[pos]!)) pos++;
+    if (pos >= s.length) return null; // "[" with nothing after
+
+    if (s[pos] === "{") {
+      const extracted = extractBalancedJson(s.slice(pos));
+      if (extracted) {
+        try { JSON.parse(extracted); return { json: extracted, consumed: pos + extracted.length }; }
+        catch { return null; }
+      }
+    }
+    if (s[pos] === "[") {
+      const extracted = extractBalancedJson(s.slice(pos));
+      if (extracted) {
+        try { JSON.parse(extracted); return { json: extracted, consumed: pos + extracted.length }; }
+        catch { return null; }
+      }
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function BareJsonAware({ text, live }: { text: string; live?: boolean }) {
+  const segments: Array<{ type: "text" | "json"; content: string }> = [];
+  let remaining = text;
+  let hasIncomplete = false;
+
+  while (remaining.length > 0) {
+    const jsonIdx = remaining.search(/[\[{]/);
+    if (jsonIdx === -1) { segments.push({ type: "text", content: remaining }); break; }
+    if (jsonIdx > 0) segments.push({ type: "text", content: remaining.slice(0, jsonIdx) });
+
+    if (live) {
+      // Live mode: extract ONE JSON item at a time for incremental card reveal.
+      // extractFirstJsonItem peeks inside arrays to grab a single element.
+      const item = extractFirstJsonItem(remaining.slice(jsonIdx));
+      if (item) {
+        segments.push({ type: "json", content: item.json });
+        remaining = remaining.slice(jsonIdx + item.consumed);
+        // Skip trailing comma / whitespace between array elements
+        const m = remaining.match(/^\s*,?\s*/);
+        if (m) remaining = remaining.slice(m[0].length);
+      } else {
+        hasIncomplete = true;
+        break;
+      }
+    } else {
+      // Completed content: use full array/object extraction
+      const candidate = remaining.slice(jsonIdx);
+      const extracted = extractBalancedJson(candidate);
+      if (extracted) {
+        try {
+          JSON.parse(extracted);
+          segments.push({ type: "json", content: extracted });
+          remaining = candidate.slice(extracted.length);
+          continue;
+        } catch { /* fall through */ }
+      }
+      segments.push({ type: "text", content: candidate.slice(0, 1) });
+      remaining = candidate.slice(1);
+    }
+  }
+
   return (
     <>
-      {paragraphs.map((p, i) => {
-        const s = p.trim();
-        if (!s) return null;
-        try {
-          const parsed = JSON.parse(s);
-          if (typeof parsed === "object" && parsed !== null) {
-            return <JsonBlock key={i} jsonText={s} />;
-          }
-        } catch { /* not bare JSON */ }
-        // Multi-line JSON-like blocks
-        if (s.includes("\n") && (s.startsWith("[") || s.startsWith("{")) && (s.endsWith("]") || s.endsWith("}"))) {
-          try {
-            JSON.parse(s);
-            return <JsonBlock key={i} jsonText={s} />;
-          } catch { /* not valid */ }
-        }
+      {segments.map((seg, i) => {
+        if (seg.type === "json") return <JsonBlock key={i} jsonText={seg.content} />;
+        const s = seg.content.trim();
+        if (!s && !hasIncomplete) return null;
         return (
-          <div key={i} className="whitespace-pre-wrap text-xs leading-relaxed">
-            {s}
+          <div key={i} className="whitespace-pre-wrap text-[11px] leading-relaxed">
+            {s || null}
           </div>
         );
       })}
+      {hasIncomplete && (
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground py-1">
+          <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
+          生成中…
+        </div>
+      )}
     </>
   );
 }
 
-// ── Smart JSON → descriptive Chinese rendering ──
+// ── Smart JSON → readable Chinese display ──
 
 const FIELD_LABELS: Record<string, string> = {
   complexity: "复杂度", complexity_reason: "判断依据",
   query_intent: "查询意图", target_products: "目标产品",
   persona: "分析视角", deep_mode: "深度模式",
-  dimension: "维度", weight: "权重", reason: "原因",
+  dimension: "维度", dimension_weights: "维度权重",
+  weight: "权重", reason: "原因",
   score: "评分", gap: "缺口", gap_description: "缺口描述",
   status: "状态", confidence: "置信度",
   summary: "摘要", findings: "发现",
   name: "名称", title: "标题", url: "链接",
-  features: "功能特性", pricing: "定价",
+  // Data point fields (Collector output)
+  product: "产品", category: "分类", label: "核心能力",
+  value: "内容", source_url: "来源链接", source_type: "来源类型",
+  product_name: "产品名", source_title: "来源标题",
+  // Generic
+  features: "功能特性", pricing: "定价", ux: "用户体验",
+  ecosystem: "生态", market: "市场地位", technology: "技术能力",
   strengths: "优势", weaknesses: "劣势",
   opportunities: "机会", threats: "威胁",
 };
+
+// Translate common English values to Chinese
+const VALUE_LABELS: Record<string, string> = {
+  features: "功能特性", pricing: "定价", ux: "用户体验",
+  ecosystem: "生态", market: "市场地位", technology: "技术能力",
+  marketing: "营销", sales: "销售渠道", support: "售后服务",
+  news_media: "新闻媒体", official: "官方", community: "社区",
+  competitor: "竞品", third_party: "第三方",
+  quick: "快速", standard: "标准", deep: "深度",
+};
+
+// Keys to skip (internal IDs, timestamps — no user value)
+const SKIP_KEYS = new Set([
+  "id", "_id", "collected_at", "timestamp", "created_at", "updated_at",
+  "thread_id", "version", "parent_version",
+]);
 
 function cnLabel(key: string): string {
   return FIELD_LABELS[key] ?? key;
 }
 
-function fmtWeight(v: number): string {
-  if (v <= 1) return `${Math.round(v * 100)}%`;
-  return String(v);
+function cnValue(v: string): string {
+  return VALUE_LABELS[v] ?? v;
 }
 
-function isSourceItem(obj: Record<string, unknown>): boolean {
-  return "url" in obj;
+function cnDir(d: string): string {
+  return ({ up: "上升", down: "下降", flat: "持平", rising: "上升", falling: "下降", stable: "持平" })[d] ?? d;
 }
 
-function isDimensionItem(obj: Record<string, unknown>): boolean {
-  return "dimension" in obj || ("weight" in obj && "reason" in obj);
+// ── Detection helpers ──
+
+function isSourceArray(arr: unknown[]): boolean {
+  return arr.length > 0 && arr[0] !== null && typeof arr[0] === "object" && "url" in (arr[0] as Record<string, unknown>);
 }
+
+function isDataPoint(obj: Record<string, unknown>): boolean {
+  return ("product" in obj || "product_name" in obj) && ("label" in obj || "value" in obj);
+}
+
+function isDataPointArray(arr: unknown[]): boolean {
+  return arr.length > 0 && arr[0] !== null && typeof arr[0] === "object" && isDataPoint(arr[0] as Record<string, unknown>);
+}
+
+function isDimensionArray(arr: unknown[]): boolean {
+  return arr.length > 0 && arr[0] !== null && typeof arr[0] === "object"
+    && ("weight" in (arr[0] as Record<string, unknown>) || "dimension" in (arr[0] as Record<string, unknown>));
+}
+
+// ── JSON → prose ──
+
+function dimensionName(dim: unknown): string {
+  return cnValue(typeof dim === "string" ? dim : String(dim));
+}
+
+function jsonToProse(data: unknown): string {
+  if (data === null || data === undefined) return "无";
+  if (typeof data === "boolean") return data ? "是" : "否";
+  if (typeof data === "number") return String(data);
+  if (typeof data === "string") return cnValue(data);
+
+  if (Array.isArray(data)) {
+    if (data.length === 0) return "无";
+    if (isSourceArray(data) || isDataPointArray(data)) {
+      // Rendered as cards — return a summary line for the prose fallback
+      return `共 ${data.length} 条`;
+    }
+    if (isDimensionArray(data)) {
+      return data.map((item: unknown, i: number) => {
+        const obj = item as Record<string, unknown>;
+        const dim = (typeof obj.dimension === "string" ? dimensionName(obj.dimension) : null)
+          ?? (typeof obj.name === "string" ? cnValue(obj.name) : null)
+          ?? `项目${i + 1}`;
+        const w = typeof obj.weight === "number" ? obj.weight : null;
+        const r = typeof obj.reason === "string" ? obj.reason : null;
+        let s = dim;
+        if (w !== null) s += `（权重${w <= 1 ? Math.round(w * 100) + "%" : w}）`;
+        if (r) s += `——${r}`;
+        return s;
+      }).join("；");
+    }
+    return data.map((v: unknown) => (typeof v === "object" && v !== null ? jsonToProse(v) : String(v))).join("、");
+  }
+
+  const obj = data as Record<string, unknown>;
+  const keys = Object.keys(obj).filter((k) => !SKIP_KEYS.has(k) && obj[k] !== undefined && obj[k] !== null);
+  if (keys.length === 0) return "空";
+
+  // Complexity block → flowing paragraph
+  if ("complexity" in obj) {
+    const cplx = cnValue(String(obj.complexity ?? "?"));
+    let prose = `本次分析为${cplx}模式`;
+    if (obj.complexity_reason) prose += `，因为${String(obj.complexity_reason)}`;
+    const dims = obj.dimension_weights;
+    if (Array.isArray(dims) && dims.length > 0) {
+      prose += "。在分析维度上：";
+      prose += dims.map((d: unknown, i: number) => {
+        const item = d as Record<string, unknown>;
+        const dim = (typeof item.dimension === "string" ? dimensionName(item.dimension) : null) ?? `维度${i + 1}`;
+        const w = typeof item.weight === "number" ? item.weight : null;
+        const r = typeof item.reason === "string" ? item.reason : null;
+        let s = dim;
+        if (w !== null) s += `（权重${w <= 1 ? Math.round(w * 100) + "%" : w}）`;
+        if (r) s += `，${r}`;
+        return s;
+      }).join("；");
+    }
+    const rest = keys.filter((k) => !["complexity", "complexity_reason", "dimension_weights"].includes(k));
+    if (rest.length > 0) {
+      prose += "。" + rest.map((k) => `${cnLabel(k)}：${jsonToProse(obj[k])}`).join("；");
+    }
+    return prose;
+  }
+
+  // Generic object → inline key-value
+  return keys.map((k) => {
+    const v = obj[k];
+    if (typeof v === "object" && v !== null) return `${cnLabel(k)}：${jsonToProse(v)}`;
+    return `${cnLabel(k)}：${cnValue(String(v))}`;
+  }).join("；");
+}
+
+// ── React renderers ──
 
 function JsonBlock({ jsonText }: { jsonText: string }) {
-  try {
-    const parsed = JSON.parse(jsonText);
-    if (typeof parsed !== "object" || parsed === null) {
-      return <MonoBlock text={jsonText} />;
-    }
-    return <DescriptiveJson data={parsed} />;
-  } catch {
-    return <MonoBlock text={jsonText} />;
-  }
+  try { const parsed = JSON.parse(jsonText); return <DescriptiveJson data={parsed} />; }
+  catch { return <MonoBlock text={jsonText} />; }
 }
 
 function MonoBlock({ text }: { text: string }) {
+  return <div className="text-[11px] font-mono whitespace-pre-wrap break-all text-muted-foreground">{text.length > 600 ? text.slice(0, 600) + "…" : text}</div>;
+}
+
+// ── Sub-renderers ──
+
+function SourceCards({ data }: { data: unknown[] }) {
   return (
-    <div className="text-[11px] font-mono whitespace-pre-wrap break-all text-muted-foreground">
-      {text.length > 600 ? text.slice(0, 600) + "…" : text}
+    <div className="space-y-1">
+      {data.slice(0, 10).map((item, i) => {
+        const obj = item as Record<string, unknown>;
+        const title = typeof obj.title === "string" ? obj.title : null;
+        const url = typeof obj.url === "string" ? obj.url : null;
+        const snippet = typeof obj.snippet === "string" ? obj.snippet : null;
+        const extra = Object.entries(obj).filter(([k]) => !SKIP_KEYS.has(k) && !["title", "url", "snippet"].includes(k));
+        return (
+          <div key={i} className="rounded border border-border/60 bg-background/50 p-2">
+            {title && <div className="font-medium truncate text-[11px]">{title}</div>}
+            {url && <a href={url} target="_blank" rel="noopener" className="text-blue-600 hover:underline break-all text-[10px]">{url.slice(0, 80)}{url.length > 80 && "…"}</a>}
+            {snippet && <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[10px]">{snippet}</div>}
+            {extra.length > 0 && <div className="mt-1 text-[10px] text-muted-foreground">{extra.map(([k, v]) => <span key={k}> {cnLabel(k)}：{typeof v === "string" ? cnValue(v) : String(v)}</span>)}</div>}
+          </div>
+        );
+      })}
+      {data.length > 10 && <div className="text-[10px] text-muted-foreground">… 还有 {data.length - 10} 条</div>}
+    </div>
+  );
+}
+
+function DataPointCard({ obj, index }: { obj: Record<string, unknown>; index?: number }) {
+  const product = (typeof obj.product === "string" ? obj.product : null) ?? (typeof obj.product_name === "string" ? obj.product_name : null) ?? "未知产品";
+  const cat = typeof obj.category === "string" ? cnValue(obj.category) : null;
+  const conf = typeof obj.confidence === "number" ? obj.confidence : null;
+  const label = typeof obj.label === "string" ? obj.label : null;
+  const value = typeof obj.value === "string" ? obj.value : null;
+  const srcType = typeof obj.source_type === "string" ? cnValue(obj.source_type) : null;
+  const srcUrl = typeof obj.source_url === "string" ? obj.source_url : null;
+  return (
+    <div
+      className="rounded border border-border/60 bg-background/50 p-2 animate-card-stream"
+      style={{ animationDelay: `${(index ?? 0) * 100}ms` }}
+    >
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="font-medium text-[11px]">{product}</span>
+        {cat && <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1">{cat}</span>}
+        {conf != null && <span className={`text-[10px] rounded px-1 ${conf >= 0.8 ? "bg-green-100 text-green-700" : conf >= 0.5 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>置信度 {Math.round(conf * 100)}%</span>}
+      </div>
+      {label && <div className="text-[11px] mt-1"><span className="font-medium">核心能力：</span>{label}</div>}
+      {value && <div className="text-[11px] mt-0.5"><span className="font-medium">内容：</span>{value}</div>}
+      {(srcType || srcUrl) && (
+        <div className="text-[10px] text-muted-foreground mt-1">
+          来源：{srcType}{srcType && srcUrl && " · "}
+          {srcUrl && <a href={srcUrl} target="_blank" rel="noopener" className="text-blue-600 hover:underline">{(() => { try { return new URL(srcUrl).hostname; } catch { return srcUrl.slice(0, 40); } })()}</a>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataGapCard({ obj }: { obj: Record<string, unknown> }) {
+  const note = (typeof obj.data_gap_note === "string" ? obj.data_gap_note : null) ?? (typeof obj.note === "string" ? obj.note : null) ?? (typeof obj.gap === "string" ? obj.gap : null);
+  const existing = typeof obj.existing_coverage === "string" ? obj.existing_coverage : null;
+  return (
+    <div className="rounded border border-amber-300 bg-amber-50/40 p-2">
+      <div className="text-[11px] font-medium text-amber-800">数据缺口</div>
+      {note && <div className="text-[11px] mt-0.5">{note}</div>}
+      {existing && <div className="text-[10px] text-muted-foreground mt-0.5">已有覆盖：{existing}</div>}
+    </div>
+  );
+}
+
+const SWOT_COLORS: Record<string, string> = { strength: "border-green-300 bg-green-50/40", weakness: "border-red-300 bg-red-50/40", opportunity: "border-blue-300 bg-blue-50/40", threat: "border-amber-300 bg-amber-50/40" };
+const SWOT_CN: Record<string, string> = { strength: "优势", weakness: "劣势", opportunity: "机会", threat: "威胁" };
+
+function SwotSection({ swot }: { swot: Record<string, unknown> }) {
+  const products = Object.keys(swot).filter((k) => k !== "trends" && k !== "forecast" && k !== "disclaimer" && !Array.isArray(swot[k]));
+  const trendText = Array.isArray(swot.trends) ? (swot.trends as string[]).join("、") : typeof swot.trends === "string" ? swot.trends : null;
+  return (
+    <div>
+      <div className="text-[11px] font-medium mb-1">SWOT 分析</div>
+      <div className="space-y-3">
+        {products.map((prod) => {
+          const pd = swot[prod] as Record<string, unknown> | undefined;
+          const items = pd?.items as unknown[] | undefined;
+          if (!items?.length) return <div key={prod} className="text-[11px] font-medium">{prod}</div>;
+          const grouped: Record<string, unknown[]> = {};
+          for (const it of items) {
+            const o = it as Record<string, unknown>;
+            const c = (typeof o["分类"] === "string" ? o["分类"] : "") || (typeof o.classification === "string" ? o.classification : "") || (typeof o.category === "string" ? o.category : "") || "other";
+            (grouped[c] ??= []).push(o);
+          }
+          return (
+            <div key={prod}>
+              <div className="text-[11px] font-medium mb-1">{prod}</div>
+              <div className="space-y-1">
+                {Object.entries(grouped).map(([cat, catItems]) => (
+                  <div key={cat} className={`rounded border p-2 ${SWOT_COLORS[cat] ?? "border-muted"}`}>
+                    <div className="text-[10px] font-medium mb-0.5">{SWOT_CN[cat] ?? cat}</div>
+                    {catItems.map((it, j) => {
+                      const o = it as Record<string, unknown>;
+                      const stmt = typeof o.statement === "string" ? o.statement : null;
+                      const ev = typeof o.evidence === "string" ? o.evidence : null;
+                      return (
+                        <div key={j} className="text-[11px] mt-0.5">
+                          {stmt && <div>{stmt}</div>}
+                          {ev && <div className="text-[10px] text-muted-foreground mt-0.5">{ev}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {trendText && <div className="text-[10px] text-muted-foreground mt-2">趋势：{trendText}</div>}
+    </div>
+  );
+}
+
+function DynamicBlock({ block }: { block: Record<string, unknown> }) {
+  const btype = typeof block.block_type === "string" ? block.block_type : null;
+  const title = (typeof block["标题"] === "string" ? block["标题"] : null) ?? (typeof block.title === "string" ? block.title : null);
+  const data = block.data as Record<string, unknown> | undefined;
+
+  if (btype === "insight_text" && data) {
+    const content = typeof data.content === "string" ? data.content : null;
+    return <div className="rounded border border-border/60 bg-background/50 p-2">{title && <div className="text-[11px] font-medium mb-1">{title}</div>}{content && <div className="text-[11px] leading-relaxed">{content}</div>}</div>;
+  }
+  if (btype === "kv_list" && data) {
+    const entries = Object.entries(data).filter(([k]) => k !== "source_data_point_ids");
+    return (
+      <div className="rounded border border-border/60 bg-background/50 p-2">
+        {title && <div className="text-[11px] font-medium mb-1">{title}</div>}
+        <div className="space-y-1">
+          {entries.map(([k, v]) => {
+            if (typeof v === "object" && v !== null) {
+              const inner = v as Record<string, unknown>;
+              const iContent = typeof inner["内容"] === "string" ? inner["内容"] : null;
+              const iEvidence = typeof inner.evidence === "string" ? inner.evidence : null;
+              return <div key={k} className="text-[11px]"><span className="font-medium">{cnLabel(k)}</span>{iContent && <span>：{iContent}</span>}{iEvidence && <span className="text-[10px] text-muted-foreground"> —— {iEvidence}</span>}</div>;
+            }
+            return <div key={k} className="text-[11px]"><span className="font-medium">{cnLabel(k)}</span>：{String(v)}</div>;
+          })}
+        </div>
+      </div>
+    );
+  }
+  if (btype === "comparison_table" && data) {
+    const headers = data.headers as string[] | undefined;
+    const rows = data.rows as string[] | undefined;
+    return <div className="rounded border border-border/60 bg-background/50 p-2">{title && <div className="text-[11px] font-medium mb-1">{title}</div>}{headers && <div className="text-[10px] font-medium text-muted-foreground mb-0.5">{headers.join(" ｜ ")}</div>}{rows && <div className="text-[11px]">{rows.join(" ｜ ")}</div>}</div>;
+  }
+  if (btype === "stat_chart" && data) {
+    const labels = data.labels as string[] | undefined;
+    const series = data.series as Record<string, unknown> | undefined;
+    const seriesNames = series ? Object.keys(series).join("、") : "";
+    return <div className="rounded border border-border/60 bg-background/50 p-2">{title && <div className="text-[11px] font-medium mb-1">{title}</div>}<div className="text-[10px] text-muted-foreground">{labels?.length ?? 0} 维度：{labels?.join("、")}{seriesNames && <> · {seriesNames}</>}</div></div>;
+  }
+  return <div className="text-[11px]">{title && <span className="font-medium">{title}：</span>}{jsonToProse(block)}</div>;
+}
+
+function ComparisonMatrix({ data }: { data: Record<string, unknown> }) {
+  const products = data.products as string[] | undefined;
+  const dimensions = data.dimensions as string[] | undefined;
+  const cells = data.cells as Record<string, unknown>[] | undefined;
+  const summary = (typeof data.summary === "string" ? data.summary : null) ?? (typeof data["摘要"] === "string" ? data["摘要"] : null);
+  const swot = data.swot as Record<string, unknown> | undefined;
+  const trends = data.trends as Record<string, unknown>[] | string[] | undefined;
+  const trendText = Array.isArray(trends) && trends.every((t) => typeof t === "string") ? (trends as string[]).join("、")
+    : Array.isArray(trends) ? trends.map((t: Record<string, unknown> | string) => typeof t === "string" ? t : `维度${typeof (t as Record<string, unknown>).dimension === "string" ? cnValue((t as Record<string, unknown>).dimension as string) : "?"}：${typeof (t as Record<string, unknown>).direction === "string" ? cnDir((t as Record<string, unknown>).direction as string) : "—"}`).join("；")
+    : typeof data.trends === "string" ? data.trends : null;
+  const forecast = data.forecast as Record<string, unknown> | undefined;
+  const forecastItems = forecast?.items as Record<string, unknown>[] | undefined;
+  const forecastSummary = typeof forecast?.summary === "string" ? forecast.summary : null;
+  const forecastDisclaimer = typeof forecast?.disclaimer === "string" ? forecast.disclaimer : null;
+  const dynamic = data.dynamic_blocks as unknown[] | undefined;
+
+  return (
+    <div className="space-y-3">
+      {(products || dimensions) && <div className="text-[11px]">{products && <span className="font-medium">产品：{products.join("、")}</span>}{dimensions && <span className="text-muted-foreground"> · 维度：{dimensions.map(cnValue).join("、")}</span>}</div>}
+      {summary && <div className="text-[11px]">{summary}</div>}
+
+      {/* Cells table — product × dimension × rating */}
+      {cells && cells.length > 0 && (
+        <div className="overflow-x-auto rounded border border-border/60">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="bg-muted/50">
+                <th className="text-left p-1.5 font-medium text-muted-foreground">产品</th>
+                <th className="text-left p-1.5 font-medium text-muted-foreground">维度</th>
+                <th className="text-center p-1.5 font-medium text-muted-foreground">评分</th>
+                <th className="text-left p-1.5 font-medium text-muted-foreground">依据</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cells.map((cell, i) => {
+                const prod = typeof cell.product === "string" ? cell.product : "—";
+                const dim = typeof cell.dimension === "string" ? cnValue(cell.dimension) : "—";
+                const rating = typeof cell.rating === "number" ? cell.rating : null;
+                const evidence = typeof cell.evidence === "string" ? cell.evidence : null;
+                return (
+                  <tr key={i} className="border-t border-border/40">
+                    <td className="p-1.5 font-medium">{prod}</td>
+                    <td className="p-1.5">{dim}</td>
+                    <td className="p-1.5 text-center">
+                      {rating !== null ? (
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${rating >= 4 ? "bg-green-100 text-green-700" : rating >= 3 ? "bg-amber-100 text-amber-700" : rating >= 2 ? "bg-orange-100 text-orange-700" : "bg-red-100 text-red-700"}`}>
+                          {rating}/5
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="p-1.5 text-muted-foreground">{evidence || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {swot && <SwotSection swot={swot} />}
+      {trendText && !swot && <div className="text-[10px] text-muted-foreground">趋势：{trendText}</div>}
+      {forecastItems && (
+        <div className="text-[11px] space-y-1">
+          <div className="font-medium">预测</div>
+          {forecastItems.map((f, i) => {
+            const dim = typeof f.dimension === "string" ? cnValue(f.dimension) : null;
+            const prod = typeof f.product === "string" ? f.product : null;
+            const f6m = typeof f.forecast_6m === "string" ? f.forecast_6m : null;
+            const f12m = typeof f.forecast_12m === "string" ? f.forecast_12m : null;
+            const rationale = typeof f.rationale === "string" ? f.rationale : null;
+            return (
+              <div key={i} className="rounded border border-border/60 bg-background/50 p-2">
+                <div className="font-medium">{prod || "—"}{dim && <> · {dim}</>}</div>
+                {f6m && <div className="mt-0.5"><span className="text-muted-foreground">6个月：</span>{f6m}</div>}
+                {f12m && <div><span className="text-muted-foreground">12个月：</span>{f12m}</div>}
+                {rationale && <div className="text-[10px] text-muted-foreground mt-0.5">{rationale}</div>}
+              </div>
+            );
+          })}
+          {forecastSummary && <div className="text-[10px] text-muted-foreground">{forecastSummary}</div>}
+          {forecastDisclaimer && <div className="text-[10px] text-muted-foreground">⚠ {forecastDisclaimer}</div>}
+        </div>
+      )}
+      {dynamic && <div className="space-y-2">{dynamic.map((b, i) => <DynamicBlock key={i} block={b as Record<string, unknown>} />)}</div>}
+    </div>
+  );
+}
+
+// ── Quality review: contradictions renderer ──
+
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: "border-red-400 bg-red-50/60", major: "border-orange-300 bg-orange-50/40",
+  minor: "border-amber-200 bg-amber-50/30", info: "border-blue-200 bg-blue-50/30",
+};
+const SEVERITY_CN: Record<string, string> = { critical: "严重", major: "重要", minor: "轻微", info: "提示" };
+const TYPE_CN: Record<string, string> = {
+  value_fabrication: "数值编造", data_contradiction: "数据矛盾",
+  hallucination: "幻觉", inconsistency: "不一致", missing_source: "缺少来源",
+};
+
+function ContradictionsList({ items, summary }: { items: unknown[]; summary?: string }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium">质量审查：发现 {items.length} 处语义矛盾</div>
+      {summary && <div className="text-[11px]">{summary}</div>}
+      {items.map((it, i) => {
+        const c = it as Record<string, unknown>;
+        const sev = (typeof c.severity === "string" ? c.severity : null) ?? "info";
+        const typeStr = typeof c.type === "string" ? (TYPE_CN[c.type] ?? c.type) : "未知";
+        const claimContent = typeof (c.analysis_claim as Record<string, unknown> | undefined)?.content === "string" ? (c.analysis_claim as Record<string, unknown>).content as string : null;
+        const claimSrc = typeof (c.analysis_claim as Record<string, unknown> | undefined)?.source_cell === "string" ? (c.analysis_claim as Record<string, unknown>).source_cell as string : null;
+        const evDesc = typeof (c.counter_evidence as Record<string, unknown> | undefined)?.description === "string" ? (c.counter_evidence as Record<string, unknown>).description as string : null;
+        const evExcerpts = typeof (c.counter_evidence as Record<string, unknown> | undefined)?.excerpts === "string" ? (c.counter_evidence as Record<string, unknown>).excerpts as string : null;
+        const conf = typeof c["置信度"] === "number" ? c["置信度"] : (typeof c.confidence === "number" ? c.confidence : null);
+        const hint = typeof c.resolution_hint === "string" ? c.resolution_hint : null;
+        return (
+          <div key={i} className={`rounded border p-2 ${SEVERITY_COLORS[sev] ?? ""}`}>
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className={`text-[10px] font-medium rounded px-1 ${sev === "critical" ? "bg-red-200 text-red-800" : sev === "major" ? "bg-orange-200 text-orange-800" : "bg-muted text-muted-foreground"}`}>{SEVERITY_CN[sev] ?? sev}</span>
+              <span className="text-[10px] text-muted-foreground">{typeStr}</span>
+              {conf != null && <span className="text-[10px] text-muted-foreground">置信度 {Math.round(conf * 100)}%</span>}
+            </div>
+            {claimContent && (
+              <div className="text-[11px] mt-0.5">
+                <span className="font-medium">分析声称：</span>{String(claimContent)}
+                {claimSrc && <span className="text-[10px] text-muted-foreground">（{String(claimSrc)}）</span>}
+              </div>
+            )}
+            {evDesc && (
+              <div className="text-[11px] mt-1">
+                <span className="font-medium">反证：</span>{String(evDesc)}
+                {evExcerpts && <div className="text-[10px] text-muted-foreground mt-0.5">{String(evExcerpts)}</div>}
+              </div>
+            )}
+            {hint && <div className="text-[10px] text-muted-foreground mt-1">建议：{hint}</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function DescriptiveJson({ data }: { data: Record<string, unknown> | unknown[] }) {
-  // ── Arrays ──
   if (Array.isArray(data)) {
-    if (data.length === 0) return <span className="text-[11px] text-muted-foreground">空列表</span>;
-
-    const first = data[0];
-    // Source list (objects with url)
-    if (first && typeof first === "object" && isSourceItem(first as Record<string, unknown>)) {
-      return (
+    if (isSourceArray(data)) return <SourceCards data={data} />;
+    if (isDataPointArray(data)) return <div className="space-y-1.5">{data.map((item, i) => <DataPointCard key={i} obj={item as Record<string, unknown>} index={i} />)}</div>;
+    return <div className="text-[11px] leading-relaxed">{jsonToProse(data)}</div>;
+  }
+  let obj = data;
+  // Unwrap single-key wrapper objects so nested structures are detected
+  // e.g. {analysis_result: {comparison_matrix: ...}} → detected as comparison matrix
+  while (true) {
+    const keys = Object.keys(obj).filter((k) => !SKIP_KEYS.has(k) && obj[k] !== undefined && obj[k] !== null);
+    if (keys.length === 1 && typeof obj[keys[0]!] === "object" && obj[keys[0]!] !== null && !Array.isArray(obj[keys[0]!])) {
+      obj = obj[keys[0]!] as Record<string, unknown>;
+    } else { break; }
+  }
+  if ("data_gap_note" in obj) return <DataGapCard obj={obj} />;
+  if (isDataPoint(obj)) return <DataPointCard obj={obj} />;
+  if ("contradictions" in obj && Array.isArray(obj.contradictions)) {
+    const summary = typeof obj["摘要"] === "string" ? obj["摘要"] : (typeof obj.summary === "string" ? obj.summary : undefined);
+    return <ContradictionsList items={obj.contradictions as unknown[]} summary={summary} />;
+  }
+  if ("comparison_matrix" in obj) {
+    const matrix = obj.comparison_matrix as Record<string, unknown>;
+    // Merge top-level swot/trends/forecast/dynamic_blocks into matrix
+    // Analyst output puts these alongside comparison_matrix, not inside it
+    const merged = { ...matrix };
+    for (const k of ["swot", "trends", "forecast", "dynamic_blocks"]) {
+      if (k in obj && !(k in merged)) merged[k] = obj[k];
+    }
+    return <ComparisonMatrix data={merged} />;
+  }
+  if ("products" in obj && ("dimensions" in obj || "swot" in obj || "dynamic_blocks" in obj)) return <ComparisonMatrix data={obj} />;
+  if ("swot" in obj && typeof obj.swot === "object") return <SwotSection swot={obj.swot as Record<string, unknown>} />;
+  if ("dynamic_blocks" in obj && Array.isArray(obj.dynamic_blocks)) return <div className="space-y-2">{(obj.dynamic_blocks as unknown[]).map((b, i) => <DynamicBlock key={i} block={b as Record<string, unknown>} />)}</div>;
+  // Generic objects — use card layout if has >2 keys, else prose
+  const objKeys = Object.keys(obj).filter((k) => !SKIP_KEYS.has(k) && obj[k] !== undefined && obj[k] !== null);
+  if (objKeys.length >= 3) {
+    return (
+      <div className="rounded border border-border/60 bg-background/50 p-2">
         <div className="space-y-1">
-          {data.slice(0, 10).map((item, i) => {
-            const obj = item as Record<string, unknown>;
-            const title = typeof obj.title === "string" ? obj.title : null;
-            const url = typeof obj.url === "string" ? obj.url : null;
-            const snippet = typeof obj.snippet === "string" ? obj.snippet : null;
-            return (
-              <div key={i} className="rounded border border-border/60 bg-background/50 p-2">
-                {title && <div className="font-medium truncate text-[11px]">{title}</div>}
-                {url && (
-                  <a href={url} target="_blank" rel="noopener" className="text-blue-600 hover:underline break-all text-[10px]">
-                    {url.slice(0, 80)}{url.length > 80 && "…"}
-                  </a>
-                )}
-                {snippet && <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[10px]">{snippet}</div>}
-                {/* Render other fields descriptively */}
-                {Object.entries(obj).filter(([k]) => !["title", "url", "snippet"].includes(k)).length > 0 && (
-                  <div className="mt-1 space-y-0.5">
-                    {Object.entries(obj).filter(([k]) => !["title", "url", "snippet"].includes(k)).map(([k, v]) => (
-                      <div key={k} className="text-[10px] text-muted-foreground">
-                        <span className="font-medium">{cnLabel(k)}</span>: {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {data.length > 10 && <div className="text-[10px] text-muted-foreground">… 还有 {data.length - 10} 条</div>}
-        </div>
-      );
-    }
-
-    // Dimension weight list
-    if (first && typeof first === "object" && isDimensionItem(first as Record<string, unknown>)) {
-      return (
-        <div className="space-y-1.5">
-          {data.map((item, i) => {
-            const obj = item as Record<string, unknown>;
-            const dim = obj.dimension ?? obj.name ?? `#${i + 1}`;
-            const w = typeof obj.weight === "number" ? obj.weight : null;
-            const r = obj.reason as string | undefined;
-            return (
-              <div key={i} className="flex items-start gap-2">
-                <span className="text-[11px] font-medium shrink-0">{cnLabel(String(dim)) ?? String(dim)}</span>
-                {w != null && (
-                  <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1 shrink-0">
-                    {fmtWeight(w)}
-                  </span>
-                )}
-                {r && <span className="text-[10px] text-muted-foreground">— {r}</span>}
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-
-    // Generic array — try inline rendering for simple items, otherwise bullet list
-    const allSimple = data.every((v) => typeof v !== "object" || v === null);
-    if (allSimple) {
-      return <span className="text-[11px]">{data.map((v) => String(v)).join("、")}</span>;
-    }
-    // Fallback: numbered list of objects
-    return (
-      <div className="space-y-1.5">
-        {data.slice(0, 8).map((item, i) => (
-          <div key={i} className="text-[11px]">
-            <span className="text-muted-foreground">{i + 1}.</span>{" "}
-            {typeof item === "object" && item !== null
-              ? <DescriptiveJson data={item as Record<string, unknown>} />
-              : String(item)}
-          </div>
-        ))}
-        {data.length > 8 && <div className="text-[10px] text-muted-foreground">… 还有 {data.length - 8} 项</div>}
-      </div>
-    );
-  }
-
-  // ── Objects ──
-  const obj = data as Record<string, unknown>;
-  const entries = Object.entries(obj).filter(([, v]) => v !== undefined && v !== null);
-
-  // Special: complexity block → single summary line
-  if ("complexity" in obj) {
-    const cplx = String(obj.complexity ?? "?");
-    const cplxLabel: Record<string, string> = { quick: "快速", standard: "标准", deep: "深度" };
-    const reason = obj.complexity_reason ? ` — ${String(obj.complexity_reason)}` : "";
-    return (
-      <div className="space-y-1.5">
-        <div className="text-[11px]">
-          <span className="font-medium">分析复杂度</span>:{" "}
-          <span className="bg-muted/50 rounded px-1">{cplxLabel[cplx] ?? cplx}</span>
-          {reason && <span className="text-muted-foreground">{reason}</span>}
-        </div>
-        {/* Render remaining fields (like dimension_weights) */}
-        {Object.entries(obj).filter(([k]) => !["complexity", "complexity_reason"].includes(k)).map(([k, v]) => (
-          <FieldRow key={k} label={k} value={v} />
-        ))}
-      </div>
-    );
-  }
-
-  // Generic object → key-value rows
-  if (entries.length === 0) return <span className="text-[11px] text-muted-foreground">空对象</span>;
-
-  return (
-    <div className="space-y-1">
-      {entries.map(([key, value]) => (
-        <FieldRow key={key} label={key} value={value} />
-      ))}
-    </div>
-  );
-}
-
-function FieldRow({ label, value }: { label: string; value: unknown }) {
-  // Nested objects
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return (
-      <div className="text-[11px]">
-        <span className="font-medium">{cnLabel(label)}</span>
-        <div className="ml-3 mt-0.5">
-          <DescriptiveJson data={value as Record<string, unknown>} />
+          {objKeys.map((k) => (
+            <div key={k} className="text-[11px]"><span className="font-medium">{cnLabel(k)}</span>：{typeof obj[k] === "string" ? cnValue(obj[k] as string) : typeof obj[k] === "object" && obj[k] !== null ? jsonToProse(obj[k]) : String(obj[k])}</div>
+          ))}
         </div>
       </div>
     );
   }
-
-  // Arrays
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return <div className="text-[11px]"><span className="font-medium">{cnLabel(label)}</span>: <span className="text-muted-foreground">无</span></div>;
-    }
-    const allSimple = value.every((v) => typeof v !== "object" || v === null);
-    return (
-      <div className="text-[11px]">
-        <span className="font-medium">{cnLabel(label)}</span>
-        <div className="ml-3 mt-0.5">
-          <DescriptiveJson data={value} />
-        </div>
-      </div>
-    );
-  }
-
-  // Scalars
-  const str = String(value);
-  // Boolean → badge
-  if (typeof value === "boolean") {
-    return (
-      <div className="text-[11px]">
-        <span className="font-medium">{cnLabel(label)}</span>:{" "}
-        <span className={value ? "text-green-600" : "text-muted-foreground"}>{value ? "是" : "否"}</span>
-      </div>
-    );
-  }
-  // Number → format
-  const display = typeof value === "number" && value <= 1 && label.includes("weight")
-    ? fmtWeight(value)
-    : str;
-  return (
-    <div className="text-[11px]">
-      <span className="font-medium">{cnLabel(label)}</span>:{" "}
-      <span className="text-muted-foreground">{display.length > 120 ? display.slice(0, 120) + "…" : display}</span>
-    </div>
-  );
+  return <div className="text-[11px] leading-relaxed">{jsonToProse(obj)}</div>;
 }

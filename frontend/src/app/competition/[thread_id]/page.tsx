@@ -922,8 +922,8 @@ export default function CompetitionPage() {
               <div className="shrink-0 flex justify-center px-4 pb-4">
                 <div className="w-full max-w-(--container-width-md)">
                   <CompetitionQueryInput
-                    status="streaming"
-                    disabled
+                    status={status === "running" ? "streaming" : "ready"}
+                    disabled={status === "running"}
                     industry={industry}
                     onIndustryChange={setIndustry}
                     onSubmit={handleSubmit}
