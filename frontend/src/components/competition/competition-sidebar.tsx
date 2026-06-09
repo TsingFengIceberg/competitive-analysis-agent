@@ -1,8 +1,9 @@
 "use client";
 
-import { BarChart3, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 
 import {
   Sidebar,
@@ -18,6 +19,26 @@ import {
 
 import { CompetitionHistoryList } from "./competition-history-list";
 import { CompetitionHeader } from "./competition-header";
+
+function SidebarUserFooter() {
+  const [userId, setUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/competition/me")
+      .then((r) => r.json())
+      .then((d) => { if (d.authenticated) setUserId(d.user_id ?? null); })
+      .catch(() => undefined);
+  }, []);
+
+  return (
+    <div className="px-3 py-2 text-[10px] text-muted-foreground/50 space-y-0.5">
+      {userId && <div>👤 {userId}</div>}
+      <div className="font-mono">
+        build {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") ?? "dev"}
+      </div>
+    </div>
+  );
+}
 
 export function CompetitionSidebar({
   ...props
@@ -47,7 +68,7 @@ export function CompetitionSidebar({
         {isSidebarOpen && <CompetitionHistoryList />}
       </SidebarContent>
       <SidebarFooter>
-        {/* Footer kept minimal for now */}
+        <SidebarUserFooter />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

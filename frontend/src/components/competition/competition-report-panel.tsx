@@ -133,8 +133,8 @@ export default function CompetitionReportPanel({
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-2.5 shrink-0">
         <h2 className="text-sm font-semibold truncate">{displayReport?.title ?? "分析报告"}</h2>
-        <button onClick={onClose} className="flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs font-medium hover:bg-muted hover:border-muted-foreground/30 transition-colors" title="关闭报告面板">
-          关闭 <X className="size-3.5" />
+        <button onClick={onClose} className="flex items-center justify-center rounded-md border border-border bg-muted/50 p-1.5 hover:bg-muted hover:border-muted-foreground/30 transition-colors" title="关闭报告面板">
+          <X className="size-3.5" />
         </button>
       </div>
       {/* Content */}

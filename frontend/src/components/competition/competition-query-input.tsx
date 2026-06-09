@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   PromptInput,
@@ -27,6 +27,25 @@ interface Props {
   onIndustryChange: (industry: string) => void;
   onSubmit: (message: PromptInputMessage) => void;
   onStop: () => void;
+  analysisRunning: boolean;
+}
+
+function SubmitButton({ isStreaming, analysisRunning }: { isStreaming: boolean; analysisRunning: boolean }) {
+  const [isEmpty, setIsEmpty] = useState(true);
+
+  useEffect(() => {
+    const check = () => {
+      const ta = document.querySelector("form textarea") as HTMLTextAreaElement | null;
+      setIsEmpty(!ta?.value.trim());
+    };
+    check();
+    document.addEventListener("input", check);
+    return () => document.removeEventListener("input", check);
+  }, []);
+
+  if (isStreaming) return <PromptInputSubmit status="streaming" />;
+  const gray = isEmpty && !analysisRunning;
+  return <PromptInputSubmit status="ready" className={gray ? "opacity-40" : ""} />;
 }
 
 const INDUSTRIES: Record<string, string> = {
@@ -46,6 +65,7 @@ export default function CompetitionQueryInput({
   onIndustryChange,
   onSubmit,
   onStop,
+  analysisRunning,
 }: Props) {
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -85,7 +105,7 @@ export default function CompetitionQueryInput({
           </Select>
         </div>
         {/* Submit/Stop button — right side */}
-        <PromptInputSubmit status={isStreaming ? "streaming" : "ready"} />
+        <SubmitButton isStreaming={isStreaming} analysisRunning={analysisRunning} />
       </PromptInputFooter>
     </PromptInput>
   );

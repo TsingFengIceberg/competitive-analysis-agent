@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 
 import { AuthProvider } from "@/core/auth/AuthProvider";
 import { getServerSideUser } from "@/core/auth/server";
@@ -8,6 +9,11 @@ import { assertNever } from "@/core/auth/types";
 import { CompetitionContent } from "./competition-content";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "CI-Agent 竞品分析",
+  icons: { icon: "/logo.png" },
+};
 
 export default async function CompetitionLayout({
   children,

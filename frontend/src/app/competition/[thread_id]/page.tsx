@@ -9,7 +9,6 @@ import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
 import CompetitionReportPanel from "@/components/competition/competition-report-panel";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
@@ -447,7 +446,6 @@ export default function CompetitionPage() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const intentionalCloseRef = useRef(false);
-  const startTimeRef = useRef<number>(0);
 
   // SSE connection with auto-reconnect (DF-style)
   useEffect(() => {
@@ -501,7 +499,9 @@ export default function CompetitionPage() {
       es.addEventListener("progress", (e) => {
         console.log("[SSE] progress:", e.data.slice(0, 80));
         const data = JSON.parse(e.data);
-        const phaseKey = data.phase as string || progressMessageToPhase(data.message as string);
+        let phaseKey = (data.phase as string) || progressMessageToPhase(data.message as string);
+        // "resolved" marks completion of "resolving" — map to same phase
+        if (phaseKey === "resolved") phaseKey = "resolving";
 
         if (phaseKey) {
           const info = PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
@@ -631,8 +631,6 @@ export default function CompetitionPage() {
   }, [threadId, status]);
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenEntry[]>([]);
-  const [createdAt, setCreatedAt] = useState<string | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [hitlVisible, setHitlVisible] = useState(false);
   const [hitlSubmitting, setHitlSubmitting] = useState(false);
@@ -665,19 +663,6 @@ export default function CompetitionPage() {
     }
   }, [status]);
 
-  // Elapsed-time timer — ticks every second while running
-  useEffect(() => {
-    if (status !== "running" || !createdAt) {
-      if (status !== "running") setElapsedSeconds(0);
-      return;
-    }
-    const start = new Date(createdAt).getTime();
-    const tickFn = () => setElapsedSeconds(Math.floor((Date.now() - start) / 1000));
-    tickFn();
-    const interval = setInterval(tickFn, 1000);
-    return () => clearInterval(interval);
-  }, [status, createdAt]);
-
   // Phase live-timer tick — drives per-phase elapsed display while running
   useEffect(() => {
     if (status !== "running") return;
@@ -691,7 +676,6 @@ export default function CompetitionPage() {
 
     setQuery(text);
     setUserMessages((prev) => [...prev, { text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) }]);
-    startTimeRef.current = Date.now();
     setStatus("running");
     setPhaseMap(new Map());
     setStreamingContent({});
@@ -788,7 +772,6 @@ export default function CompetitionPage() {
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
-        if (report.created_at) setCreatedAt(report.created_at);
         setStatus(report.status);
       } catch { /* retry on transient errors */ }
     };
@@ -882,49 +865,10 @@ export default function CompetitionPage() {
   }, [threadId]);
 
 
-  const statusBadge = status === "idle" ? <Badge variant="outline">就绪</Badge>
-    : status === "running" ? <Badge variant="default">运行中…</Badge>
-    : status === "completed" ? <Badge variant="secondary">✅ 完成</Badge>
-    : status === "approved" ? <Badge variant="secondary">✅ 已批准</Badge>
-    : status === "interrupted" ? <Badge variant="outline">⏸ 已终止</Badge>
-    : <Badge variant="destructive">❌ 失败</Badge>;
-
-  const formatElapsed = (s: number): string => {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    if (h > 0) return `${h}h ${m}m ${sec}s`;
-    if (m > 0) return `${m}m ${sec}s`;
-    return `${sec}s`;
-  };
-
-  const elapsedBadge = (status === "running" && elapsedSeconds > 0)
-    ? <span className="font-mono text-xs text-muted-foreground">{formatElapsed(elapsedSeconds)}</span>
-    : null;
-
   const isWelcome = status === "idle";
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Header — DF-style: transparent in welcome, visible otherwise */}
-      <header className={cn(
-        "absolute top-0 right-0 left-0 z-30 flex h-10 shrink-0 items-center gap-3 px-4",
-        isWelcome ? "bg-background/0" : "bg-background/80 shadow-xs backdrop-blur",
-      )}>
-        {statusBadge}
-        {elapsedBadge}
-        <span className="text-[11px] text-muted-foreground font-mono select-none ml-auto">
-          build {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") || "dev"}
-        </span>
-        {authLoading ? (
-          <span className="text-xs text-muted-foreground ml-auto">登录中...</span>
-        ) : isAuthenticated ? (
-          <span className="text-xs text-muted-foreground">👤 {userId}</span>
-        ) : (
-          <span className="text-xs text-muted-foreground ml-auto">未登录</span>
-        )}
-      </header>
-
       {/* Main area: chat column [+ inline report panel when open] */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Chat column */}
@@ -960,10 +904,8 @@ export default function CompetitionPage() {
               <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
                 <div className="relative w-full max-w-(--container-width-sm) -translate-y-[calc(50vh-96px)]">
                   <div className="mb-6 text-center">
+                    <img src="/logo.png" alt="CI-Agent" className="size-12 mx-auto mb-3 rounded-full" />
                     <h2 className="text-xl font-semibold">竞品分析</h2>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      CI-Agent 将自动完成采集 → 分析 → 质检 → 报告全流程
-                    </p>
                   </div>
                   <CompetitionQueryInput
                     status="ready"
@@ -972,6 +914,7 @@ export default function CompetitionPage() {
                     onIndustryChange={setIndustry}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    analysisRunning={false}
                   />
                 </div>
               </div>
@@ -985,6 +928,7 @@ export default function CompetitionPage() {
                     onIndustryChange={setIndustry}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    analysisRunning={status === "running"}
                   />
                 </div>
               </div>
