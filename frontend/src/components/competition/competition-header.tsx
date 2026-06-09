@@ -1,12 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 
 import {
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
@@ -23,9 +19,8 @@ export function CompetitionHeader({ className }: { className?: string }) {
       )}
     >
       {state === "collapsed" ? (
-        <div className="group-has-data-[collapsible=icon]/sidebar-wrapper:-translate-y flex w-full cursor-pointer items-center justify-center">
-          <img src="/logo.png" alt="CI-Agent" className="size-6 rounded-full" />
-          <SidebarTrigger className="hidden pl-2 group-hover/competition-header:block" />
+        <div className="flex w-full items-center justify-center">
+          <SidebarTrigger />
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2">

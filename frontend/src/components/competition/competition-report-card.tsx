@@ -40,7 +40,7 @@ export default function CompetitionReportCard({
           <div>
             <h4 className="text-sm font-semibold leading-tight">{rd.title}</h4>
             <p className="text-[11px] text-muted-foreground">
-              {rd.products?.join(", ")} · {rd.persona === "entrepreneur" ? "创业者视角" : "产品经理视角"}
+              {rd.products?.join(", ")}
             </p>
           </div>
         </div>

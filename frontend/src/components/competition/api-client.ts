@@ -41,6 +41,8 @@ export interface AnalyzeResponse {
 export interface ReportResponse {
   thread_id: string;
   status: string;
+  query: string;
+  title: string;
   report_data: ReportData | null;
   metrics: Record<string, number> | null;
   error: string | null;

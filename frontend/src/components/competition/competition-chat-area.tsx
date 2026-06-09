@@ -88,9 +88,10 @@ export default function CompetitionChatArea({
   function totalElapsed(): number {
     if (phases.length === 0) return 0;
     const start = phases[0]!.startTime;
-    const lastEnd = phases[phases.length - 1]!.endTime;
-    if (!lastEnd) return Math.round((Date.now() - start) / 1000);
-    return Math.round((lastEnd - start) / 1000);
+    // Find last phase with a real endTime (skip eagerly-created hitl_gate)
+    const lastCompleted = [...phases].reverse().find((p) => p.endTime != null);
+    if (!lastCompleted) return Math.round((Date.now() - start) / 1000);
+    return Math.round((lastCompleted.endTime! - start) / 1000);
   }
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -115,7 +116,7 @@ export default function CompetitionChatArea({
 
   return (
     <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
-      <div className="flex flex-col gap-5 p-4">
+      <div className="mx-auto max-w-(--container-width-md) flex flex-col gap-5 p-4">
         {/* User messages */}
         {userMessages.map((msg, i) => (
           <div key={i} className="flex flex-col items-end gap-1">
@@ -224,8 +225,8 @@ const PhaseMessage = memo(function PhaseMessage({
           ) : (
             <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
           )}
-          <span className="text-xs shrink-0">{phase.icon}</span>
-          <span className="text-xs font-medium">
+          <span className="text-sm shrink-0">{phase.icon}</span>
+          <span className="text-sm font-bold">
             {isCompleted ? phase.label : `正在${phase.label}`}
           </span>
           {phase.tokens > 0 && (
@@ -389,6 +390,10 @@ function BareJsonAware({ text, live }: { text: string; live?: boolean }) {
   let hasIncomplete = false;
 
   while (remaining.length > 0) {
+    // Strip leading JSON array syntax chars (prevent rendering [ , ] as text)
+    remaining = remaining.replace(/^[\s,\[\]]+/, "");
+    if (remaining.length === 0) break;
+
     const jsonIdx = remaining.search(/[\[{]/);
     if (jsonIdx === -1) { segments.push({ type: "text", content: remaining }); break; }
     if (jsonIdx > 0) segments.push({ type: "text", content: remaining.slice(0, jsonIdx) });

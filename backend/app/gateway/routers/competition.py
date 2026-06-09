@@ -68,6 +68,8 @@ class ReportResponse(BaseModel):
 
     thread_id: str
     status: str
+    query: str = ""
+    title: str = ""
     report_data: dict | None = None
     metrics: dict | None = None
     error: str | None = None
@@ -708,6 +710,14 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     user_id = await _get_user_id(fastapi_request)
     _associate_thread(thread_id, user_id)
 
+    # Persist to DB on creation (§18)
+    from deerflow.competition.db import upsert_analysis, init_db, list_history as _db_list_history
+    # Generate initial title: "新建分析 {N}"
+    conn = init_db()
+    existing_count = len(_db_list_history(conn, limit=1000))
+    conn.close()
+    initial_title = f"新建分析 {existing_count + 1}"
+
     # Store entry immediately — frontend can start polling right away
     _store[thread_id] = {
         "status": "running",
@@ -724,14 +734,14 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
         "created_at": datetime.now(UTC).isoformat(),
         "query": request.query,
         "products": [],
+        "title": initial_title,
     }
 
-    # Persist to DB on creation (§18)
-    from deerflow.competition.db import upsert_analysis
     upsert_analysis(
         thread_id=thread_id, status="running", user_id=user_id,
         query=request.query, products=request.target_products or [],
         industry=request.industry, persona=request.persona,
+        title=initial_title,
     )
 
     # Resolve products + run graph entirely in background thread
@@ -793,7 +803,27 @@ async def get_report(thread_id: str) -> ReportResponse:
     """Get the generated report for a completed analysis."""
     entry = _store.get(thread_id)
     if entry is None:
-        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+        # Fallback: load from SQLite (survives gateway restart)
+        from deerflow.competition.db import get_analysis, init_db
+        conn = init_db()
+        db_record = get_analysis(thread_id, conn=conn)
+        conn.close()
+        if db_record is None:
+            raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+        history = _list_history(thread_id)
+        return ReportResponse(
+            thread_id=thread_id,
+            status=db_record.get("status", "unknown"),
+            query=db_record.get("query", ""),
+            title=db_record.get("title", ""),
+            report_data=db_record.get("report_data"),
+            metrics=db_record.get("metrics"),
+            error=None,
+            history_count=len(history),
+            token_usage=db_record.get("token_usage", []),
+            created_at=db_record.get("created_at"),
+        )
 
     status = entry.get("status", "unknown")
     report_data = entry.get("state", {}).get("report_data")
@@ -805,6 +835,8 @@ async def get_report(thread_id: str) -> ReportResponse:
     return ReportResponse(
         thread_id=thread_id,
         status=status,
+        query=entry.get("query", ""),
+        title=entry.get("title", ""),
         report_data=report_data,
         metrics=metrics,
         error=error,
@@ -819,7 +851,15 @@ async def get_report_history(thread_id: str):
     """Get report revision history (from persisted BranchSnapshotStore)."""
     entry = _store.get(thread_id)
     if entry is None:
-        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+        # Fallback: return history from DB even when _store is gone (gateway restart)
+        from deerflow.competition.db import get_analysis, init_db
+        conn = init_db()
+        db_record = get_analysis(thread_id, conn=conn)
+        conn.close()
+        if db_record is None:
+            raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+        history = _list_history(thread_id)
+        return {"history": history, "count": len(history)}
     history = _list_history(thread_id)
     return {"history": history, "count": len(history)}
 
@@ -899,7 +939,11 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
 
 def _reanalyze_sync(thread_id: str, action: str) -> None:
-    """Run reanalysis in background thread: Analyst → Reviewer → Writer."""
+    """Run reanalysis in background thread and emit SSE phase events.
+
+    Emits progress + node_end events so the frontend can render per-phase
+    bubbles for HITL re-executions (re-collect, re-analyze, rewrite).
+    """
     import logging
     logger = logging.getLogger(__name__)
 
@@ -920,20 +964,60 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
         from deerflow.competition.nodes.writer import writer_node
 
+        # Track reanalysis round for unique phase keys (writer_r2, analyst_r2, ...)
+        round_num = entry.setdefault("reanalysis_round", 0) + 1
+        entry["reanalysis_round"] = round_num
+        suffix = f"_r{round_num}"
+
+        action_labels = {"rewrite": "重写报告", "reanalyze": "重新分析", "replan": "重新搜索"}
+        label = f"{action_labels.get(action, action)}"
+
+        # ── Node metadata for re-execution phases ──
+        _RE_NODES: dict[str, tuple[str, str, str]] = {
+            "collector": ("collector", "📊", "重新采集"),
+            "analyst":   ("analyst",   "🔍", "重新分析"),
+            "reviewer":  ("reviewer",  "✅", "重新审查"),
+            "writer":    ("writer",    "📝", "重写报告"),
+        }
+
+        def _run_re_node(node_key: str, node_fn, st: dict) -> None:
+            """Execute one re-execution node and emit SSE phase events."""
+            _, icon, display_label = _RE_NODES[node_key]
+            phase_key = f"{node_key}{suffix}"
+
+            _emit_event(thread_id, "progress", {
+                "phase": phase_key,
+                "label": display_label,
+                "icon": icon,
+                "message": f"{display_label} 开始…",
+            })
+
+            result = node_fn(st)
+            st.update(result)
+
+            _emit_event(thread_id, "node_end", {
+                "node": phase_key,
+                "label": display_label,
+                "icon": icon,
+                "status": "done",
+                "progress": f"{display_label} 完成",
+                "tokens": 0,
+            })
+
+        # Change status so frontend SSE reconnects
+        _store[thread_id]["status"] = "running"
+        _store[thread_id]["state"] = state
+
         if action == "rewrite":
-            result = writer_node(state)
-            state.update(result)
+            _run_re_node("writer", writer_node, state)
         elif action == "reanalyze":
             from deerflow.competition.nodes.analyst import analyst_node
             from deerflow.competition.nodes.reviewer import reviewer_node
 
             logger.info("Reanalysis starting for %s", thread_id[:12])
-            result = analyst_node(state)
-            state.update(result)
-            result = reviewer_node(state)
-            state.update(result)
-            result = writer_node(state)
-            state.update(result)
+            _run_re_node("analyst", analyst_node, state)
+            _run_re_node("reviewer", reviewer_node, state)
+            _run_re_node("writer", writer_node, state)
             logger.info("Reanalysis completed for %s", thread_id[:12])
         elif action == "replan":
             from deerflow.competition.nodes.analyst import analyst_node
@@ -941,21 +1025,18 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             from deerflow.competition.nodes.reviewer import reviewer_node
 
             logger.info("Replan starting for %s", thread_id[:12])
-            result = collector_node(state)
-            state.update(result)
-            result = analyst_node(state)
-            state.update(result)
-            result = reviewer_node(state)
-            state.update(result)
-            result = writer_node(state)
-            state.update(result)
+            _run_re_node("collector", collector_node, state)
+            _run_re_node("analyst", analyst_node, state)
+            _run_re_node("reviewer", reviewer_node, state)
+            _run_re_node("writer", writer_node, state)
             logger.info("Replan completed for %s", thread_id[:12])
 
-        action_labels = {"rewrite": "重写报告", "reanalyze": "重新分析", "replan": "重新搜索"}
-        label = f"{action_labels.get(action, action)}"
         _store[thread_id]["state"] = state
         _add_token_entry(thread_id, label)
         _store[thread_id]["status"] = "completed"
+
+        # Emit completion so frontend stops the re-execution SSE stream
+        _emit_event(thread_id, "end", {"status": "completed"})
 
         # Save new report as a version after reanalysis completes
         new_report = state.get("report_data")
@@ -974,6 +1055,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
+        _emit_event(thread_id, "error", {"error": str(e)[:200], "status": "failed"})
 
 
 def _save_to_db(thread_id: str, entry: dict) -> None:
@@ -1267,6 +1349,32 @@ async def pin_db_report(thread_id: str, pinned: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class RenameRequest(BaseModel):
+    title: str
+
+
+@router.patch("/db-report/{thread_id}/title")
+async def rename_db_report(thread_id: str, body: RenameRequest):
+    """Rename a saved report."""
+    try:
+        from deerflow.competition.db import upsert_analysis, get_analysis, init_db
+
+        conn = init_db()
+        record = get_analysis(thread_id, conn=conn)
+        if record is None:
+            conn.close()
+            raise HTTPException(status_code=404, detail=f"Report not found: {thread_id}")
+
+        upsert_analysis(thread_id=thread_id, title=body.title, conn=conn)
+        conn.close()
+        return {"title": body.title, "thread_id": thread_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to rename report %s: %s", thread_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Execution Replay (P1) ──
 
 
@@ -1449,6 +1557,25 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             _store[thread_id]["status"] = "running"
             _store[thread_id]["state"]["target_products"] = products
             _store[thread_id]["state"]["complexity"] = "standard"
+
+        # Auto-generate title from resolved products
+        try:
+            n = len(products)
+            if n == 1:
+                title = f"{products[0]} 竞品分析"
+            elif n == 2:
+                title = f"{products[0]} vs {products[1]}"
+            elif n >= 3:
+                title = f"{products[0]}、{products[1]} 等产品竞品分析"
+            else:
+                title = ""
+            if title:
+                from deerflow.competition.db import upsert_analysis as _ua
+                _ua(thread_id=thread_id, title=title, status="running")
+                _store[thread_id]["title"] = title
+                _emit_event(thread_id, "title", {"title": title, "thread_id": thread_id})
+        except Exception:
+            pass  # Title is cosmetic; don't block analysis
 
         if _cancelled():
             clear_cancel_checker()

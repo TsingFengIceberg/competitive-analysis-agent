@@ -38,6 +38,9 @@ const PHASE_INFO: Record<string, { label: string; icon: string }> = {
   hitl_gate:  { label: "等待审批", icon: "👤" },
 };
 
+// Phase execution order — used to eagerly create the next phase bubble on node_end
+const PHASE_ORDER = ["resolving", "orchestrator", "collector", "analyst", "reviewer", "writer", "hitl_gate"];
+
 // Map agent name (from messages-tuple chunks) → phase key
 const AGENT_TO_PHASE: Record<string, string> = {
   Orchestrator: "orchestrator",
@@ -301,7 +304,6 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
         <>
           <div>
             <span className="font-medium text-foreground">{rd.title}</span>
-            <span className="ml-1 text-muted-foreground">· {rd.persona === "entrepreneur" ? "创业" : "PM"}视角</span>
           </div>
           {rd.products?.length > 0 && (
             <div className="flex flex-wrap gap-1">
@@ -364,6 +366,16 @@ export default function CompetitionPage() {
       setStatus("idle");
       setThreadId(null);
       setReportData(null);
+      setPhaseMap(new Map());
+      setUserMessages([]);
+      setTokenUsage([]);
+      setHistoryEntries([]);
+      setHistoryCount(0);
+      setDbLoadedReport(null);
+      setDbLoadedThreadId(null);
+      setViewingHistory(null);
+      setReportPanelOpen(false);
+      setSseConnected(false);
     }
   }, [threadIdFromURL]);
 
@@ -435,6 +447,37 @@ export default function CompetitionPage() {
   }, []);
 
   const [threadId, setThreadId] = useState<string | null>(null);
+
+  // Cache phaseMap per thread_id so switching between threads preserves progress
+  const phaseCacheRef = useRef<Map<string, Map<string, PhaseState>>>(new Map());
+  const prevThreadIdRef = useRef<string | null>(null);
+
+  // Save/restore phaseMap when switching threads
+  useEffect(() => {
+    const prev = prevThreadIdRef.current;
+    // Save current phases under the old thread_id (only if non-empty)
+    if (prev && prev !== threadId && phaseMap.size > 0) {
+      phaseCacheRef.current.set(prev, new Map(phaseMap));
+    }
+    // Restore cached phases for the new thread_id
+    if (threadId) {
+      const cached = phaseCacheRef.current.get(threadId);
+      if (cached && cached.size > 0) {
+        setPhaseMap(new Map(cached));
+      } else {
+        setPhaseMap(new Map());
+      }
+    }
+    // Always update prev ref (even for null, so /new navigation doesn't leave stale state)
+    prevThreadIdRef.current = threadId;
+  }, [threadId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset history reconstruction guard when thread changes
+  useEffect(() => {
+    historyReconstructedRef.current = false;
+    titleRefreshedRef.current = false;
+  }, [threadId]);
+
   const [status, setStatus] = useState<string>("idle");
   const [phaseMap, setPhaseMap] = useState<Map<string, PhaseState>>(new Map());
   const [tick, setTick] = useState(0); // live timer trigger
@@ -446,6 +489,7 @@ export default function CompetitionPage() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const intentionalCloseRef = useRef(false);
+  const historyReconstructedRef = useRef(false);
 
   // SSE connection with auto-reconnect (DF-style)
   useEffect(() => {
@@ -504,7 +548,7 @@ export default function CompetitionPage() {
         if (phaseKey === "resolved") phaseKey = "resolving";
 
         if (phaseKey) {
-          const info = PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
+          const info = PHASE_INFO[phaseKey] ?? { label: (data.label as string) ?? phaseKey, icon: (data.icon as string) ?? "⚙️" };
           setPhaseMap((prev) => {
             const next = new Map(prev);
             const existing = next.get(phaseKey);
@@ -537,6 +581,8 @@ export default function CompetitionPage() {
         const data = JSON.parse(e.data);
         const node = data.node as string;
         const phaseKey = node; // node name matches phase key directly
+        const eventLabel = data.label as string | undefined;
+        const eventIcon = data.icon as string | undefined;
         const info = PHASE_INFO[phaseKey];
         const currentContent = { ...streamingRef.current };
         const perPhaseTokens = (data.tokens as number) ?? 0;
@@ -546,8 +592,8 @@ export default function CompetitionPage() {
           const existing = next.get(phaseKey);
           next.set(phaseKey, {
             key: phaseKey,
-            label: info?.label ?? phaseKey,
-            icon: info?.icon ?? "⚙️",
+            label: existing?.label ?? eventLabel ?? info?.label ?? phaseKey,
+            icon: existing?.icon ?? eventIcon ?? info?.icon ?? "⚙️",
             status: "completed",
             startTime: existing?.startTime ?? Date.now(),
             endTime: Date.now(),
@@ -555,6 +601,27 @@ export default function CompetitionPage() {
             content: { ...(existing?.content ?? {}), ...currentContent },
             details: existing?.details ?? [],
           });
+
+          // Eagerly create the next phase so the bubble appears immediately
+          const idx = PHASE_ORDER.indexOf(phaseKey);
+          if (idx >= 0 && idx < PHASE_ORDER.length - 1) {
+            const nextKey = PHASE_ORDER[idx + 1]!;
+            if (!next.has(nextKey)) {
+              const nextInfo = PHASE_INFO[nextKey] ?? { label: nextKey, icon: "⚙️" };
+              next.set(nextKey, {
+                key: nextKey,
+                label: nextInfo.label,
+                icon: nextInfo.icon,
+                status: "running",
+                startTime: Date.now(),
+                endTime: null,
+                tokens: 0,
+                content: {},
+                details: [],
+              });
+            }
+          }
+
           return next;
         });
 
@@ -569,19 +636,24 @@ export default function CompetitionPage() {
         const endData = JSON.parse(e.data);
 
         // Flush any remaining streaming content into the last active phase
-        if (Object.keys(currentContent).length > 0) {
-          setPhaseMap((prev) => {
-            const next = new Map(prev);
-            // Find last phase with running status or create analyzer fallback
-            for (const [key, ph] of next) {
-              if (ph.status === "running") {
-                next.set(key, { ...ph, content: { ...ph.content, ...currentContent } });
-                break;
+        // and mark ALL running phases as completed
+        setPhaseMap((prev) => {
+          const next = new Map(prev);
+          let flushed = false;
+          for (const [key, ph] of next) {
+            if (ph.status === "running") {
+              const newPh = { ...ph };
+              if (!flushed && Object.keys(currentContent).length > 0) {
+                newPh.content = { ...newPh.content, ...currentContent };
+                flushed = true;
               }
+              newPh.status = "completed" as const;
+              newPh.endTime = Date.now();
+              next.set(key, newPh);
             }
-            return next;
-          });
-        }
+          }
+          return next;
+        });
 
         streamingRef.current = {};
         setStreamingContent({});
@@ -645,6 +717,7 @@ export default function CompetitionPage() {
   const [reportPanelOpen, setReportPanelOpen] = useState(false);
   const [userMessages, setUserMessages] = useState<{text: string; timestamp: string}[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const titleRefreshedRef = useRef(false);
 
   // Show HITL card when analysis completes or fails, reset submitting flag
   useEffect(() => {
@@ -697,6 +770,8 @@ export default function CompetitionPage() {
       });
       setThreadId(res.thread_id);
       window.history.replaceState(null, "", `/competition/${res.thread_id}`);
+      // Notify sidebar to refresh history list immediately
+      window.dispatchEvent(new CustomEvent("competition:refresh-history"));
     } catch (err) {
       setStatus("error");
       console.error("Analysis start failed:", err);
@@ -772,6 +847,12 @@ export default function CompetitionPage() {
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
+        if (report.query) setQuery(report.query);
+        // Dispatch refresh when auto-title is generated (not "新建分析 #N")
+        if (!titleRefreshedRef.current && report.title && !report.title.startsWith("新建分析")) {
+          titleRefreshedRef.current = true;
+          window.dispatchEvent(new CustomEvent("competition:refresh-history"));
+        }
         setStatus(report.status);
       } catch { /* retry on transient errors */ }
     };
@@ -779,6 +860,78 @@ export default function CompetitionPage() {
     pollRef.current = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [threadId]);
+
+  // Reconstruct phase bubbles + user message from persisted DB data
+  // (triggers once when loaded from SQLite after gateway restart — SSE never populated phaseMap)
+  useEffect(() => {
+    if (historyReconstructedRef.current) return;
+    if (status === "running" || status === "idle") return;
+    if (phaseMap.size > 0) return;
+    if (tokenUsage.length === 0) return;
+
+    historyReconstructedRef.current = true;
+
+    // 1) Create user message from the analysis query
+    if (query && userMessages.length === 0) {
+      setUserMessages([{
+        text: query,
+        timestamp: reportData?.generated_at
+          ? new Date(reportData.generated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+          : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+      }]);
+    }
+
+    // 2) Extract agent token counts from the "初始分析" entry
+    const initialEntry = tokenUsage.find((e) => e.label === "初始分析") ?? tokenUsage[0]!;
+    const agents: Record<string, number> = initialEntry.agents ?? {};
+
+    // 3) Determine which phases ran
+    const phaseKeysToShow: string[] = [];
+
+    // "resolving" phase: include if reportData has products (LLM product resolution happened)
+    if (reportData?.products && reportData.products.length > 0) {
+      phaseKeysToShow.push("resolving");
+    }
+
+    // Graph phases in execution order
+    for (const phaseKey of PHASE_ORDER) {
+      if (phaseKey === "resolving" || phaseKey === "hitl_gate") continue;
+      const agentName = Object.entries(AGENT_TO_PHASE).find(([, pk]) => pk === phaseKey)?.[0];
+      if (agentName && (agents[agentName] ?? 0) > 0) {
+        phaseKeysToShow.push(phaseKey);
+      }
+    }
+
+    // 4) Include hitl_gate only if status is "approved"
+    if (status === "approved") {
+      phaseKeysToShow.push("hitl_gate");
+    }
+
+    // 5) Create PhaseState entries
+    const newPhaseMap = new Map<string, PhaseState>();
+    const baseTime = Date.now();
+    phaseKeysToShow.forEach((phaseKey, idx) => {
+      const info = PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
+      const agentName = Object.entries(AGENT_TO_PHASE).find(([, pk]) => pk === phaseKey)?.[0];
+      const tokens = agentName ? (agents[agentName] ?? 0) : 0;
+
+      newPhaseMap.set(phaseKey, {
+        key: phaseKey,
+        label: info.label,
+        icon: info.icon,
+        status: "completed",
+        startTime: baseTime - 60000 * (phaseKeysToShow.length - idx),
+        endTime: baseTime - 60000 * (phaseKeysToShow.length - idx - 1),
+        tokens,
+        content: {},
+        details: [],
+      });
+    });
+
+    if (newPhaseMap.size > 0) {
+      setPhaseMap(newPhaseMap);
+    }
+  }, [status, phaseMap.size, tokenUsage, query, userMessages.length, reportData]);
 
   const handleToggleDiff = useCallback((version: number) => {
     setSelectedForDiff((prev) => {
@@ -869,6 +1022,13 @@ export default function CompetitionPage() {
 
   return (
     <div className="flex h-full flex-col bg-background">
+      {/* CI-Agent badge - top-left corner */}
+      {!isWelcome && (
+        <div className="pointer-events-none absolute left-3 top-3 z-20 flex select-none items-center gap-1.5 rounded-lg bg-background/80 px-2 py-1 backdrop-blur-sm">
+          <img src="/logo.png" alt="CI-Agent" className="size-4 rounded-full" />
+          <span className="text-[11px] font-medium text-muted-foreground/60">CI-Agent</span>
+        </div>
+      )}
       {/* Main area: chat column [+ inline report panel when open] */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Chat column */}
@@ -876,7 +1036,7 @@ export default function CompetitionPage() {
           <main className="flex min-h-0 max-w-full grow flex-col">
             {/* Messages */}
             <div className="flex min-h-0 flex-1 justify-center">
-              <div className={cn("flex flex-col flex-1 min-h-0 w-full", isWelcome ? "max-w-(--container-width-sm)" : "max-w-(--container-width-md)")}>
+              <div className="flex flex-col flex-1 min-h-0 w-full">
                 <CompetitionChatArea
                   phases={Array.from(phaseMap.values()).sort((a, b) => a.startTime - b.startTime)}
                   streamingContent={streamingContent}

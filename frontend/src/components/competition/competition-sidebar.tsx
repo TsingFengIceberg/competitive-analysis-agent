@@ -22,6 +22,7 @@ import { CompetitionHeader } from "./competition-header";
 
 function SidebarUserFooter() {
   const [userId, setUserId] = useState<string | null>(null);
+  const { open: isSidebarOpen } = useSidebar();
 
   useEffect(() => {
     fetch("/api/competition/me")
@@ -29,6 +30,16 @@ function SidebarUserFooter() {
       .then((d) => { if (d.authenticated) setUserId(d.user_id ?? null); })
       .catch(() => undefined);
   }, []);
+
+  if (!isSidebarOpen) {
+    return (
+      <div className="flex justify-center py-2">
+        <div className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
+          {userId ? userId.slice(0, 2).toUpperCase() : "?"}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-3 py-2 text-[10px] text-muted-foreground/50 space-y-0.5">

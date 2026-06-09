@@ -95,6 +95,7 @@ def _migrate_analysis_history(conn: sqlite3.Connection) -> None:
         "ALTER TABLE analysis_history ADD COLUMN updated_at TEXT",
         "ALTER TABLE analysis_history ADD COLUMN token_usage TEXT",
         "ALTER TABLE analysis_history ADD COLUMN pinned INTEGER DEFAULT 0",
+        "ALTER TABLE analysis_history ADD COLUMN title TEXT",
     ]
     for sql in migrations:
         try:
@@ -209,6 +210,7 @@ def upsert_analysis(
     products: list[str] | None = None,
     industry: str | None = None,
     persona: str | None = None,
+    title: str | None = None,
     current_node: str | None = None,
     progress: str | None = None,
     key_findings: list[str] | None = None,
@@ -238,8 +240,8 @@ def upsert_analysis(
         conn.execute(
             """INSERT INTO analysis_history
                (thread_id, user_id, query, products, industry, persona, status,
-                current_node, progress, created_at, updated_at, token_usage)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                current_node, progress, created_at, updated_at, token_usage, title)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 thread_id,
                 user_id or "default",
@@ -252,6 +254,7 @@ def upsert_analysis(
                 progress or "",
                 now, now,
                 json.dumps(token_usage or []),
+                title or "",
             ),
         )
     else:
@@ -269,6 +272,9 @@ def upsert_analysis(
                 updates.append(f"{field} = ?")
                 params.append(value)
 
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
         if products is not None:
             updates.append("products = ?")
             params.append(json.dumps(products))
@@ -328,7 +334,7 @@ def get_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> dict
     if conn is None:
         conn = init_db()
     row = conn.execute(
-        "SELECT thread_id, query, products, persona, created_at, key_findings, metrics, report_data "
+        "SELECT thread_id, query, products, persona, created_at, key_findings, metrics, report_data, status, token_usage, title "
         "FROM analysis_history WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
@@ -343,6 +349,9 @@ def get_analysis(thread_id: str, conn: sqlite3.Connection | None = None) -> dict
         "key_findings": json.loads(row[5]) if row[5] else [],
         "metrics": json.loads(row[6]) if row[6] else {},
         "report_data": json.loads(row[7]) if row[7] else None,
+        "status": row[8] or "unknown",
+        "token_usage": json.loads(row[9]) if row[9] else [],
+        "title": row[10] or "",
     }
 
 
@@ -374,10 +383,10 @@ def pin_analysis(thread_id: str, pinned: bool, conn: sqlite3.Connection | None =
 
 
 def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """List recent analysis history entries (§18: +status +industry +pinned)."""
+    """List recent analysis history entries (§18: +status +industry +pinned +title)."""
     rows = conn.execute(
         "SELECT thread_id, user_id, query, products, industry, persona, status, "
-        "current_node, progress, created_at, key_findings, metrics, pinned "
+        "current_node, progress, created_at, key_findings, metrics, pinned, title "
         "FROM analysis_history ORDER BY pinned DESC, created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
@@ -391,6 +400,7 @@ def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
             "key_findings": json.loads(row[10]) if row[10] else [],
             "metrics": json.loads(row[11]) if row[11] else {},
             "pinned": bool(row[12]) if len(row) > 12 and row[12] else False,
+            "title": row[13] if len(row) > 13 else "",
         }
         for row in rows
     ]

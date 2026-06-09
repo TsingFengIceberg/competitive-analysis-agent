@@ -248,7 +248,6 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
         <>
           <div>
             <span className="font-medium text-foreground">{rd.title}</span>
-            <span className="ml-1 text-muted-foreground">· {rd.persona === "entrepreneur" ? "创业" : "PM"}视角</span>
           </div>
           {rd.products?.length > 0 && (
             <div className="flex flex-wrap gap-1">

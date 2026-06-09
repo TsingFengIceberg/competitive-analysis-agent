@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 interface HistoryRecord {
   thread_id: string;
   query: string;
+  title?: string;
   products: string[];
   created_at: string;
   pinned?: boolean;
@@ -46,11 +47,11 @@ export function CompetitionHistoryList() {
       if (res.ok) {
         const data = await res.json();
         const list = (data.history ?? []) as HistoryRecord[];
-        // Sort: pinned first, then by created_at desc (backend does this, but double-check)
+        // Sort: pinned first, then by created_at desc
         list.sort((a, b) => {
           if (a.pinned && !b.pinned) return -1;
           if (!a.pinned && b.pinned) return 1;
-          return 0;
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
         });
         setRecords(list);
       }
@@ -60,6 +61,13 @@ export function CompetitionHistoryList() {
 
   useEffect(() => {
     fetchHistory();
+  }, [fetchHistory]);
+
+  // Listen for refresh events dispatched by other components (e.g. page starts new analysis)
+  useEffect(() => {
+    const handler = () => fetchHistory();
+    window.addEventListener("competition:refresh-history", handler);
+    return () => window.removeEventListener("competition:refresh-history", handler);
   }, [fetchHistory]);
 
   const handleDelete = useCallback(async () => {
@@ -88,11 +96,11 @@ export function CompetitionHistoryList() {
           const updated = prev.map((r) =>
             r.thread_id === record.thread_id ? { ...r, pinned: newPinned } : r,
           );
-          // Re-sort
+          // Re-sort: pinned first, then by created_at desc
           updated.sort((a, b) => {
             if (a.pinned && !b.pinned) return -1;
             if (!a.pinned && b.pinned) return 1;
-            return 0;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
           });
           return updated;
         });
@@ -140,7 +148,7 @@ export function CompetitionHistoryList() {
                         {record.pinned && (
                           <Pin className="mr-1 size-3 shrink-0 text-amber-500" />
                         )}
-                        <span className="truncate">{record.query}</span>
+                        <span className="truncate">{record.title || record.query}</span>
                       </Link>
                     </SidebarMenuButton>
                     <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover/item:flex items-center gap-0.5">
@@ -178,7 +186,7 @@ export function CompetitionHistoryList() {
             <DialogTitle>删除分析记录</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除 "{deleteTarget?.query}" 吗？此操作不可撤销。
+            确定要删除 "{deleteTarget?.title || deleteTarget?.query}" 吗？此操作不可撤销。
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
