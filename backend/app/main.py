@@ -65,6 +65,15 @@ def create_app() -> FastAPI:
     async def auth_logout():
         return {"status": "ok"}
 
+    @app.get("/api/v1/auth/me")
+    async def auth_me():
+        return {
+            "id": "default",
+            "email": "demo@ci-agent.demo",
+            "system_role": "admin",
+            "needs_setup": False,
+        }
+
     # ── Competition router ────────────────────────────────────────────
     from app.competition_router import router as competition_router
 

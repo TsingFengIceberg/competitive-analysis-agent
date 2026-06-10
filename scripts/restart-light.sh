@@ -78,6 +78,10 @@ if $DO_BACKEND; then
     echo ""
     echo "🚀 Starting backend gateway (port 8001)..."
     cd "$REPO_ROOT/backend"
+    # Load .env if present
+    if [ -f "$REPO_ROOT/.env" ]; then
+        set -a; source "$REPO_ROOT/.env"; set +a
+    fi
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPYCACHEPREFIX=/dev/shm/pycache \
     PYTHONPATH=packages/competition \

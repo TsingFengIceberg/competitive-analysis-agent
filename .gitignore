@@ -112,3 +112,5 @@ TEMP_IMG/
 backend/model_context_registry.json
 
 LICENSE
+
+backend/.ci-agent

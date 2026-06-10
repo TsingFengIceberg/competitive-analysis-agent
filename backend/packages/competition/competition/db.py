@@ -32,6 +32,8 @@ DEFAULT_CREDIBILITY_SCORE = 0.50
 
 def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Create tables if they don't exist. Returns a connection (caller must close)."""
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     # IOPS optimisation: NORMAL synchronous only fsyncs at WAL checkpoints,
