@@ -1,37 +1,24 @@
 [project]
-name = "deer-flow"
+name = "ci-agent"
 version = "0.1.0"
-description = "LangGraph-based AI agent system with sandbox execution capabilities"
-readme = "README.md"
+description = "Competitive-Analysis-Agent — standalone multi-agent competition analysis"
 requires-python = ">=3.12"
 dependencies = [
-    "deerflow-harness",
+    "competition",
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
     "python-multipart>=0.0.27",
     "sse-starlette>=2.1.0",
     "uvicorn[standard]>=0.34.0",
-    "lark-oapi>=1.4.0",
-    "slack-sdk>=3.33.0",
-    "python-telegram-bot>=21.0",
-    "langgraph-sdk>=0.1.51",
-    "markdown-to-mrkdwn>=0.3.1",
-    "wecom-aibot-python-sdk>=0.1.6",
-    "dingtalk-stream>=0.24.3",
-    "bcrypt>=4.0.0",
-    "pyjwt>=2.9.0",
-    "email-validator>=2.0.0",
     "tavily-python",
     "ddgs",
 ]
 
 [project.optional-dependencies]
-postgres = ["deerflow-harness[postgres]"]
-discord = ["discord.py>=2.7.0"]
+postgres = ["langgraph-checkpoint-postgres"]
 
 [dependency-groups]
 dev = [
-    "prompt-toolkit>=3.0.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.14.11",
@@ -47,7 +34,7 @@ markers = [
 index-url = "https://pypi.org/simple"
 
 [tool.uv.workspace]
-members = ["packages/harness"]
+members = ["packages/competition"]
 
 [tool.uv.sources]
-deerflow-harness = { workspace = true }
+competition = { workspace = true }

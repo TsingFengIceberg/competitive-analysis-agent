@@ -1,4 +1,8 @@
-# CI-Agent
+<p align="center">
+  <img src="frontend/public/logo.png" alt="Competitive-Analysis-Agent" width="80" />
+</p>
+
+# Competitive-Analysis-Agent
 
 AI 驱动的竞品分析 Agent 协作系统 — 多智能体竞争情报平台。
 
@@ -6,9 +10,7 @@ AI 驱动的竞品分析 Agent 协作系统 — 多智能体竞争情报平台�
 
 ## 定位
 
-CI-Agent 是一个"数字竞争情报小组"——5 个专门化 AI Agent 以结构化协作协议完成竞品数据采集、交叉验证、多维对比分析和交互式报告生成。全程可溯源、可干预、可交互。
-
-**一句话**: 输入自然语言 query，5 个 Agent 自动完成采集→分析→质检→报告→审批的全链路竞品分析，输出结构化交互式报告。
+Competitive-Analysis-Agent 是一个"数字竞争情报小组"——5 个专门化 AI Agent 以结构化协作协议完成竞品数据采集、交叉验证、多维对比分析和交互式报告生成。全程可溯源、可干预、可交互。
 
 ---
 
@@ -98,7 +100,7 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 | **后端** | Python 3.12 + FastAPI + Pydantic v2 + SQLite |
 | **前端** | Next.js 16 + React 19 + TypeScript + Tailwind CSS 4 |
 | **DAG 可视化** | @xyflow/react (ReactFlow) |
-| **LLM** | Doubao-Seed-2.0 (方舟 API) + DeepSeek / Qwen / Gemini 备用 |
+| **LLM** | OpenAI 兼容 API（支持多模型灵活切换） |
 | **搜索** | Tavily / Jina AI / DuckDuckGo |
 | **部署** | Docker Compose + Nginx 反向代理 |
 | **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + branch_snapshots |
@@ -143,7 +145,7 @@ cd backend && uv sync
 cd frontend && pnpm install
 
 # 2. 启动后端
-cd backend && PYTHONPATH=packages/competition:packages/harness uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+cd backend && PYTHONPATH=packages/competition uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 # 3. 构建并启动前端
 cd frontend && pnpm build && PORT=3000 pnpm start

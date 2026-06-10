@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deerflow.branchtree.diff import snapshot_diff
+from competition.branchtree.diff import snapshot_diff
 
 if TYPE_CHECKING:
-    from deerflow.branchtree.adapter import BranchTreeAdapter
+    from competition.branchtree.adapter import BranchTreeAdapter
 
 
 def find_common_ancestor(

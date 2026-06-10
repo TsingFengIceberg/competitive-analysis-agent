@@ -11,7 +11,7 @@ def client():
     """Create a TestClient for the competition router."""
     from fastapi import FastAPI
 
-    from app.gateway.routers.competition import router
+    from app.competition_router import router
 
     app = FastAPI()
     app.include_router(router)

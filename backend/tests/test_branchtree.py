@@ -32,7 +32,7 @@ def _mock_checkpoint_ops() -> MagicMock:
     from unittest.mock import patch
 
     with patch(
-        "deerflow.branchtree.tree.CheckpointOps", autospec=True
+        "competition.branchtree.tree.CheckpointOps", autospec=True
     ) as mock_cls:
         yield mock_cls
 

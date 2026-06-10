@@ -66,7 +66,7 @@ COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
 EXPOSE 8001 2024
 
-CMD ["sh", "-c", "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001"]
+CMD ["sh", "-c", "cd backend && PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8001"]
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 # Clean image without build-essential — reduces size (~200 MB) and attack surface.

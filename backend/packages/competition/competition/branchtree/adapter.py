@@ -7,9 +7,9 @@ Connect BranchTree to the competition flow:
 
 Usage (drop-in replacement for current _store dict)::
 
-    from deerflow.branchtree.adapter import BranchTreeAdapter
-    from deerflow.branchtree.store import BranchSnapshotStore
-    from deerflow.branchtree.deliverable_tree import DeliverableTree
+    from competition.branchtree.adapter import BranchTreeAdapter
+    from competition.branchtree.store import BranchSnapshotStore
+    from competition.branchtree.deliverable_tree import DeliverableTree
 
     store = BranchSnapshotStore()
     tree = DeliverableTree(checkpointer, store)
@@ -28,8 +28,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from deerflow.branchtree.store import BranchSnapshotStore
-    from deerflow.branchtree.tree import BranchTree
+    from competition.branchtree.store import BranchSnapshotStore
+    from competition.branchtree.tree import BranchTree
 
 logger = logging.getLogger(__name__)
 

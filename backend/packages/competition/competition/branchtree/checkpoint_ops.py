@@ -5,7 +5,7 @@ BranchTree 通过调用 CheckpointOps 来与 LangGraph 交互，实现依赖倒�
 
 调研结论：PyPI 7 个 langgraph-checkpoint-* 包全是存储后端，无操作封装层。
 LangGraph JS SDK 有 getBranchSequence / getBranchView，Python 端无等价物。
-DeerFlow 自身仅封装了 checkpointer 工厂函数。这是真正的生态空白。
+LangGraph JS SDK has getBranchSequence / getBranchView, Python side has no equivalent.
 
 LangGraph 隐式 Fork 机制：
   非最新 checkpoint_id 调用 update_state/stream → pregel loop 检测 is_time_traveling=True

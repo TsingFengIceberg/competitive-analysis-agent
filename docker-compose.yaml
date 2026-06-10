@@ -40,13 +40,11 @@ services:
     container_name: ci-agent-gateway
     command: >
       sh -c "cd backend
-      && PYTHONPATH=packages/competition:packages/harness
-      uv run --no-sync uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001"
+      && PYTHONPATH=packages/competition
+      uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8001"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     environment:
-      - DEER_FLOW_PROJECT_ROOT=/app
-      - DEER_FLOW_HOME=/app/backend/.deer-flow
       - LANG=C.UTF-8
       - LC_ALL=C.UTF-8
       - PYTHONIOENCODING=utf-8

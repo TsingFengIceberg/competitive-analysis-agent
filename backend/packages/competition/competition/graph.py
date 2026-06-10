@@ -98,7 +98,7 @@ def build_competition_graph(
 
     Args:
         checkpointer: Optional LangGraph checkpointer (SqliteSaver, etc.).
-                      DF provides this via ``deerflow.persistence``.
+                      Provided by the framework persistence layer.
 
     Returns:
         Compiled LangGraph StateGraph ready for .invoke() / .stream().

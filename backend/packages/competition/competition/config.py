@@ -1,7 +1,7 @@
 """Pydantic configuration models for the CI-Agent competition system.
 
 Extends ``config.yaml`` → ``competition`` section.
-Read via ``deerflow.config`` at startup, injected into graph nodes via State.
+Read via framework config at startup, injected into graph nodes via State.
 """
 
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ class AgentConfig(BaseModel):
     )
     max_turns: int = Field(default=30, ge=1, description="Max SubagentExecutor turns")
     timeout_seconds: int = Field(default=600, ge=10, description="SubagentExecutor timeout")
-    skills: list[str] = Field(default_factory=list, description="DF skill names to inject")
+    skills: list[str] = Field(default_factory=list, description="Skill names to inject")
     tools: list[str] = Field(
         default_factory=lambda: ["web_search", "web_fetch", "python", "write_file", "read_file"],
         description="Tool names for this agent",
@@ -207,7 +207,7 @@ class CompetitionConfig(BaseModel):
 
 
 def load_competition_config_from_dict(raw: dict | None) -> CompetitionConfig:
-    """Parse competition config from a raw YAML dict (called by deerflow.config)."""
+    """Parse competition config from a raw YAML dict (called by framework config loader)."""
     if raw is None:
         return CompetitionConfig()
     return CompetitionConfig.model_validate(raw)

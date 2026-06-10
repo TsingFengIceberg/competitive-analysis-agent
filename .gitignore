@@ -68,8 +68,10 @@ config.yaml.bak
 .gstack/
 .worktrees
 
-# Temporary workaround scripts (specific to low-IOPS Alibaba Cloud instance)
-scripts/restart-light.sh
+# DF upstream scripts (only keep our own)
+scripts/*
+!scripts/cleanup-all.sh
+!scripts/restart-light.sh
 
 /#DEMO
 # DeerFlow upstream directories (kept for reference, not tracked)
@@ -77,6 +79,12 @@ scripts/restart-light.sh
 /pr-build/
 /docs/
 /skills/
+DOCS-UPSTREAM/
+
+# DeerFlow framework directories (fully decoupled)
+backend/app/channels/
+backend/app/gateway/
+backend/packages/harness/
 
 # Internal development docs (not needed by judges)
 CLAUDE.md

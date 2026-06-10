@@ -1,7 +1,7 @@
 """Business-layer SQLite persistence — source credibility, product baseline, analysis history.
 
 Per COMPETITION_PLAN.md §3.14: Three tables extending the same SQLite file
-used by DF's SqliteSaver. Not required for the core flow to run.
+used by the framework checkpointer. Not required for the core flow to run.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Default DB path — same directory as DF's SqliteSaver checkpoint DB
-DEFAULT_DB_PATH = Path(".deer-flow/competition.db")
+# Default DB path — competition-specific database
+DEFAULT_DB_PATH = Path(".ci-agent/competition.db")
 
 # Credibility score adjustments (§3.14.2)
 CREDIBILITY_DELTA: dict[str, float] = {

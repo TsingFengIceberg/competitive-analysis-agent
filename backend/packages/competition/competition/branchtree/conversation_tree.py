@@ -6,7 +6,7 @@ BranchTree 的 P1 子类。节点存 messages（对话历史）。
 
 from __future__ import annotations
 
-from deerflow.branchtree.tree import BranchTree
+from competition.branchtree.tree import BranchTree
 
 
 class ConversationTree(BranchTree):

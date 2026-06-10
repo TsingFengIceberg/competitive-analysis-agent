@@ -14,7 +14,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path(".deer-flow/competition.db")
+DEFAULT_DB_PATH = Path(".ci-agent/competition.db")
 
 # ── Schema ──────────────────────────────────────────────────────
 

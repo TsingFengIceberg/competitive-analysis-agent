@@ -416,7 +416,7 @@ export default function CompetitionPage() {
             const regRes = await fetch("/api/v1/auth/register", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ email: "demo@deerflow.demo", password: "demo1234" }),
+              body: JSON.stringify({ email: "demo@ci-agent.demo", password: "demo1234" }),
               credentials: "include",
             });
             if (regRes.ok) {
@@ -426,7 +426,7 @@ export default function CompetitionPage() {
               const loginRes = await fetch("/api/v1/auth/login/local", {
                 method: "POST",
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: "username=demo%40deerflow.demo&password=demo1234",
+                body: "username=demo%40ci-agent.demo&password=demo1234",
                 credentials: "include",
               });
               loginOk = loginRes.ok;
@@ -435,7 +435,7 @@ export default function CompetitionPage() {
               const meRes = await fetch("/api/competition/me");
               const meData = await meRes.json();
               if (!cancelled) {
-                setUserId(meData.user_id || "demo@deerflow.demo");
+                setUserId(meData.user_id || "demo@ci-agent.demo");
                 setIsAuthenticated(true);
               }
             }
@@ -496,7 +496,7 @@ export default function CompetitionPage() {
   const intentionalCloseRef = useRef(false);
   const historyReconstructedRef = useRef(false);
 
-  // SSE connection with auto-reconnect (DF-style)
+  // SSE connection with auto-reconnect
   useEffect(() => {
     if (!threadId || status !== "running") return;
 
@@ -680,7 +680,7 @@ export default function CompetitionPage() {
         if (destroyed) return;
         if (intentionalCloseRef.current) return;
 
-        // Exponential backoff reconnect (DF-style), max 5 attempts
+        // Exponential backoff reconnect, max 5 attempts
         const attempt = reconnectAttemptRef.current + 1;
         reconnectAttemptRef.current = attempt;
         if (attempt > 5) {

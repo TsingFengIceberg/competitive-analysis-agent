@@ -5,7 +5,7 @@ BranchTree 的 P0 子类。节点存 report_data + analysis_result + collected_d
 
 from __future__ import annotations
 
-from deerflow.branchtree.tree import BranchTree
+from competition.branchtree.tree import BranchTree
 
 
 class DeliverableTree(BranchTree):

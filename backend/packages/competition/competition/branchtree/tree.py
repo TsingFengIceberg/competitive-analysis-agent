@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from deerflow.branchtree.node import BranchNode
+    from competition.branchtree.node import BranchNode
 
 # ── MetadataStore Protocol ──────────────────────────────────────
 
@@ -63,7 +63,7 @@ class BranchTree(ABC):
     """
 
     def __init__(self, checkpointer, metadata_store: MetadataStore) -> None:
-        from deerflow.branchtree.checkpoint_ops import CheckpointOps
+        from competition.branchtree.checkpoint_ops import CheckpointOps
 
         self._ck = CheckpointOps(checkpointer)
         self._store = metadata_store
@@ -89,7 +89,7 @@ class BranchTree(ABC):
         self._nodes.clear()
         rows = self._store.list_by_thread(thread_id)
         for row in rows:
-            from deerflow.branchtree.node import BranchNode
+            from competition.branchtree.node import BranchNode
             node_id = f"v{row['version']}"
             parent_id = f"v{row['parent_version']}" if row.get("parent_version") else None
             node = BranchNode(
@@ -128,7 +128,7 @@ class BranchTree(ABC):
             metadata=metadata or {},
         )
 
-        from deerflow.branchtree.node import BranchNode
+        from competition.branchtree.node import BranchNode
         node = BranchNode(
             node_id=f"v{version}",
             parent_id=f"v{parent_version}" if parent_version else None,
@@ -175,7 +175,7 @@ class BranchTree(ABC):
             metadata=metadata or {},
         )
 
-        from deerflow.branchtree.node import BranchNode
+        from competition.branchtree.node import BranchNode
         node = BranchNode(
             node_id=f"v{version}",
             parent_id=f"v{from_version}",
