@@ -25,34 +25,7 @@ Competitive-Analysis-Agent 是一个"数字竞争情报小组"——6 个专门�
 
 ## 架构概览
 
-```mermaid
-flowchart TB
-    Frontend["前端 Next.js 16\nDAG 执行图 · 流程追踪 · 溯源链 · 人工修正 · 分支树"]
-
-    Gateway["Gateway API (FastAPI)\n/analyze · /report · /trace · /stream"]
-
-    subgraph Engine["LangGraph StateGraph 编排引擎"]
-        Orch["Orchestrator\n意图解析 · 复杂度判定 · 动态 Schema"]
-        Coll["Collector\n多源搜索 · 去重 · VoC 问卷"]
-        Anal["Analyst\n对比矩阵 · SWOT · 趋势预测"]
-        Rev["Reviewer\n8 项质量审查 · gap 判定"]
-        Wri["Writer\n结构化报告 · [n] 溯源标注"]
-        HITL{"HITL Gate\n人工审批"}
-        EndNode(["END"])
-    end
-
-    Frontend -->|"SSE / REST"| Gateway
-    Gateway --> Engine
-
-    Orch --> Coll --> Anal --> Rev
-    Rev -->|"pass"| Wri
-    Rev -->|"gap (最多 2 轮)"| Coll
-    Wri --> HITL
-    HITL -->|"approve"| EndNode
-    HITL -->|"replan"| Coll
-    HITL -->|"rewrite"| Wri
-    Orch -.->|"复杂度路由"| HITL
-```
+![系统架构图](images/architecture.png)
 
 ### 6 个 Agent 角色
 
