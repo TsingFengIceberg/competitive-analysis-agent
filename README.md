@@ -1,6 +1,6 @@
 # CI-Agent
 
-AI 驱动的竞品分析 Agent 协作系统 — 基于 [ByteDance DeerFlow](https://github.com/bytedance/deer-flow) 构建的多智能体竞争情报平台。
+AI 驱动的竞品分析 Agent 协作系统 — 多智能体竞争情报平台。
 
 > 字节跳动 CIS「AI 全栈项目挑战赛」参赛项目 | 2026-05-20 ~ 2026-06-10
 
@@ -94,14 +94,13 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 
 | 层 | 技术 |
 |---|------|
-| **基座框架** | ByteDance DeerFlow (LangGraph + Sandbox + Tools + Skills) |
 | **编排** | LangGraph StateGraph + 条件路由 + 反馈闭环 |
 | **后端** | Python 3.12 + FastAPI + Pydantic v2 + SQLite |
 | **前端** | Next.js 16 + React 19 + TypeScript + Tailwind CSS 4 |
 | **DAG 可视化** | @xyflow/react (ReactFlow) |
-| **LLM** | Doubao-Seed-2.0 (via DeerFlow Model Factory) |
-| **搜索** | Tavily / Jina AI / Firecrawl (via DeerFlow Community Tools) |
-| **沙箱** | DeerFlow Sandbox (Local / Docker) |
+| **LLM** | Doubao-Seed-2.0 (方舟 API) + DeepSeek / Qwen / Gemini 备用 |
+| **搜索** | Tavily / Jina AI / DuckDuckGo |
+| **部署** | Docker Compose + Nginx 反向代理 |
 | **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + branch_snapshots |
 
 ---
@@ -158,7 +157,7 @@ cd frontend && pnpm build && PORT=3000 pnpm start
 ## 目录结构
 
 ```
-deer-flow/
+ci-agent/
 ├── backend/
 │   ├── app/gateway/              # FastAPI Gateway + 竞赛路由
 │   │   └── routers/competition.py  # /analyze /report /trace /stream

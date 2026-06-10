@@ -93,7 +93,7 @@ backend/debug.py
 backend/.vscode/
 COMPETITION_PLAN.md
 COMPETITION_TODO.md
-DOCS/DOCS-DESIGN/
+DOCS/
 DOCS-PA-AGENT/
 DOCS-STUDY/
 deer-flow.code-workspace
