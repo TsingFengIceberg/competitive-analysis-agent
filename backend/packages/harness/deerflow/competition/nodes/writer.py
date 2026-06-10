@@ -132,8 +132,7 @@ def writer_node(state: dict) -> dict:
 
 def _build_title(products: list[str], persona: str) -> str:
     products_str = " vs ".join(products) if products else "竞品分析"
-    persona_label = "产品经理视角" if persona == "pm" else "创业者视角"
-    return f"{products_str} 竞品分析报告 — {persona_label}"
+    return f"{products_str} 竞品分析报告"
 
 
 def _get_hitl_focus(state: dict) -> list[str] | None:

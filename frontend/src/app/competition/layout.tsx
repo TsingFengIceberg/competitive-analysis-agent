@@ -32,7 +32,12 @@ export default async function CompetitionLayout({
     case "system_setup_required":
       redirect("/setup");
     case "unauthenticated":
-      redirect("/login");
+      // Allow access without auth — client-side auto-login handles demo account
+      return (
+        <AuthProvider initialUser={null}>
+          <CompetitionContent>{children}</CompetitionContent>
+        </AuthProvider>
+      );
     case "gateway_unavailable":
       return (
         <div className="flex h-screen flex-col items-center justify-center gap-4">

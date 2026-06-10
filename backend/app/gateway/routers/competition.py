@@ -76,6 +76,7 @@ class ReportResponse(BaseModel):
     history_count: int = 0
     token_usage: list[dict] = []
     created_at: str | None = None
+    phases: list[dict] = []
 
 
 class StreamEvent(BaseModel):
@@ -84,6 +85,62 @@ class StreamEvent(BaseModel):
     event: str  # "node_start" | "node_end" | "state_update" | "error" | "end"
     node: str | None = None
     data: dict | None = None
+
+
+class PhaseTraceEntry(BaseModel):
+    """Per-phase trace data for the process viewer panel (R9/R10)."""
+
+    phase_key: str
+    label: str
+    icon: str
+    agent_name: str
+    tokens: int = 0
+    start_time: str | None = None
+    end_time: str | None = None
+    duration_ms: int = 0
+    status: str = "completed"
+    content: dict[str, str] = {}
+    details: list[dict] = []
+
+
+class GenerationTrace(BaseModel):
+    """One generation unit (initial analysis or HITL re-execution)."""
+
+    version: int
+    action: str
+    label: str
+    phases: list[PhaseTraceEntry]
+
+
+class DagNode(BaseModel):
+    id: str
+    label: str
+    icon: str
+    status: str
+
+
+class DagEdge(BaseModel):
+    id: str
+    from_: str = Field(alias="from")
+    to: str
+    type: str
+    active: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class DagStructure(BaseModel):
+    nodes: list[DagNode]
+    edges: list[DagEdge]
+
+
+class TraceResponse(BaseModel):
+    """Full execution trace for the process viewer panel."""
+
+    thread_id: str
+    generations: list[GenerationTrace]
+    dag: DagStructure
+    current_version: int | None = None
 
 
 # ── Runtime store (status, current state, token usage — ephemeral) ──
@@ -236,6 +293,18 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
         "analysis_result": state.get("analysis_result") if version == _current_db_version(thread_id) else None,
         "collected_data": state.get("collected_data") if version == _current_db_version(thread_id) else None,
     }
+
+
+def _load_phases(thread_id: str) -> list[dict]:
+    """Load persisted phase records from DB for history reconstruction."""
+    try:
+        from deerflow.competition.db import get_phases, init_db
+        conn = init_db()
+        phases = get_phases(thread_id, conn=conn)
+        conn.close()
+        return phases
+    except Exception:
+        return []
 
 
 def _list_history(thread_id: str) -> list[dict]:
@@ -823,6 +892,7 @@ async def get_report(thread_id: str) -> ReportResponse:
             history_count=len(history),
             token_usage=db_record.get("token_usage", []),
             created_at=db_record.get("created_at"),
+            phases=_load_phases(thread_id),
         )
 
     status = entry.get("status", "unknown")
@@ -843,6 +913,7 @@ async def get_report(thread_id: str) -> ReportResponse:
         history_count=len(history),
         token_usage=token_usage_list,
         created_at=entry.get("created_at"),
+        phases=_load_phases(thread_id),
     )
 
 
@@ -864,6 +935,99 @@ async def get_report_history(thread_id: str):
     return {"history": history, "count": len(history)}
 
 
+@router.get("/report/{thread_id}/trace")
+async def get_execution_trace(thread_id: str) -> dict:
+    """Return per-phase trace data for ALL analysis generations (R9/R10 process viewer)."""
+    from deerflow.competition.db import get_phases, init_db
+
+    conn = init_db()
+    phase_rows = get_phases(thread_id, conn=conn)
+    conn.close()
+
+    # Group phases by version
+    version_phases: dict[int, list[dict]] = {}
+    for p in phase_rows:
+        v = p.get("version", 0)
+        version_phases.setdefault(v, []).append(p)
+
+    # Map version numbers to actions from history store
+    version_actions: dict[int, str] = {}
+    try:
+        for v in _history_store.list_by_thread(thread_id):
+            version_actions[v["version"]] = v.get("action", "initial")
+    except Exception:
+        pass
+
+    action_label_map = {"initial": "初始分析", "rewrite": "重写", "reanalyze": "重分析", "replan": "重采集"}
+    agent_map = {
+        "orchestrator": "Orchestrator", "collector": "Collector",
+        "analyst": "Analyst", "reviewer": "Reviewer",
+        "writer": "Writer", "hitl_gate": "HITL Gate",
+    }
+
+    generations: list[GenerationTrace] = []
+    for version in sorted(version_phases.keys()):
+        action = version_actions.get(version, "initial")
+        base_label = action_label_map.get(action, action)
+        label = base_label if version == 0 else f"{base_label} #{version}"
+
+        phases = []
+        for p in version_phases[version]:
+            agent_name = p["phase_key"]
+            for prefix, name in agent_map.items():
+                if p["phase_key"].startswith(prefix):
+                    agent_name = name
+                    break
+            start = p.get("start_time")
+            end = p.get("end_time")
+            duration_ms = 0
+            if start and end:
+                try:
+                    from datetime import datetime as _dt
+                    s = _dt.fromisoformat(start)
+                    e = _dt.fromisoformat(end)
+                    duration_ms = int((e - s).total_seconds() * 1000)
+                except Exception:
+                    pass
+
+            phases.append(PhaseTraceEntry(
+                phase_key=p["phase_key"], label=p["label"], icon=p["icon"],
+                agent_name=agent_name, tokens=p.get("tokens", 0),
+                start_time=start, end_time=end, duration_ms=duration_ms,
+                status=p.get("status", "completed"),
+                content=p.get("content", {}), details=p.get("details", []),
+            ))
+
+        generations.append(GenerationTrace(version=version, action=action, label=label, phases=phases))
+
+    # Build static DAG
+    dag = DagStructure(
+        nodes=[
+            DagNode(id="orchestrator", label="解析意图", icon="🎯", status="done"),
+            DagNode(id="collector", label="信息采集", icon="🔍", status="done"),
+            DagNode(id="analyst", label="对比分析", icon="📊", status="done"),
+            DagNode(id="reviewer", label="质量审查", icon="✅", status="done"),
+            DagNode(id="writer", label="报告生成", icon="📝", status="done"),
+            DagNode(id="hitl_gate", label="等待审批", icon="👤", status="done"),
+        ],
+        edges=[
+            DagEdge(id="e1", from_="orchestrator", to="collector", type="main", active=True),
+            DagEdge(id="e2", from_="collector", to="analyst", type="main", active=True),
+            DagEdge(id="e3", from_="analyst", to="reviewer", type="main", active=True),
+            DagEdge(id="e4", from_="reviewer", to="writer", type="main", active=True),
+            DagEdge(id="e5", from_="writer", to="hitl_gate", type="main", active=True),
+            DagEdge(id="e6", from_="reviewer", to="collector", type="feedback", active=False),
+            DagEdge(id="e7", from_="hitl_gate", to="collector", type="hitl_replan", active=False),
+            DagEdge(id="e8", from_="hitl_gate", to="writer", type="hitl_rewrite", active=False),
+        ],
+    )
+
+    current_version = max(version_phases.keys()) if version_phases else None
+    return TraceResponse(
+        thread_id=thread_id, generations=generations, dag=dag, current_version=current_version,
+    ).model_dump(by_alias=True)
+
+
 class HitlDecisionRequest(BaseModel):
     """HITL decision or what-if input from frontend."""
 
@@ -871,6 +1035,83 @@ class HitlDecisionRequest(BaseModel):
     comment: str = ""
     target_focus: list[str] | None = None
     fork_version: int | None = None  # If set, fork from this historical version instead of current
+
+
+class SectionUpdate(BaseModel):
+    """Single section edit for human correction (R6)."""
+
+    id: str
+    content: str
+
+
+class SectionUpdateRequest(BaseModel):
+    """Request body for human correction endpoint."""
+
+    sections: list[SectionUpdate]
+
+
+class SectionUpdateResponse(BaseModel):
+    """Response after applying human corrections."""
+
+    thread_id: str
+    updated_count: int
+    edit_count: int
+    improvement_ratio: float | None = None
+
+
+@router.patch("/report/{thread_id}/sections", response_model=SectionUpdateResponse)
+async def update_sections(thread_id: str, body: SectionUpdateRequest) -> SectionUpdateResponse:
+    """Apply human corrections to report sections (R6 — feedback improvement quantification)."""
+    entry = _store.get(thread_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    state = entry.get("state", {})
+    report_data = state.get("report_data")
+    if not report_data:
+        raise HTTPException(status_code=409, detail="No report data available")
+
+    # Convert Pydantic model to dict if needed
+    if hasattr(report_data, "model_dump"):
+        report_dict = report_data.model_dump()
+    else:
+        report_dict = dict(report_data)
+
+    # Apply section updates
+    sections: list[dict] = report_dict.get("sections", [])
+    section_by_id: dict[str, dict] = {s["id"]: s for s in sections}
+    updated = 0
+    for update in body.sections:
+        if update.id in section_by_id:
+            section_by_id[update.id]["content"] = update.content
+            updated += 1
+
+    # Track edit count for R6 improvement_ratio
+    edit_count = entry.setdefault("_edit_count", 0) + 1
+    entry["_edit_count"] = edit_count
+    entry["state"]["report_data"] = report_dict
+    _store[thread_id] = entry
+
+    # Compute improvement ratio (simplified proxy: 1/edit_count)
+    improvement_ratio = round(1.0 / edit_count, 4) if edit_count > 0 else None
+
+    # Persist to DB
+    try:
+        from deerflow.competition.db import upsert_analysis
+        upsert_analysis(
+            thread_id=thread_id,
+            report_data=report_dict,
+            metrics=report_dict.get("metrics"),
+        )
+    except Exception:
+        pass
+
+    return SectionUpdateResponse(
+        thread_id=thread_id,
+        updated_count=updated,
+        edit_count=edit_count,
+        improvement_ratio=improvement_ratio,
+    )
 
 
 @router.put("/report/{thread_id}", response_model=ReportResponse)
@@ -980,10 +1221,31 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             "writer":    ("writer",    "📝", "重写报告"),
         }
 
+        # Set up streaming callback so re-execution phase content is captured
+        from deerflow.competition.executor import set_stream_callback, clear_stream_callback
+        _re_content: dict[str, str] = {}  # agent_name → accumulated text
+
+        def _re_stream(agent_name: str, chunk_text: str) -> None:
+            nonlocal _chunk_seq
+            _chunk_seq += 1
+            _emit_event(thread_id, "messages-tuple", [{
+                "type": "AIMessageChunk",
+                "name": agent_name or "analysis",
+                "content": chunk_text,
+                "id": f"comp-{thread_id[-8:]}-re-{_chunk_seq}",
+            }])
+            if chunk_text and chunk_text != "\x00THINK\x00":
+                _re_content[agent_name] = _re_content.get(agent_name, "") + chunk_text
+
+        _chunk_seq = 0
+        set_stream_callback(_re_stream)
+
         def _run_re_node(node_key: str, node_fn, st: dict) -> None:
             """Execute one re-execution node and emit SSE phase events."""
+            nonlocal _re_content
             _, icon, display_label = _RE_NODES[node_key]
             phase_key = f"{node_key}{suffix}"
+            start_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
             _emit_event(thread_id, "progress", {
                 "phase": phase_key,
@@ -994,6 +1256,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
             result = node_fn(st)
             st.update(result)
+            end_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
             _emit_event(thread_id, "node_end", {
                 "node": phase_key,
@@ -1003,6 +1266,17 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 "progress": f"{display_label} 完成",
                 "tokens": 0,
             })
+
+            # Persist re-execution phase with captured content
+            from deerflow.competition.db import save_phase
+            save_phase(
+                thread_id=thread_id, phase_key=phase_key,
+                label=display_label, icon=icon, status="completed",
+                start_time=start_time, end_time=end_time,
+                tokens=0, content=dict(_re_content), details=[],
+                version=round_num,
+            )
+            _re_content.clear()
 
         # Change status so frontend SSE reconnects
         _store[thread_id]["status"] = "running"
@@ -1037,6 +1311,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
         # Emit completion so frontend stops the re-execution SSE stream
         _emit_event(thread_id, "end", {"status": "completed"})
+        clear_stream_callback()
 
         # Save new report as a version after reanalysis completes
         new_report = state.get("report_data")
@@ -1056,6 +1331,10 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
         _emit_event(thread_id, "error", {"error": str(e)[:200], "status": "failed"})
+        try:
+            clear_stream_callback()
+        except Exception:
+            pass
 
 
 def _save_to_db(thread_id: str, entry: dict) -> None:
@@ -1315,10 +1594,11 @@ async def get_db_report(thread_id: str):
 async def delete_db_report(thread_id: str):
     """Delete a saved report from the SQLite database."""
     try:
-        from deerflow.competition.db import delete_analysis, init_db
+        from deerflow.competition.db import delete_analysis, delete_phase_history, init_db
 
         conn = init_db()
         deleted = delete_analysis(thread_id, conn=conn)
+        delete_phase_history(thread_id, conn=conn)
         conn.close()
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Report not found: {thread_id}")
@@ -1499,6 +1779,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             _finalize_cancelled(thread_id)
             return
         # ── Phase 1: ProductResolver (pre-graph) ──
+        resolve_start = __import__("datetime").datetime.now(__import__("datetime").UTC)
         _emit_event(thread_id, "progress", {
             "phase": "resolving",
             "message": "正在解析竞品名称...",
@@ -1544,12 +1825,22 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             return
 
         # Emit products resolved event
+        resolve_end = __import__("datetime").datetime.now(__import__("datetime").UTC)
         _emit_event(thread_id, "progress", {
             "phase": "resolved",
             "message": f"竞品解析完成: {', '.join(products)}",
             "products": products,
-            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+            "timestamp": resolve_end.isoformat(),
         })
+
+        # Persist resolving + resolved phases so history reconstruction has them
+        from deerflow.competition.db import save_phase as _sp
+        _sp(thread_id=thread_id, phase_key="resolving", label="竞品解析", icon="🔎",
+            status="completed", start_time=resolve_start.isoformat(), end_time=resolve_end.isoformat(),
+            tokens=0, content={}, details=[
+                {"message": "正在解析竞品名称...", "phase": "resolving"},
+                {"message": f"竞品解析完成: {', '.join(products)}", "phase": "resolved", "products": products},
+            ])
 
         # Update store with verified products
         if thread_id in _store:
@@ -1637,6 +1928,8 @@ def _run_graph_sync(thread_id: str) -> None:
         from deerflow.competition.executor import set_cancel_checker, clear_cancel_checker
 
         _chunk_seq = 0
+        _phase_content: dict[str, str] = {}  # agent_name → accumulated streaming text
+        _node_start_time: str = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
         def _stream_chunk(agent_name: str, chunk_text: str) -> None:
             nonlocal _chunk_seq
@@ -1660,11 +1953,13 @@ def _run_graph_sync(thread_id: str) -> None:
         def _stream_chunk_labeled(agent_name: str, chunk_text: str) -> None:
             nonlocal _chunk_seq
             # Thinking sentinel: emitted before streaming starts for thinking models.
-            # Show a progress indicator so the user knows the agent is working.
             if chunk_text == "\x00THINK\x00":
                 label = _AGENT_LABELS.get(agent_name, agent_name or "分析")
                 _emit_event(thread_id, "progress", {"message": f"{label} 正在深度思考..."})
                 return
+            # Accumulate streaming content for phase persistence
+            if chunk_text:
+                _phase_content[agent_name] = _phase_content.get(agent_name, "") + chunk_text
             if agent_name and agent_name != _current_agent[0]:
                 _current_agent[0] = agent_name
                 # Emit agent label as a system chunk
@@ -1739,6 +2034,21 @@ def _run_graph_sync(thread_id: str) -> None:
                         "tokens": max(delta_tokens, 0),
                         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
                     })
+                    # Persist phase content for history reconstruction
+                    from deerflow.competition.db import save_phase as _sp
+                    _now = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
+                    _sp(
+                        thread_id=thread_id, phase_key=current_node,
+                        label=_NODE_LABELS.get(current_node, current_node),
+                        icon="⚙️", status="completed",
+                        start_time=_node_start_time, end_time=_now,
+                        tokens=max(delta_tokens, 0),
+                        content=dict(_phase_content),
+                        details=[],
+                        version=0,
+                    )
+                    _phase_content.clear()
+                    _node_start_time = _now  # next phase starts now
 
                 flags = []
                 if current_node:

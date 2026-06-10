@@ -274,6 +274,27 @@ def _raw_chat_completion(
     return (str(content) if content else "", usage)
 
 
+def _repair_json(text: str) -> str:
+    """Attempt to fix common LLM formatting errors in JSON output.
+
+    Doubao and other models sometimes output Chinese punctuation, unquoted keys,
+    trailing commas, and other minor deviations from strict JSON.
+    """
+    import re
+
+    s = text
+    # 1. Chinese punctuation → ASCII
+    s = s.replace("：", ":")  # Chinese colon ：
+    s = s.replace("，", ",")  # Chinese comma ，
+    # 2. Remove trailing commas before } or ]
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
+    # 3. Quote unquoted keys (word at line start after { or , that's followed by :)
+    s = re.sub(r'(^|\{|,)\s*\n?\s*([a-zA-Z_一-鿿][a-zA-Z0-9_\-.一-鿿]*)\s*:', r'\1"\2":', s, flags=re.MULTILINE)
+    # 4. Single-quoted keys → double-quoted
+    s = re.sub(r"'([^']*)'\s*:", r'"\1":', s)
+    return s
+
+
 def execute_structured_agent(
     system_prompt: str,
     task: str,
@@ -297,6 +318,15 @@ def execute_structured_agent(
     try:
         return (json.loads(json_str), tokens)
     except json.JSONDecodeError:
+        # Attempt repair for common LLM formatting errors
+        try:
+            repaired = _repair_json(json_str)
+            if repaired != json_str:
+                result = json.loads(repaired)
+                logger.info("JSON repair succeeded for %s (%d → %d chars)", agent_name, len(json_str), len(repaired))
+                return (result, tokens)
+        except (json.JSONDecodeError, Exception):
+            pass
         # Return raw text if not valid JSON
         logger.warning("Could not parse agent output as JSON (%d chars)", len(raw))
         return (raw, tokens)

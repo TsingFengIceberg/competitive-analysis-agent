@@ -31,7 +31,7 @@ class TestLoadPrompt:
         prompt = load_prompt("writer")
         assert "报告撰写 Agent" in prompt
         assert "ReportData" in prompt
-        assert "产品经理视角" in prompt
+        assert "竞品分析报告" in prompt
         assert "{persona_profile}" in prompt
 
     def test_caching(self):

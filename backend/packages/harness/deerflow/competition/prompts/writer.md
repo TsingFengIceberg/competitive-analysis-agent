@@ -63,7 +63,7 @@
 ```json
 {
   "persona": "pm",
-  "title": "产品A vs 产品B 竞品分析报告 — 产品经理视角",
+  "title": "产品A vs 产品B 竞品分析报告",
   "generated_at": "2026-05-23T00:00:00Z",
   "products": ["产品A", "产品B"],
   "sections": [

@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import type { Persona, ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
@@ -9,6 +9,9 @@ import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
 import CompetitionReportPanel from "@/components/competition/competition-report-panel";
+import ProcessTracePanel from "@/components/competition/process-trace-panel";
+import ReportEditor from "@/components/competition/report-editor";
+import BranchTreePanel from "@/components/competition/branch-tree-panel";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 3000;
@@ -379,11 +382,13 @@ export default function CompetitionPage() {
     }
   }, [threadIdFromURL]);
 
-  // Auto-load existing analysis when navigating to a real thread_id
+  // Auto-load existing analysis when navigating to a real thread_id.
+  // Use "loading" instead of "running" to avoid triggering SSE and the
+  // "分析启动中…" placeholder while waiting for the poll to return.
   useEffect(() => {
     if (!threadIdFromURL || threadIdFromURL === "new") return;
     setThreadId(threadIdFromURL);
-    setStatus("running"); // Start polling, which will fetch status + report
+    setStatus("loading");
   }, [threadIdFromURL]);
 
   // ── User state (§User System) ──
@@ -715,6 +720,9 @@ export default function CompetitionPage() {
   const [diffVersions, setDiffVersions] = useState<[number, number] | null>(null);
   const [diffViewMode, setDiffViewMode] = useState<"side-by-side" | "summary">("side-by-side");
   const [reportPanelOpen, setReportPanelOpen] = useState(false);
+  const [tracePanelOpen, setTracePanelOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [branchTreeOpen, setBranchTreeOpen] = useState(false);
   const [userMessages, setUserMessages] = useState<{text: string; timestamp: string}[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const titleRefreshedRef = useRef(false);
@@ -846,6 +854,28 @@ export default function CompetitionPage() {
           setReportData(report.report_data);
         }
         if (report.token_usage) setTokenUsage(report.token_usage);
+        // Restore phase bubbles from persisted DB data (fixes content loss on history switching)
+        if (report.phases && report.phases.length > 0) {
+          setPhaseMap((prev) => {
+            if (prev.size > 0) return prev; // already populated by SSE or cache
+            const restored = new Map<string, PhaseState>();
+            for (const p of report.phases) {
+              const info = PHASE_INFO[p.phase_key] ?? { label: p.label, icon: p.icon };
+              restored.set(p.phase_key, {
+                key: p.phase_key,
+                label: p.label || info.label,
+                icon: p.icon || info.icon,
+                status: (p.status === "completed" ? "completed" : "running") as "running" | "completed",
+                startTime: p.start_time ? new Date(p.start_time).getTime() : Date.now(),
+                endTime: p.end_time ? new Date(p.end_time).getTime() : null,
+                tokens: p.tokens,
+                content: p.content || {},
+                details: p.details || [],
+              });
+            }
+            return restored;
+          });
+        }
         if (report.history_count !== undefined) setHistoryCount(report.history_count);
         if (report.query) setQuery(report.query);
         // Dispatch refresh when auto-title is generated (not "新建分析 #N")
@@ -981,9 +1011,69 @@ export default function CompetitionPage() {
 
   const displayReport = viewingHistory?.report_data ?? dbLoadedReport ?? reportData;
 
+  // ── Build report cards from history + live data ──
+  // Each version with report_data becomes a card in the chat flow.
+  // Cards persist across re-executions so users can navigate between versions.
+  const reportCards = useMemo(() => {
+    const cards: Array<{ version: number; reportData: ReportData; action?: string; isLatest: boolean }> = [];
+    const seen = new Set<number>();
+
+    // History entries with persisted report_data
+    for (const entry of historyEntries) {
+      if (entry.report_data && !seen.has(entry.version)) {
+        seen.add(entry.version);
+        cards.push({
+          version: entry.version,
+          reportData: entry.report_data,
+          action: entry.action,
+          isLatest: false,
+        });
+      }
+    }
+
+    // Live report — may duplicate a history entry; deduplicate by version
+    if (reportData) {
+      // Determine version: if history has entries, the live report is likely
+      // the latest version; otherwise it's v1 (initial).
+      const maxHistVersion = cards.length > 0 ? Math.max(...cards.map((c) => c.version)) : 0;
+      const liveVersion = maxHistVersion > 0 ? maxHistVersion : 1;
+      if (!seen.has(liveVersion)) {
+        cards.push({
+          version: liveVersion,
+          reportData,
+          action: maxHistVersion > 0 ? undefined : "initial",
+          isLatest: true,
+        });
+      } else {
+        // Live report matches an existing history version — mark it as latest
+        const match = cards.find((c) => c.version === liveVersion);
+        if (match) match.isLatest = true;
+      }
+    }
+
+    cards.sort((a, b) => a.version - b.version);
+    return cards;
+  }, [historyEntries, reportData]);
+
   // Report panel + HITL callbacks
-  const handleExpandReport = useCallback(() => setReportPanelOpen(true), []);
+  const handleExpandReport = useCallback((version: number) => {
+    handleViewHistory(version);
+    setReportPanelOpen(true);
+  }, [handleViewHistory]);
   const handleCloseReport = useCallback(() => setReportPanelOpen(false), []);
+  const handleViewTrace = useCallback(() => setTracePanelOpen(true), []);
+  const handleCloseTrace = useCallback(() => setTracePanelOpen(false), []);
+  const handleEdit = useCallback(() => setEditorOpen(true), []);
+  const handleCloseEdit = useCallback(() => setEditorOpen(false), []);
+  const handleViewBranchTree = useCallback(() => setBranchTreeOpen(true), []);
+  const handleCloseBranchTree = useCallback(() => setBranchTreeOpen(false), []);
+
+  const handleNavigateVersion = useCallback((version: number) => {
+    handleViewHistory(version);
+    setTimeout(() => {
+      document.getElementById(`report-card-v${version}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+  }, [handleViewHistory]);
 
   const handleApprove = useCallback(() => {
     if (threadId) {
@@ -1044,17 +1134,24 @@ export default function CompetitionPage() {
                   status={status}
                   userMessages={userMessages}
                   isWelcome={isWelcome}
+                  reportCards={reportCards}
                   displayReport={displayReport}
                   threadId={threadId}
                   hitlVisible={hitlVisible}
                   hitlSubmitting={hitlSubmitting}
                   tokenUsage={tokenUsage}
                   tick={tick}
+                  historyEntries={historyEntries}
+                  viewingHistory={viewingHistory}
                   onExpandReport={handleExpandReport}
                   onApprove={handleApprove}
                   onReanalyze={handleReanalyze}
                   onExportMD={handleExportMD}
                   onExportJSON={handleExportJSON}
+                  onNavigateVersion={handleNavigateVersion}
+                  onViewTrace={displayReport ? handleViewTrace : undefined}
+                  onViewBranchTree={historyEntries.length > 0 ? handleViewBranchTree : undefined}
+                  onEdit={displayReport ? handleEdit : undefined}
                 />
               </div>
             </div>
@@ -1126,6 +1223,33 @@ export default function CompetitionPage() {
               threadIdForApi={threadId}
             />
           </div>
+        )}
+
+        {/* Process trace panel (R9/R10) */}
+        <ProcessTracePanel
+          open={tracePanelOpen}
+          onClose={handleCloseTrace}
+          threadId={threadId}
+          getTrace={api.getTrace}
+        />
+
+        {/* Branch tree panel — global branch tree with current node highlight */}
+        <BranchTreePanel
+          open={branchTreeOpen}
+          onClose={handleCloseBranchTree}
+          historyEntries={historyEntries}
+          viewingHistory={viewingHistory}
+          onNavigateVersion={handleNavigateVersion}
+        />
+
+        {/* Human correction editor (R6) */}
+        {displayReport && (
+          <ReportEditor
+            open={editorOpen}
+            onClose={handleCloseEdit}
+            threadId={threadId}
+            reportData={displayReport}
+          />
         )}
       </div>
     </div>

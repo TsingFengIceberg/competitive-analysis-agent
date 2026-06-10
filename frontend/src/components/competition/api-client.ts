@@ -49,6 +49,49 @@ export interface ReportResponse {
   history_count: number;
   token_usage: TokenEntry[];
   created_at: string | null;
+  phases?: PhaseHistoryEntry[];
+}
+
+export interface PhaseHistoryEntry {
+  phase_key: string;
+  label: string;
+  icon: string;
+  status: string;
+  start_time: string | null;
+  end_time: string | null;
+  tokens: number;
+  content: Record<string, string>;
+  details: Record<string, unknown>[];
+  version: number;
+}
+
+// Process viewer (R9/R10)
+export interface PhaseTraceEntry {
+  phase_key: string;
+  label: string;
+  icon: string;
+  agent_name: string;
+  tokens: number;
+  start_time: string | null;
+  end_time: string | null;
+  duration_ms: number;
+  status: string;
+  content: Record<string, string>;
+  details: Record<string, unknown>[];
+}
+
+export interface GenerationTrace {
+  version: number;
+  action: string;
+  label: string;
+  phases: PhaseTraceEntry[];
+}
+
+export interface TraceResponse {
+  thread_id: string;
+  generations: GenerationTrace[];
+  dag: DagState;
+  current_version: number | null;
 }
 
 export interface TokenEntry {
@@ -294,11 +337,17 @@ export function useCompetitionAPI() {
     return res.json();
   }, []);
 
+  const getTrace = useCallback(async (threadId: string): Promise<TraceResponse> => {
+    const res = await fetch(`${API_BASE}/report/${threadId}/trace`);
+    if (!res.ok) throw new Error(`Trace fetch failed: ${res.status}`);
+    return res.json();
+  }, []);
+
   const getCheckpointState = useCallback(async (threadId: string, checkpointId: string): Promise<CheckpointStateResponse> => {
     const res = await fetch(`${API_BASE}/report/${threadId}/checkpoint/${checkpointId}`);
     if (!res.ok) throw new Error(`Checkpoint fetch failed: ${res.status}`);
     return res.json();
   }, []);
 
-  return { loading, startAnalysis, cancelAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getCheckpointState };
+  return { loading, startAnalysis, cancelAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getTrace, getCheckpointState };
 }

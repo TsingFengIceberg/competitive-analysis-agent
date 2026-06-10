@@ -1,9 +1,9 @@
 "use client";
 
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState, useRef, useEffect, memo, useMemo } from "react";
+import { Fragment, useState, useRef, useEffect, memo, useMemo } from "react";
 
-import type { ReportData, TokenEntry } from "@/components/competition/api-client";
+import type { ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
 
 import CompetitionReportCard from "./competition-report-card";
 
@@ -41,6 +41,13 @@ interface UserMessage {
   timestamp: string;
 }
 
+interface ReportCardData {
+  version: number;
+  reportData: ReportData;
+  action?: string;
+  isLatest: boolean;
+}
+
 interface Props {
   phases: PhaseState[];
   streamingContent: Record<string, string>;
@@ -48,17 +55,24 @@ interface Props {
   status: string;
   userMessages: UserMessage[];
   isWelcome: boolean;
+  reportCards: ReportCardData[];
   displayReport: ReportData | null;
   threadId: string | null;
   hitlVisible: boolean;
   hitlSubmitting: boolean;
   tokenUsage: TokenEntry[];
   tick: number;
-  onExpandReport: () => void;
+  historyEntries: ReportHistoryItem[];
+  viewingHistory: ReportHistoryItem | null;
+  onExpandReport: (version: number) => void;
   onApprove: () => void;
   onReanalyze: (action: string, comment: string) => void;
   onExportMD: () => void;
   onExportJSON: () => void;
+  onNavigateVersion: (version: number) => void;
+  onViewTrace?: () => void;
+  onViewBranchTree?: () => void;
+  onEdit?: () => void;
 }
 
 function fmtTime(sec: number): string {
@@ -72,27 +86,59 @@ function fmtTokens(tokens: number): string {
   return String(tokens);
 }
 
-function totalTokens(usage: TokenEntry[]): number {
-  return usage.reduce((s, e) => s + (e.tokens || 0), 0);
+function getPhaseGen(key: string): number {
+  const match = key.match(/_r(\d+)$/);
+  return match ? parseInt(match[1]!, 10) : 0;
 }
 
 export default function CompetitionChatArea({
   phases, streamingContent, currentAgent, status, userMessages, isWelcome,
-  displayReport, threadId, hitlVisible, hitlSubmitting, tokenUsage, tick,
+  reportCards, displayReport, threadId, hitlVisible, hitlSubmitting, tokenUsage, tick,
+  historyEntries, viewingHistory,
   onExpandReport, onApprove, onReanalyze, onExportMD, onExportJSON,
+  onNavigateVersion, onViewTrace, onViewBranchTree, onEdit,
 }: Props) {
   const isRunning = status === "running";
-  const showReportCard = displayReport && !isRunning;
-  const runningTokens = totalTokens(tokenUsage);
 
-  function totalElapsed(): number {
-    if (phases.length === 0) return 0;
-    const start = phases[0]!.startTime;
-    // Find last phase with a real endTime (skip eagerly-created hitl_gate)
-    const lastCompleted = [...phases].reverse().find((p) => p.endTime != null);
+  function genElapsed(genPhases: PhaseState[]): number {
+    if (genPhases.length === 0) return 0;
+    const start = genPhases[0]!.startTime;
+    const lastCompleted = [...genPhases].reverse().find((p) => p.endTime != null);
     if (!lastCompleted) return Math.round((Date.now() - start) / 1000);
     return Math.round((lastCompleted.endTime! - start) / 1000);
   }
+
+  function genTokens(genPhases: PhaseState[]): number {
+    return genPhases.reduce((sum, p) => sum + p.tokens, 0);
+  }
+
+  // ── Group phases + cards by generation ──
+  const generations = useMemo(() => {
+    const genMap = new Map<number, { phases: PhaseState[]; card?: ReportCardData }>();
+
+    // Group phases by generation (extracted from _rN suffix)
+    for (const phase of phases) {
+      const gen = getPhaseGen(phase.key);
+      const entry = genMap.get(gen) ?? { phases: [] };
+      entry.phases.push(phase);
+      genMap.set(gen, entry);
+    }
+
+    // Assign cards to generations: v1 → gen 0, v2 → gen 1, etc.
+    for (const card of reportCards) {
+      const gen = card.version - 1;
+      const entry = genMap.get(gen) ?? { phases: [] };
+      entry.card = card;
+      genMap.set(gen, entry);
+    }
+
+    // Sort phases within each generation by startTime
+    for (const entry of genMap.values()) {
+      entry.phases.sort((a, b) => a.startTime - b.startTime);
+    }
+
+    return new Map([...genMap.entries()].sort(([a], [b]) => a - b));
+  }, [phases, reportCards]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const userAtBottomRef = useRef(true);
@@ -127,17 +173,56 @@ export default function CompetitionChatArea({
           </div>
         ))}
 
-        {/* Phases — live streaming shown inside running phase, not as separate bubble */}
-        {phases.map((phase) => (
-          <PhaseMessage
-            key={phase.key}
-            phase={phase}
-            tick={tick}
-            streamingContent={streamingContent}
-          />
+        {/* Phases + cards interleaved by generation */}
+        {[...generations.entries()].map(([gen, { phases: genPhases, card }]) => (
+          <Fragment key={gen}>
+            {genPhases.map((phase) => (
+              <PhaseMessage
+                key={phase.key}
+                phase={phase}
+                tick={tick}
+                streamingContent={streamingContent}
+              />
+            ))}
+            {/* Per-generation summary bar */}
+            {!isRunning && genPhases.length > 0 && (
+              <div className="flex justify-center py-1">
+                <span className="text-xs text-muted-foreground font-medium">
+                  {gen === 0 ? "初始分析完成" : `第 ${gen} 次重执行完成`}
+                  {" · "}耗时 {fmtTime(genElapsed(genPhases))}
+                  {genTokens(genPhases) > 0 && <> · Tokens: {fmtTokens(genTokens(genPhases))}</>}
+                </span>
+              </div>
+            )}
+            {card && (
+              <div id={`report-card-v${card.version}`}>
+                <CompetitionReportCard
+                key={`card-${card.version}`}
+                displayReport={card.reportData}
+                version={card.version}
+                isLatest={card.isLatest}
+                threadId={threadId}
+                hitlVisible={hitlVisible}
+                hitlSubmitting={hitlSubmitting}
+                status={status}
+                historyEntries={historyEntries}
+                viewingHistory={viewingHistory}
+                onExpand={onExpandReport}
+                onApprove={onApprove}
+                onReanalyze={onReanalyze}
+                onExportMD={onExportMD}
+                onExportJSON={onExportJSON}
+                onNavigateVersion={onNavigateVersion}
+                onViewTrace={onViewTrace}
+                onViewBranchTree={onViewBranchTree}
+                onEdit={onEdit}
+              />
+              </div>
+            )}
+          </Fragment>
         ))}
 
-        {/* Empty running */}
+        {/* Empty running — when no phases have arrived yet */}
         {isRunning && phases.length === 0 && Object.keys(streamingContent).length === 0 && (
           <div className="flex justify-center py-8">
             <span className="text-sm text-muted-foreground animate-pulse">分析启动中…</span>
@@ -154,26 +239,6 @@ export default function CompetitionChatArea({
           <div className="flex flex-col items-center py-8 gap-1">
             <p className="text-sm font-medium text-red-600">❌ 分析失败</p>
           </div>
-        )}
-
-        {/* End-of-analysis summary bar */}
-        {!isRunning && phases.length > 0 && (
-          <div className="flex justify-center py-1">
-            <span className="text-xs text-muted-foreground font-medium">
-              分析完成 · 耗时 {fmtTime(totalElapsed())}
-              {runningTokens > 0 && <> · Tokens: {fmtTokens(runningTokens)}</>}
-            </span>
-          </div>
-        )}
-
-        {/* Report card */}
-        {showReportCard && (
-          <CompetitionReportCard
-            displayReport={displayReport} threadId={threadId}
-            hitlVisible={hitlVisible} hitlSubmitting={hitlSubmitting} status={status}
-            onExpand={onExpandReport} onApprove={onApprove} onReanalyze={onReanalyze}
-            onExportMD={onExportMD} onExportJSON={onExportJSON}
-          />
         )}
       </div>
     </div>
@@ -594,11 +659,43 @@ function jsonToProse(data: unknown): string {
   }).join("；");
 }
 
+// ── JSON repair: fix common LLM formatting errors before parsing ──
+
+function repairJson(text: string): string {
+  let s = text;
+  // 1. Chinese punctuation → ASCII
+  s = s.replace(/：/g, ":");
+  s = s.replace(/，/g, ",");
+  // 2. Remove trailing commas before } or ]
+  s = s.replace(/,(\s*[}\]])/g, "$1");
+  // 3. Quote unquoted keys: match word at line start or after {, that's followed by :
+  s = s.replace(/(^|\{|,)\s*\n?\s*([a-zA-Z_一-鿿][a-zA-Z0-9_\-.一-鿿]*)\s*:/gm, '$1"$2":');
+  // 4. Single quotes → double quotes (but not inside already-quoted strings)
+  // Simple heuristic: replace 'key': with "key":
+  s = s.replace(/'([^']*)'\s*:/g, '"$1":');
+  // 5. Fix empty values like "key":  (missing value before , or })
+  s = s.replace(/":\s*,/g, '": "",');
+  s = s.replace(/":\s*}/g, '": ""}');
+  return s;
+}
+
 // ── React renderers ──
 
 function JsonBlock({ jsonText }: { jsonText: string }) {
-  try { const parsed = JSON.parse(jsonText); return <DescriptiveJson data={parsed} />; }
-  catch { return <MonoBlock text={jsonText} />; }
+  try {
+    const parsed = JSON.parse(jsonText);
+    return <DescriptiveJson data={parsed} />;
+  } catch {
+    // Attempt repair for common LLM formatting errors
+    try {
+      const repaired = repairJson(jsonText);
+      if (repaired !== jsonText) {
+        const parsed = JSON.parse(repaired);
+        return <DescriptiveJson data={parsed} />;
+      }
+    } catch { /* still broken — fall through to raw display */ }
+    return <MonoBlock text={jsonText} />;
+  }
 }
 
 function MonoBlock({ text }: { text: string }) {

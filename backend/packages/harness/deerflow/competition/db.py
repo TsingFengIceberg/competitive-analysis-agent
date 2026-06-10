@@ -77,6 +77,21 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             report_data TEXT,
             token_usage TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS phase_history (
+            thread_id TEXT NOT NULL,
+            phase_key TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            icon TEXT NOT NULL DEFAULT '⚙️',
+            status TEXT NOT NULL DEFAULT 'running',
+            start_time TEXT,
+            end_time TEXT,
+            tokens INTEGER DEFAULT 0,
+            content TEXT DEFAULT '{}',
+            details TEXT DEFAULT '[]',
+            version INTEGER DEFAULT 0,
+            PRIMARY KEY (thread_id, phase_key)
+        );
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)
@@ -380,6 +395,80 @@ def pin_analysis(thread_id: str, pinned: bool, conn: sqlite3.Connection | None =
     if close_conn:
         conn.close()
     return cur.rowcount > 0
+
+
+# ── Phase History (§persistent phase bubbles) ──
+
+
+def save_phase(
+    thread_id: str,
+    phase_key: str,
+    *,
+    label: str = "",
+    icon: str = "⚙️",
+    status: str = "running",
+    start_time: str | None = None,
+    end_time: str | None = None,
+    tokens: int = 0,
+    content: dict[str, str] | None = None,
+    details: list[dict] | None = None,
+    version: int = 0,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """INSERT or REPLACE a phase record for persistent phase bubble content."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    conn.execute(
+        """INSERT OR REPLACE INTO phase_history
+           (thread_id, phase_key, label, icon, status, start_time, end_time, tokens, content, details, version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            thread_id, phase_key, label, icon, status,
+            start_time, end_time, tokens,
+            json.dumps(content or {}, ensure_ascii=False),
+            json.dumps(details or [], ensure_ascii=False, default=str),
+            version,
+        ),
+    )
+    conn.commit()
+    if close_conn:
+        conn.close()
+
+
+def get_phases(thread_id: str, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Get all phase records for a thread, ordered by start_time."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    rows = conn.execute(
+        "SELECT phase_key, label, icon, status, start_time, end_time, tokens, content, details, version "
+        "FROM phase_history WHERE thread_id = ? ORDER BY start_time ASC",
+        (thread_id,),
+    ).fetchall()
+    if close_conn:
+        conn.close()
+    return [
+        {
+            "phase_key": r[0], "label": r[1], "icon": r[2], "status": r[3],
+            "start_time": r[4], "end_time": r[5], "tokens": r[6],
+            "content": json.loads(r[7]) if r[7] else {},
+            "details": json.loads(r[8]) if r[8] else [],
+            "version": r[9],
+        }
+        for r in rows
+    ]
+
+
+def delete_phase_history(thread_id: str, conn: sqlite3.Connection | None = None) -> None:
+    """Delete all phase records for a thread."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    conn.execute("DELETE FROM phase_history WHERE thread_id = ?", (thread_id,))
+    conn.commit()
+    if close_conn:
+        conn.close()
 
 
 def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
