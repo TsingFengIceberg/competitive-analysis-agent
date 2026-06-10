@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
 import { X } from "lucide-react";
+import { useMemo } from "react";
 
 import type { ReportHistoryItem } from "./api-client";
 
@@ -82,7 +82,7 @@ export default function BranchTreePanel({
           <div className="text-center text-muted-foreground py-8">暂无分支历史</div>
         ) : (
           <div className="space-y-0.5">
-            {tree.map((root, i) => (
+            {tree.map((root, _i) => (
               <TreeNodeRow
                 key={root.entry.version}
                 node={root}

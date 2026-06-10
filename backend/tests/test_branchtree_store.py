@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deerflow.branchtree.store import BranchSnapshotStore
+from competition.branchtree.store import BranchSnapshotStore
 
 # ── Fixture ─────────────────────────────────────────────────────
 

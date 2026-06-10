@@ -4,7 +4,7 @@ Usage:
     cd backend && PYTHONPATH=packages/harness uv run pytest tests/test_competition_graph_algorithms.py -v
 """
 
-from deerflow.competition.graph_algorithms import CompetitiveGraph
+from competition.graph_algorithms import CompetitiveGraph
 
 
 class TestBasicOps:

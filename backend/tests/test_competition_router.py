@@ -6,7 +6,7 @@ All router functions are pure (dict → str), trivially testable.
 
 from __future__ import annotations
 
-from deerflow.competition.router import (
+from competition.router import (
     route_after_analyst,
     route_after_collector,
     route_after_deep_analyst,

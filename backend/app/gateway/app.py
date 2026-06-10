@@ -15,8 +15,6 @@ from app.gateway.routers import (
     artifacts,
     assistants_compat,
     auth,
-    channels,
-    collaboration,
     feedback,
     mcp,
     memory,
@@ -42,12 +40,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-# Upper bound (seconds) each lifespan shutdown hook is allowed to run.
-# Bounds worker exit time so uvicorn's reload supervisor does not keep
-# firing signals into a worker that is stuck waiting for shutdown cleanup.
-_SHUTDOWN_HOOK_TIMEOUT_SECONDS = 5.0
-
 
 async def _ensure_admin_user(app: FastAPI) -> None:
     """Startup hook: handle first boot and migrate orphan threads otherwise.
@@ -186,32 +178,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from app.gateway.routers.competition import _ensure_demo_user
         await _ensure_demo_user()
 
-        # Start IM channel service if any channels are configured
-        try:
-            from app.channels.service import start_channel_service
-
-            channel_service = await start_channel_service(app.state.config)
-            logger.info("Channel service started: %s", channel_service.get_status())
-        except Exception:
-            logger.exception("No IM channels configured or channel service failed to start")
-
         yield
-
-        # Stop channel service on shutdown (bounded to prevent worker hang)
-        try:
-            from app.channels.service import stop_channel_service
-
-            await asyncio.wait_for(
-                stop_channel_service(),
-                timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            logger.warning(
-                "Channel service shutdown exceeded %.1fs; proceeding with worker exit.",
-                _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            logger.exception("Failed to stop channel service")
 
     logger.info("Shutting down API Gateway")
 
@@ -228,25 +195,11 @@ def create_app() -> FastAPI:
     openapi_url = "/openapi.json" if config.enable_docs else None
 
     app = FastAPI(
-        title="DeerFlow API Gateway",
+        title="CI-Agent API Gateway",
         description="""
-## DeerFlow API Gateway
+## CI-Agent API Gateway
 
-API Gateway for DeerFlow - A LangGraph-based AI agent backend with sandbox execution capabilities.
-
-### Features
-
-- **Models Management**: Query and retrieve available AI models
-- **MCP Configuration**: Manage Model Context Protocol (MCP) server configurations
-- **Memory Management**: Access and manage global memory data for personalized conversations
-- **Skills Management**: Query and manage skills and their enabled status
-- **Artifacts**: Access thread artifacts and generated files
-- **Health Monitoring**: System health check endpoints
-
-### Architecture
-
-LangGraph-compatible requests are routed through nginx to this gateway.
-This gateway provides runtime endpoints for agent runs plus custom endpoints for models, MCP configuration, skills, and artifacts.
+API Gateway for CI-Agent — an AI-powered competitive analysis multi-agent collaboration system.
         """,
         version="0.1.0",
         lifespan=lifespan,
@@ -289,10 +242,6 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
             {
                 "name": "suggestions",
                 "description": "Generate follow-up question suggestions for conversations",
-            },
-            {
-                "name": "channels",
-                "description": "Manage IM channel integrations (Feishu, Slack, Telegram)",
             },
             {
                 "name": "assistants-compat",
@@ -356,9 +305,6 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Suggestions API is mounted at /api/threads/{thread_id}/suggestions
     app.include_router(suggestions.router)
 
-    # Channels API is mounted at /api/channels
-    app.include_router(channels.router)
-
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)
 
@@ -374,9 +320,6 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Stateless Runs API (stream/wait without a pre-existing thread)
     app.include_router(runs.router)
 
-    # Collaboration HITL Resume API (interrupt status + resume endpoints)
-    app.include_router(collaboration.router)
-
     # Competition Analysis API (CI-Agent)
     from app.gateway.routers.competition import router as competition_router
     app.include_router(competition_router)
@@ -388,7 +331,7 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         Returns:
             Service health status information.
         """
-        return {"status": "healthy", "service": "deer-flow-gateway"}
+        return {"status": "healthy", "service": "ci-agent-gateway"}
 
     return app
 

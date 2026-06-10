@@ -6,7 +6,7 @@ Usage:
 
 import pytest
 
-from deerflow.branchtree.checkpoint_ops import AgentBranchOps, CheckpointOps
+from competition.branchtree.checkpoint_ops import AgentBranchOps, CheckpointOps
 
 
 @pytest.fixture

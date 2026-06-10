@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deerflow.branchtree.diff import (
+from competition.branchtree.diff import (
     diff_dicts,
     diff_lists,
     diff_report_sections,

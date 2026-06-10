@@ -8,8 +8,8 @@ import { I18nProvider } from "@/core/i18n/context";
 import { detectLocaleServer } from "@/core/i18n/server";
 
 export const metadata: Metadata = {
-  title: "DeerFlow",
-  description: "A LangChain-based framework for building super agents.",
+  title: "CI-Agent — AI 驱动的竞品分析 Agent 协作系统",
+  description: "基于 LangGraph 的多 Agent 协作竞品分析系统，支持自动采集、多维对比、质量审查、交互式报告生成。",
 };
 
 export default async function RootLayout({

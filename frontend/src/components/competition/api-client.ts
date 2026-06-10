@@ -78,6 +78,7 @@ export interface PhaseTraceEntry {
   status: string;
   content: Record<string, string>;
   details: Record<string, unknown>[];
+  json_output?: Record<string, unknown> | null;
 }
 
 export interface GenerationTrace {

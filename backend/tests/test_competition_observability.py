@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deerflow.competition.observability import (
+from competition.observability import (
     get_agent_detail,
     get_all_agent_details,
     get_all_traceability_chains,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from deerflow.branchtree.conversation_tree import (
+from competition.branchtree.conversation_tree import (
     ConversationTree,
     _msg_preview,
     _msg_role,
@@ -112,5 +112,5 @@ class TestConversationTree:
         assert result["messages"][0]["role"] == "unknown"
 
     def test_is_subclass_of_branch_tree(self):
-        from deerflow.branchtree.tree import BranchTree
+        from competition.branchtree.tree import BranchTree
         assert issubclass(ConversationTree, BranchTree)

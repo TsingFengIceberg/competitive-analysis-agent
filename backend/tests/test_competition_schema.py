@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from deerflow.competition.schema import (
+from competition.schema import (
     # Layer 3 — validation
     AGENT_SCHEMA_MAP,
     MAX_VALIDATION_RETRIES,

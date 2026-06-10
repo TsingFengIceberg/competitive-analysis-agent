@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deerflow.competition.dag import (
+from competition.dag import (
     DAG_TOPOLOGY,
     _compute_edge_annotation,
     _compute_node_annotation,

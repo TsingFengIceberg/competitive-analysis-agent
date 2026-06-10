@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from deerflow.branchtree.merge import (
+from competition.branchtree.merge import (
     _build_merge_prompt,
     find_common_ancestor,
     merge_execute,

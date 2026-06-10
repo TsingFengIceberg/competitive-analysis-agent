@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deerflow.branchtree.adapter import BranchTreeAdapter
-from deerflow.branchtree.checkpoint_ops import CheckpointOps
-from deerflow.branchtree.deliverable_tree import DeliverableTree
-from deerflow.branchtree.store import BranchSnapshotStore
+from competition.branchtree.adapter import BranchTreeAdapter
+from competition.branchtree.checkpoint_ops import CheckpointOps
+from competition.branchtree.deliverable_tree import DeliverableTree
+from competition.branchtree.store import BranchSnapshotStore
 
 # ── Helpers ────────────────────────────────────────────────────
 
@@ -210,7 +210,7 @@ class TestBranchTreeRoundTrip:
 
         store.insert("t1", None, "c3", "initial")
 
-        from deerflow.branchtree.diff import snapshot_diff
+        from competition.branchtree.diff import snapshot_diff
 
         # Put two versions with different data, diff them
         _put_checkpoint(saver, "t1", "c3_alt", "c3", {

@@ -9,7 +9,7 @@ try:
 except ImportError:
     pytest.skip("matplotlib not installed", allow_module_level=True)
 
-from deerflow.competition.visualization import (  # noqa: E402
+from competition.visualization import (  # noqa: E402
     generate_bar_chart,
     generate_heatmap,
     generate_line_chart,

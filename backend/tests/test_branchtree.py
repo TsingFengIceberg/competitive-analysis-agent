@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from deerflow.branchtree.node import BranchNode
-from deerflow.branchtree.tree import BranchTree, MetadataStore
+from competition.branchtree.node import BranchNode
+from competition.branchtree.tree import BranchTree, MetadataStore
 
 # ── Minimal concrete BranchTree for testing ─────────────────────
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from deerflow.branchtree.adapter import BranchTreeAdapter
-from deerflow.branchtree.store import BranchSnapshotStore
+from competition.branchtree.adapter import BranchTreeAdapter
+from competition.branchtree.store import BranchSnapshotStore
 
 # ── Fixtures ───────────────────────────────────────────────────
 

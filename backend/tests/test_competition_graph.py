@@ -9,12 +9,12 @@ Covers §2.2 of the coding plan.
 
 from __future__ import annotations
 
-from deerflow.competition.graph import (
+from competition.graph import (
     _NODE_IMPLEMENTATIONS,
     build_competition_graph,
     register_nodes,
 )
-from deerflow.competition.state import CompetitionState
+from competition.state import CompetitionState
 
 
 class TestBuildCompetitionGraph:

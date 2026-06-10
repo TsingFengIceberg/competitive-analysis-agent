@@ -8,7 +8,7 @@ Covers §1.5 of the coding plan:
 
 from __future__ import annotations
 
-from deerflow.competition.config import (
+from competition.config import (
     AgentConfig,
     AnalystConfig,
     CollectorConfig,

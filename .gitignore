@@ -27,10 +27,14 @@ venv/
 config.yaml
 mcp_config.json
 extensions_config.json
+extensions_config.example.json
 
 # IDE
 .idea/
 .vscode/
+
+# CI/CD (upstream DeerFlow)
+.github/
 
 # Coverage report
 coverage.xml
@@ -68,4 +72,35 @@ config.yaml.bak
 scripts/restart-light.sh
 
 /#DEMO
+# DeerFlow upstream directories (kept for reference, not tracked)
+/.agent/
+/pr-build/
+/docs/
+/skills/
+
+# Internal development docs (not needed by judges)
+CLAUDE.md
+frontend/CLAUDE.md
+frontend/AGENTS.md
+frontend/README.md
+frontend/.vscode/
+backend/CLAUDE.md
+backend/AGENTS.md
+backend/CONTRIBUTING.md
+backend/README.md
+backend/docs/
+backend/debug.py
+backend/.vscode/
+COMPETITION_PLAN.md
+COMPETITION_TODO.md
+DOCS/DOCS-DESIGN/
+DOCS-PA-AGENT/
+DOCS-STUDY/
+deer-flow.code-workspace
+
 TEMP_IMG/
+
+# Runtime artifacts
+backend/model_context_registry.json
+
+LICENSE

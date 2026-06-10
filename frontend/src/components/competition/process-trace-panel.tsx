@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { X, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import type { TraceResponse, PhaseTraceEntry } from "./api-client";
 import DagGraph from "./dag-graph";
@@ -19,7 +19,7 @@ export default function ProcessTracePanel({ open, onClose, threadId, getTrace }:
   const [error, setError] = useState<string | null>(null);
   const [selectedGenIdx, setSelectedGenIdx] = useState(0);
   const [selectedPhase, setSelectedPhase] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<"log" | "output" | "token">("log");
+  const [detailTab, setDetailTab] = useState<"log" | "output" | "token" | "json">("log");
 
   useEffect(() => {
     if (!open || !threadId) return;
@@ -50,18 +50,22 @@ export default function ProcessTracePanel({ open, onClose, threadId, getTrace }:
       const phase = phaseNodes.find((p) => p.phase_key === n.id || p.phase_key.startsWith(n.id));
       return { ...n, status: phase?.status === "completed" ? "done" as const : n.status };
     }),
-    edges: trace.dag.edges.map((e) => ({
-      ...e,
-      active: phaseNodes.some((p) => {
+    edges: trace.dag.edges.map((e) => {
+      const isFeedback = e.type === "feedback" || e.type.startsWith("hitl_");
+      const bothHavePhases = phaseNodes.some((p) => {
         const fromMatch = p.phase_key === e.from || p.phase_key.startsWith(e.from);
         const toMatch = phaseNodes.some((p2) => p2.phase_key === e.to || p2.phase_key.startsWith(e.to));
         return fromMatch && toMatch;
-      }) || e.active,
-    })),
+      });
+      return {
+        ...e,
+        active: isFeedback ? e.active : (bothHavePhases || e.active),
+      };
+    }),
   } : null;
 
   return (
-    <div className="fixed right-0 top-0 z-40 flex h-screen w-[42%] min-w-[420px] flex-col border-l bg-background shadow-2xl">
+    <div className="fixed inset-0 z-40 flex flex-col bg-background shadow-2xl">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-3">
         <h2 className="font-semibold">流程追踪</h2>
@@ -97,8 +101,8 @@ export default function ProcessTracePanel({ open, onClose, threadId, getTrace }:
             ))}
           </div>
 
-          {/* DAG */}
-          <div className="h-28 border-b">
+          {/* DAG — top half */}
+          <div className="flex-1 min-h-0 border-b">
             <DagGraph
               dagState={dagState}
               onNodeClick={(nodeId) => {
@@ -108,102 +112,115 @@ export default function ProcessTracePanel({ open, onClose, threadId, getTrace }:
             />
           </div>
 
-          {/* Phase tabs */}
-          <div className="flex gap-1 border-b px-4 py-2 overflow-x-auto">
-            {phaseNodes.map((p) => (
-              <button
-                key={p.phase_key}
-                onClick={() => setSelectedPhase(p.phase_key)}
-                className={`shrink-0 rounded px-2.5 py-1 text-[11px] transition-colors ${
-                  p.phase_key === (selectedPhaseData?.phase_key ?? "")
-                    ? "bg-foreground/10 font-medium"
-                    : "text-muted-foreground hover:bg-muted"
-                }`}
-              >
-                {p.icon} {p.label}
-              </button>
-            ))}
-          </div>
+          {/* Bottom half: phase tabs + detail */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Phase tabs */}
+            <div className="flex gap-1 border-b px-4 py-2 overflow-x-auto shrink-0">
+              {phaseNodes.map((p) => (
+                <button
+                  key={p.phase_key}
+                  onClick={() => setSelectedPhase(p.phase_key)}
+                  className={`shrink-0 rounded px-2.5 py-1 text-[11px] transition-colors ${
+                    p.phase_key === (selectedPhaseData?.phase_key ?? "")
+                      ? "bg-foreground/10 font-medium"
+                      : "text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {p.icon} {p.label}
+                </button>
+              ))}
+            </div>
 
-          {/* Detail area */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-4">
-            {!selectedPhaseData ? (
-              <div className="text-center text-xs text-muted-foreground py-8">选择上方阶段查看详情</div>
-            ) : (
-              <>
-                {/* Phase info bar */}
-                <div className="mb-3 flex items-center gap-3 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">
-                    {selectedPhaseData.icon} {selectedPhaseData.label}
-                  </span>
-                  <span>Agent: {selectedPhaseData.agent_name}</span>
-                  {selectedPhaseData.tokens > 0 && <span>Tokens: {selectedPhaseData.tokens.toLocaleString()}</span>}
-                  {selectedPhaseData.duration_ms > 0 && (
-                    <span>耗时: {(selectedPhaseData.duration_ms / 1000).toFixed(1)}s</span>
-                  )}
-                </div>
+            {/* Detail area */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-4">
+              {!selectedPhaseData ? (
+                <div className="text-center text-xs text-muted-foreground py-8">选择上方阶段查看详情</div>
+              ) : (
+                <>
+                  {/* Phase info bar */}
+                  <div className="mb-3 flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {selectedPhaseData.icon} {selectedPhaseData.label}
+                    </span>
+                    <span>Agent: {selectedPhaseData.agent_name}</span>
+                    {selectedPhaseData.tokens > 0 && <span>Tokens: {selectedPhaseData.tokens.toLocaleString()}</span>}
+                    {selectedPhaseData.duration_ms > 0 && (
+                      <span>耗时: {(selectedPhaseData.duration_ms / 1000).toFixed(1)}s</span>
+                    )}
+                  </div>
 
-                {/* Detail tabs */}
-                <div className="mb-3 flex gap-1 border-b pb-2">
-                  {(["log", "output", "token"] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setDetailTab(tab)}
-                      className={`rounded px-2.5 py-0.5 text-[11px] ${
-                        detailTab === tab ? "bg-foreground/10 font-medium" : "text-muted-foreground hover:bg-muted"
-                      }`}
-                    >
-                      {{ log: "流程日志", output: "原始输出", token: "Token" }[tab]}
-                    </button>
-                  ))}
-                </div>
+                  {/* Detail tabs */}
+                  <div className="mb-3 flex gap-1 border-b pb-2">
+                    {(["log", "output", "token", "json"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setDetailTab(tab)}
+                        className={`rounded px-2.5 py-0.5 text-[11px] ${
+                          detailTab === tab ? "bg-foreground/10 font-medium" : "text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {{ log: "流程日志", output: "原始输出", token: "Token", json: "结构化JSON" }[tab]}
+                      </button>
+                    ))}
+                  </div>
 
-                {/* Tab content */}
-                <div className="text-xs">
-                  {detailTab === "log" && (
-                    selectedPhaseData.details.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {selectedPhaseData.details.map((d, i) => (
-                          <div key={i} className="rounded bg-muted/50 px-2.5 py-1.5 font-mono text-[11px]">
-                            {typeof d.message === "string" ? d.message : JSON.stringify(d)}
-                          </div>
-                        ))}
+                  {/* Tab content */}
+                  <div className="text-xs">
+                    {detailTab === "log" && (
+                      selectedPhaseData.details.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {selectedPhaseData.details.map((d, i) => (
+                            <div key={i} className="rounded bg-muted/50 px-2.5 py-1.5 font-mono text-[11px]">
+                              {typeof d.message === "string" ? d.message : JSON.stringify(d)}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-muted-foreground">无流程日志</div>
+                      )
+                    )}
+
+                    {detailTab === "output" && (
+                      Object.keys(selectedPhaseData.content).length > 0 ? (
+                        <div className="space-y-3">
+                          {Object.entries(selectedPhaseData.content).map(([agent, text]) => (
+                            <details key={agent} className="rounded border">
+                              <summary className="cursor-pointer px-3 py-1.5 font-medium hover:bg-muted/50">
+                                {agent} <span className="text-muted-foreground">({text.length.toLocaleString()} 字)</span>
+                              </summary>
+                              <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t px-3 py-2 text-[11px] leading-relaxed">
+                                {text.slice(0, 10000)}
+                                {text.length > 10000 && "\n\n... (截断至 10k 字)"}
+                              </pre>
+                            </details>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-muted-foreground">无原始输出</div>
+                      )
+                    )}
+
+                    {detailTab === "token" && (
+                      <div className="text-muted-foreground">
+                        {selectedPhaseData.tokens > 0
+                          ? `${selectedPhaseData.tokens.toLocaleString()} tokens`
+                          : "Token 数据不可用"}
                       </div>
-                    ) : (
-                      <div className="text-muted-foreground">无流程日志</div>
-                    )
-                  )}
+                    )}
 
-                  {detailTab === "output" && (
-                    Object.keys(selectedPhaseData.content).length > 0 ? (
-                      <div className="space-y-3">
-                        {Object.entries(selectedPhaseData.content).map(([agent, text]) => (
-                          <details key={agent} className="rounded border">
-                            <summary className="cursor-pointer px-3 py-1.5 font-medium hover:bg-muted/50">
-                              {agent} <span className="text-muted-foreground">({text.length.toLocaleString()} 字)</span>
-                            </summary>
-                            <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t px-3 py-2 text-[11px] leading-relaxed">
-                              {text.slice(0, 10000)}
-                              {text.length > 10000 && "\n\n... (截断至 10k 字)"}
-                            </pre>
-                          </details>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-muted-foreground">无原始输出</div>
-                    )
-                  )}
-
-                  {detailTab === "token" && (
-                    <div className="text-muted-foreground">
-                      {selectedPhaseData.tokens > 0
-                        ? `${selectedPhaseData.tokens.toLocaleString()} tokens`
-                        : "Token 数据不可用"}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+                    {detailTab === "json" && (
+                      selectedPhaseData.json_output && Object.keys(selectedPhaseData.json_output).length > 0 ? (
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-muted/50 px-3 py-2 text-[11px] leading-relaxed font-mono">
+                          {JSON.stringify(selectedPhaseData.json_output, null, 2)}
+                        </pre>
+                      ) : (
+                        <div className="text-muted-foreground">无结构化输出数据</div>
+                      )
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </>
       )}

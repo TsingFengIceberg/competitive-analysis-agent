@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import get_type_hints
 
-from deerflow.competition.state import CompetitionState
+from competition.state import CompetitionState
 
 
 class TestCompetitionStateFields:

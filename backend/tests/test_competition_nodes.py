@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from deerflow.competition.nodes.collector import (
+from competition.nodes.collector import (
     _build_collector_task,
     _normalize_label,
     _parse_datapoints,
@@ -17,7 +17,7 @@ from deerflow.competition.nodes.collector import (
     build_collection_summary,
     deduplicate_datapoints,
 )
-from deerflow.competition.schema import CollectedDataPoint
+from competition.schema import CollectedDataPoint
 
 
 def _make_dp(id: str, product: str = "Cursor", category: str = "pricing", label: str = "Pro", value: float = 20.0, source_url: str = "cursor.com/pricing", source_type: str = "official", **kwargs) -> CollectedDataPoint:
@@ -228,7 +228,7 @@ class TestParseDatapoints:
 # Analyst Node (§3.5)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.analyst import (  # noqa: E402
+from competition.nodes.analyst import (  # noqa: E402
     _build_analysis_result,
     _build_analyst_task,
     _empty_analysis_result,
@@ -375,7 +375,7 @@ class TestRecommendCharts:
 # Reviewer Node (§3.6)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.reviewer import (  # noqa: E402
+from competition.nodes.reviewer import (  # noqa: E402
     _build_quality_summary,
     _filter_loop_gaps,
     _generate_notes,
@@ -571,7 +571,7 @@ class TestGenerateNotes:
 # Writer Node (§3.7)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.writer import (  # noqa: E402
+from competition.nodes.writer import (  # noqa: E402
     PERSONA_PROFILES,
     _build_review_package,
     _build_sections,
@@ -749,7 +749,7 @@ class TestComputeMetrics:
 # HITL Gate Node (§5.2)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.hitl_gate import (  # noqa: E402
+from competition.nodes.hitl_gate import (  # noqa: E402
     _extract_dimensions,
     _is_timed_out,
     build_approval_card,
@@ -855,7 +855,7 @@ class TestBuildApprovalCard:
 # Error Handler Node (§3.15.6)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.error_handler import (  # noqa: E402
+from competition.nodes.error_handler import (  # noqa: E402
     deep_error_handler_node,
     error_handler_node,
 )
@@ -924,11 +924,11 @@ class TestDeepErrorHandler:
 # Deep Mode Nodes (P1)
 # ═══════════════════════════════════════════════════════════════
 
-from deerflow.competition.nodes.deep_collector import (  # noqa: E402
+from competition.nodes.deep_collector import (  # noqa: E402
     _build_deep_task,
     _find_missing_dimensions,
 )
-from deerflow.competition.nodes.deep_writer import (  # noqa: E402
+from competition.nodes.deep_writer import (  # noqa: E402
     _generate_html_export,
 )
 
@@ -985,14 +985,14 @@ class TestGenerateHtmlExport:
         assert "CI-Agent" in html
 
 
-from deerflow.competition.nodes.deep_analyst import (  # noqa: E402
+from competition.nodes.deep_analyst import (  # noqa: E402
     _build_deep_analyst_task,
     deep_analyst_node,
 )
-from deerflow.competition.nodes.deep_reviewer import (  # noqa: E402
+from competition.nodes.deep_reviewer import (  # noqa: E402
     deep_reviewer_node,
 )
-from deerflow.competition.nodes.feishu_delivery import (  # noqa: E402
+from competition.nodes.feishu_delivery import (  # noqa: E402
     _create_feishu_doc,
     _send_bot_notification,
 )

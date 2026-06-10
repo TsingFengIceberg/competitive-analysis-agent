@@ -20,8 +20,8 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
 
-from deerflow.branchtree.checkpoint_ops import CheckpointOps
-from deerflow.branchtree.store import BranchSnapshotStore
+from competition.branchtree.checkpoint_ops import CheckpointOps
+from competition.branchtree.store import BranchSnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class PhaseTraceEntry(BaseModel):
     status: str = "completed"
     content: dict[str, str] = {}
     details: list[dict] = []
+    json_output: dict | None = None
 
 
 class GenerationTrace(BaseModel):
@@ -298,7 +299,7 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
 def _load_phases(thread_id: str) -> list[dict]:
     """Load persisted phase records from DB for history reconstruction."""
     try:
-        from deerflow.competition.db import get_phases, init_db
+        from competition.db import get_phases, init_db
         conn = init_db()
         phases = get_phases(thread_id, conn=conn)
         conn.close()
@@ -334,6 +335,17 @@ def _list_history(thread_id: str) -> list[dict]:
             "collected_data": state.get("collected_data") if is_latest else None,
         })
     return result
+
+
+def _safe_dict(obj) -> dict | None:
+    """Convert a Pydantic model or dict to a plain dict for JSON serialization."""
+    if obj is None:
+        return None
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, dict):
+        return obj
+    return None
 
 
 def _current_db_version(thread_id: str) -> int | None:
@@ -478,7 +490,7 @@ def _build_round_prompt(query: str, already_found: list[str], round_num: int) ->
 def _llm_extract_candidates(query: str) -> list[str]:
     """LLM extracts candidate product names from a prompt string."""
     try:
-        from deerflow.competition.executor import execute_agent
+        from competition.executor import execute_agent
 
         prompt = (
             "You are a product name extractor. "
@@ -511,7 +523,7 @@ def _verify_products_via_search(candidates: list[str], strictness: int = 1, quer
     Reason: hardcoded rules can't understand domain context (e.g. "Power" + "数据分析工具" = "Power BI").
     """
     try:
-        from deerflow.competition.tools.search import search as web_search
+        from competition.tools.search import search as web_search
     except ImportError:
         return candidates
 
@@ -619,7 +631,7 @@ def _llm_judge_and_correct(
     Candidates not in the returned dict are kept as-is by the caller.
     """
     try:
-        from deerflow.competition.executor import execute_agent
+        from competition.executor import execute_agent
     except ImportError:
         return {}
 
@@ -780,7 +792,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     _associate_thread(thread_id, user_id)
 
     # Persist to DB on creation (§18)
-    from deerflow.competition.db import upsert_analysis, init_db, list_history as _db_list_history
+    from competition.db import upsert_analysis, init_db, list_history as _db_list_history
     # Generate initial title: "新建分析 {N}"
     conn = init_db()
     existing_count = len(_db_list_history(conn, limit=1000))
@@ -846,7 +858,7 @@ async def cancel_analysis(thread_id: str) -> dict:
     _store[thread_id]["status"] = "interrupted"
     _store[thread_id]["state"]["error"] = "用户手动终止分析"
     try:
-        from deerflow.competition.db import upsert_analysis
+        from competition.db import upsert_analysis
         upsert_analysis(
             thread_id=thread_id, status="interrupted",
             user_id=_thread_owners.get(thread_id, "default"),
@@ -873,7 +885,7 @@ async def get_report(thread_id: str) -> ReportResponse:
     entry = _store.get(thread_id)
     if entry is None:
         # Fallback: load from SQLite (survives gateway restart)
-        from deerflow.competition.db import get_analysis, init_db
+        from competition.db import get_analysis, init_db
         conn = init_db()
         db_record = get_analysis(thread_id, conn=conn)
         conn.close()
@@ -923,7 +935,7 @@ async def get_report_history(thread_id: str):
     entry = _store.get(thread_id)
     if entry is None:
         # Fallback: return history from DB even when _store is gone (gateway restart)
-        from deerflow.competition.db import get_analysis, init_db
+        from competition.db import get_analysis, init_db
         conn = init_db()
         db_record = get_analysis(thread_id, conn=conn)
         conn.close()
@@ -938,7 +950,7 @@ async def get_report_history(thread_id: str):
 @router.get("/report/{thread_id}/trace")
 async def get_execution_trace(thread_id: str) -> dict:
     """Return per-phase trace data for ALL analysis generations (R9/R10 process viewer)."""
-    from deerflow.competition.db import get_phases, init_db
+    from competition.db import get_phases, init_db
 
     conn = init_db()
     phase_rows = get_phases(thread_id, conn=conn)
@@ -996,29 +1008,64 @@ async def get_execution_trace(thread_id: str) -> dict:
                 start_time=start, end_time=end, duration_ms=duration_ms,
                 status=p.get("status", "completed"),
                 content=p.get("content", {}), details=p.get("details", []),
+                json_output=p.get("json_output"),
             ))
 
         generations.append(GenerationTrace(version=version, action=action, label=label, phases=phases))
 
-    # Build static DAG
+    # Build dynamic DAG from actual execution data (not hardcoded)
+    # Collect all phase keys and detect feedback loops from execution history
+    all_phase_keys: set[str] = set()
+    for phases in version_phases.values():
+        for p in phases:
+            all_phase_keys.add(p["phase_key"])
+
+    def _node_ran(node_id: str) -> bool:
+        return any(k == node_id or k.startswith(node_id + "_") or k.startswith(node_id) for k in all_phase_keys)
+
+    # Detect feedback loops: if collector/analyst/writer ran in multiple versions, a loop happened
+    collector_gens = {v for v, phases in version_phases.items()
+                      if any(p["phase_key"].startswith("collector") for p in phases)}
+    analyst_gens = {v for v, phases in version_phases.items()
+                    if any(p["phase_key"].startswith("analyst") for p in phases)}
+    writer_gens = {v for v, phases in version_phases.items()
+                   if any(p["phase_key"].startswith("writer") for p in phases)}
+
+    has_reviewer_feedback = len(collector_gens) > 1
+    has_hitl_replan = any(a == "replan" for a in version_actions.values())
+    has_hitl_reanalyze = any(a == "reanalyze" for a in version_actions.values())
+    has_hitl_rewrite = any(a == "rewrite" for a in version_actions.values())
+
     dag = DagStructure(
         nodes=[
-            DagNode(id="orchestrator", label="解析意图", icon="🎯", status="done"),
-            DagNode(id="collector", label="信息采集", icon="🔍", status="done"),
-            DagNode(id="analyst", label="对比分析", icon="📊", status="done"),
-            DagNode(id="reviewer", label="质量审查", icon="✅", status="done"),
-            DagNode(id="writer", label="报告生成", icon="📝", status="done"),
-            DagNode(id="hitl_gate", label="等待审批", icon="👤", status="done"),
+            DagNode(id="orchestrator", label="解析意图", icon="🎯", status="done" if _node_ran("orchestrator") else "waiting"),
+            DagNode(id="collector", label="信息采集", icon="🔍", status="done" if _node_ran("collector") else "waiting"),
+            DagNode(id="analyst", label="对比分析", icon="📊", status="done" if _node_ran("analyst") else "waiting"),
+            DagNode(id="reviewer", label="质量审查", icon="✅", status="done" if _node_ran("reviewer") else "waiting"),
+            DagNode(id="writer", label="报告生成", icon="📝", status="done" if _node_ran("writer") else "waiting"),
+            DagNode(id="hitl_gate", label="等待审批", icon="👤", status="done" if _node_ran("hitl_gate") else "waiting"),
         ],
         edges=[
-            DagEdge(id="e1", from_="orchestrator", to="collector", type="main", active=True),
-            DagEdge(id="e2", from_="collector", to="analyst", type="main", active=True),
-            DagEdge(id="e3", from_="analyst", to="reviewer", type="main", active=True),
-            DagEdge(id="e4", from_="reviewer", to="writer", type="main", active=True),
-            DagEdge(id="e5", from_="writer", to="hitl_gate", type="main", active=True),
-            DagEdge(id="e6", from_="reviewer", to="collector", type="feedback", active=False),
-            DagEdge(id="e7", from_="hitl_gate", to="collector", type="hitl_replan", active=False),
-            DagEdge(id="e8", from_="hitl_gate", to="writer", type="hitl_rewrite", active=False),
+            # Main forward edges: active if both endpoints ran
+            DagEdge(id="e1", from_="orchestrator", to="collector", type="main",
+                    active=_node_ran("orchestrator") and _node_ran("collector")),
+            DagEdge(id="e2", from_="collector", to="analyst", type="main",
+                    active=_node_ran("collector") and _node_ran("analyst")),
+            DagEdge(id="e3", from_="analyst", to="reviewer", type="main",
+                    active=_node_ran("analyst") and _node_ran("reviewer")),
+            DagEdge(id="e4", from_="reviewer", to="writer", type="main",
+                    active=_node_ran("reviewer") and _node_ran("writer")),
+            DagEdge(id="e5", from_="writer", to="hitl_gate", type="main",
+                    active=_node_ran("writer") and _node_ran("hitl_gate")),
+            # Feedback edges: only active if the corresponding loop actually happened
+            DagEdge(id="e6", from_="reviewer", to="collector", type="feedback",
+                    active=has_reviewer_feedback),
+            DagEdge(id="e7", from_="hitl_gate", to="collector", type="hitl_replan",
+                    active=has_hitl_replan),
+            DagEdge(id="e8", from_="hitl_gate", to="analyst", type="hitl_reanalyze",
+                    active=has_hitl_reanalyze),
+            DagEdge(id="e9", from_="hitl_gate", to="writer", type="hitl_rewrite",
+                    active=has_hitl_rewrite),
         ],
     )
 
@@ -1097,7 +1144,7 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest) -> Section
 
     # Persist to DB
     try:
-        from deerflow.competition.db import upsert_analysis
+        from competition.db import upsert_analysis
         upsert_analysis(
             thread_id=thread_id,
             report_data=report_dict,
@@ -1203,7 +1250,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             state["user_request"] = f"{state.get('user_request', '')}\n\n用户反馈意见: {comment}"
             logger.info("Reanalysis with feedback: %s", comment[:100])
 
-        from deerflow.competition.nodes.writer import writer_node
+        from competition.nodes.writer import writer_node
 
         # Track reanalysis round for unique phase keys (writer_r2, analyst_r2, ...)
         round_num = entry.setdefault("reanalysis_round", 0) + 1
@@ -1222,7 +1269,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         }
 
         # Set up streaming callback so re-execution phase content is captured
-        from deerflow.competition.executor import set_stream_callback, clear_stream_callback
+        from competition.executor import set_stream_callback, clear_stream_callback
         _re_content: dict[str, str] = {}  # agent_name → accumulated text
 
         def _re_stream(agent_name: str, chunk_text: str) -> None:
@@ -1267,13 +1314,25 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 "tokens": 0,
             })
 
+            # Extract structured JSON output from the node result
+            _json_output: dict | None = None
+            if node_key == "collector":
+                _json_output = {"summary": _safe_dict(result.get("collection_summary")), "data_points_count": len(result.get("collected_data") or [])}
+            elif node_key == "analyst":
+                _json_output = _safe_dict(result.get("analysis_result"))
+            elif node_key == "reviewer":
+                _json_output = _safe_dict(result.get("review_verdict"))
+            elif node_key == "writer":
+                _json_output = _safe_dict(result.get("report_data"))
+
             # Persist re-execution phase with captured content
-            from deerflow.competition.db import save_phase
+            from competition.db import save_phase
             save_phase(
                 thread_id=thread_id, phase_key=phase_key,
                 label=display_label, icon=icon, status="completed",
                 start_time=start_time, end_time=end_time,
                 tokens=0, content=dict(_re_content), details=[],
+                json_output=_json_output,
                 version=round_num,
             )
             _re_content.clear()
@@ -1285,8 +1344,8 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         if action == "rewrite":
             _run_re_node("writer", writer_node, state)
         elif action == "reanalyze":
-            from deerflow.competition.nodes.analyst import analyst_node
-            from deerflow.competition.nodes.reviewer import reviewer_node
+            from competition.nodes.analyst import analyst_node
+            from competition.nodes.reviewer import reviewer_node
 
             logger.info("Reanalysis starting for %s", thread_id[:12])
             _run_re_node("analyst", analyst_node, state)
@@ -1294,9 +1353,9 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             _run_re_node("writer", writer_node, state)
             logger.info("Reanalysis completed for %s", thread_id[:12])
         elif action == "replan":
-            from deerflow.competition.nodes.analyst import analyst_node
-            from deerflow.competition.nodes.collector import collector_node
-            from deerflow.competition.nodes.reviewer import reviewer_node
+            from competition.nodes.analyst import analyst_node
+            from competition.nodes.collector import collector_node
+            from competition.nodes.reviewer import reviewer_node
 
             logger.info("Replan starting for %s", thread_id[:12])
             _run_re_node("collector", collector_node, state)
@@ -1340,7 +1399,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 def _save_to_db(thread_id: str, entry: dict) -> None:
     """Persist an approved report to the SQLite analysis_history table."""
     try:
-        from deerflow.competition.db import init_db, record_analysis
+        from competition.db import init_db, record_analysis
 
         conn = init_db()
         state = entry.get("state", {})
@@ -1559,8 +1618,8 @@ async def current_user(fastapi_request: Request):
 async def list_db_history(limit: int = Query(default=20, le=100)):
     """List analysis records saved to SQLite (approved reports)."""
     try:
-        from deerflow.competition.db import init_db
-        from deerflow.competition.db import list_history as db_list_history
+        from competition.db import init_db
+        from competition.db import list_history as db_list_history
 
         conn = init_db()
         records = db_list_history(conn, limit=limit)
@@ -1575,7 +1634,7 @@ async def list_db_history(limit: int = Query(default=20, le=100)):
 async def get_db_report(thread_id: str):
     """Retrieve a saved (approved) report from the SQLite database."""
     try:
-        from deerflow.competition.db import get_analysis, init_db
+        from competition.db import get_analysis, init_db
 
         conn = init_db()
         record = get_analysis(thread_id, conn=conn)
@@ -1594,7 +1653,7 @@ async def get_db_report(thread_id: str):
 async def delete_db_report(thread_id: str):
     """Delete a saved report from the SQLite database."""
     try:
-        from deerflow.competition.db import delete_analysis, delete_phase_history, init_db
+        from competition.db import delete_analysis, delete_phase_history, init_db
 
         conn = init_db()
         deleted = delete_analysis(thread_id, conn=conn)
@@ -1614,7 +1673,7 @@ async def delete_db_report(thread_id: str):
 async def pin_db_report(thread_id: str, pinned: bool = True):
     """Pin or unpin a saved report (pinned reports sort first and cannot be deleted)."""
     try:
-        from deerflow.competition.db import pin_analysis, init_db
+        from competition.db import pin_analysis, init_db
 
         conn = init_db()
         updated = pin_analysis(thread_id, pinned, conn=conn)
@@ -1637,7 +1696,7 @@ class RenameRequest(BaseModel):
 async def rename_db_report(thread_id: str, body: RenameRequest):
     """Rename a saved report."""
     try:
-        from deerflow.competition.db import upsert_analysis, get_analysis, init_db
+        from competition.db import upsert_analysis, get_analysis, init_db
 
         conn = init_db()
         record = get_analysis(thread_id, conn=conn)
@@ -1714,7 +1773,7 @@ def _add_token_entry(thread_id: str, label: str) -> None:
     Called after each graph run or HITL action so the frontend can render a
     segmented token bar coloured by version.
     """
-    from deerflow.competition.executor import get_agent_tokens, get_total_tokens
+    from competition.executor import get_agent_tokens, get_total_tokens
 
     total = get_total_tokens()
     agents = get_agent_tokens()
@@ -1738,7 +1797,7 @@ def _finalize_cancelled(thread_id: str) -> None:
     _store[thread_id]["status"] = "interrupted"
     _store[thread_id]["state"]["error"] = "用户手动终止分析"
     try:
-        from deerflow.competition.db import upsert_analysis
+        from competition.db import upsert_analysis
         upsert_analysis(
             thread_id=thread_id, status="interrupted",
             user_id=_thread_owners.get(thread_id, "default"),
@@ -1769,7 +1828,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
         return _cancel_flags.pop(thread_id, False)
 
     # Set cancel checker so LLM calls during product resolution can be interrupted
-    from deerflow.competition.executor import set_cancel_checker, clear_cancel_checker
+    from competition.executor import set_cancel_checker, clear_cancel_checker
     set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
 
     try:
@@ -1834,7 +1893,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
         })
 
         # Persist resolving + resolved phases so history reconstruction has them
-        from deerflow.competition.db import save_phase as _sp
+        from competition.db import save_phase as _sp
         _sp(thread_id=thread_id, phase_key="resolving", label="竞品解析", icon="🔎",
             status="completed", start_time=resolve_start.isoformat(), end_time=resolve_end.isoformat(),
             tokens=0, content={}, details=[
@@ -1861,7 +1920,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             else:
                 title = ""
             if title:
-                from deerflow.competition.db import upsert_analysis as _ua
+                from competition.db import upsert_analysis as _ua
                 _ua(thread_id=thread_id, title=title, status="running")
                 _store[thread_id]["title"] = title
                 _emit_event(thread_id, "title", {"title": title, "thread_id": thread_id})
@@ -1892,21 +1951,21 @@ def _run_graph_sync(thread_id: str) -> None:
     stays free to handle other requests.
     """
     try:
-        from deerflow.competition.graph import build_competition_graph
-        from deerflow.competition.state import CompetitionState
+        from competition.graph import build_competition_graph
+        from competition.state import CompetitionState
 
         entry = _store.get(thread_id)
         if not entry:
             return
 
-        from deerflow.competition.graph import register_nodes
-        from deerflow.competition.nodes.analyst import analyst_node
-        from deerflow.competition.nodes.collector import collector_node
-        from deerflow.competition.nodes.error_handler import error_handler_node
-        from deerflow.competition.nodes.hitl_gate import hitl_gate_node
-        from deerflow.competition.nodes.orchestrator import orchestrator_node
-        from deerflow.competition.nodes.reviewer import reviewer_node
-        from deerflow.competition.nodes.writer import writer_node
+        from competition.graph import register_nodes
+        from competition.nodes.analyst import analyst_node
+        from competition.nodes.collector import collector_node
+        from competition.nodes.error_handler import error_handler_node
+        from competition.nodes.hitl_gate import hitl_gate_node
+        from competition.nodes.orchestrator import orchestrator_node
+        from competition.nodes.reviewer import reviewer_node
+        from competition.nodes.writer import writer_node
 
         register_nodes({
             "orchestrator": orchestrator_node,
@@ -1924,8 +1983,8 @@ def _run_graph_sync(thread_id: str) -> None:
         # ── Set up SSE streaming callback (§19) ──
         # Each LLM call inside nodes will stream token chunks to the frontend
         # via this callback, matching DF chat's messages-tuple SSE format.
-        from deerflow.competition.executor import set_stream_callback, clear_stream_callback
-        from deerflow.competition.executor import set_cancel_checker, clear_cancel_checker
+        from competition.executor import set_stream_callback, clear_stream_callback
+        from competition.executor import set_cancel_checker, clear_cancel_checker
 
         _chunk_seq = 0
         _phase_content: dict[str, str] = {}  # agent_name → accumulated streaming text
@@ -2003,22 +2062,28 @@ def _run_graph_sync(thread_id: str) -> None:
                 # Detect which node just completed by diffing against previous state
                 current_node = None
                 progress = None
+                node_json: dict | None = None
                 if update.get("orchestration_result") and not prev_state.get("orchestration_result"):
                     current_node = "orchestrator"
+                    node_json = _safe_dict(update.get("orchestration_result"))
                 elif update.get("collection_summary") and not prev_state.get("collection_summary"):
                     current_node = "collector"
                     progress = f"已采集 {update['collection_summary'].get('total_data_points', 0)} 条数据"
+                    node_json = {"summary": _safe_dict(update.get("collection_summary")), "data_points_count": len(update.get("collected_data") or [])}
                 elif update.get("analysis_result") and not prev_state.get("analysis_result"):
                     current_node = "analyst"; progress = "对比矩阵+SWOT已生成"
+                    node_json = _safe_dict(update.get("analysis_result"))
                 elif update.get("review_verdict") and not prev_state.get("review_verdict"):
                     current_node = "reviewer"; progress = "质量审查完成"
+                    node_json = _safe_dict(update.get("review_verdict"))
                 elif update.get("report_data") and not prev_state.get("report_data"):
                     current_node = "writer"; progress = "报告已生成"
+                    node_json = _safe_dict(update.get("report_data"))
                 prev_state = update
 
                 if current_node:
-                    from deerflow.competition.db import upsert_analysis
-                    from deerflow.competition.executor import get_total_tokens
+                    from competition.db import upsert_analysis
+                    from competition.executor import get_total_tokens
                     current_total = get_total_tokens()
                     delta_tokens = current_total - prev_total_tokens
                     prev_total_tokens = current_total
@@ -2035,7 +2100,7 @@ def _run_graph_sync(thread_id: str) -> None:
                         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
                     })
                     # Persist phase content for history reconstruction
-                    from deerflow.competition.db import save_phase as _sp
+                    from competition.db import save_phase as _sp
                     _now = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
                     _sp(
                         thread_id=thread_id, phase_key=current_node,
@@ -2045,6 +2110,7 @@ def _run_graph_sync(thread_id: str) -> None:
                         tokens=max(delta_tokens, 0),
                         content=dict(_phase_content),
                         details=[],
+                        json_output=node_json,
                         version=0,
                     )
                     _phase_content.clear()
@@ -2066,7 +2132,7 @@ def _run_graph_sync(thread_id: str) -> None:
         _store[thread_id]["status"] = "completed"
 
         # Persist completion to DB (§18)
-        from deerflow.competition.db import upsert_analysis
+        from competition.db import upsert_analysis
         state = _store[thread_id]["state"]
         rd = state.get("report_data")
         upsert_analysis(
@@ -2093,7 +2159,7 @@ def _run_graph_sync(thread_id: str) -> None:
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
-            from deerflow.competition.db import upsert_analysis
+            from competition.db import upsert_analysis
             upsert_analysis(thread_id=thread_id, status="failed", progress=f"失败: {str(e)[:100]}")
 
 

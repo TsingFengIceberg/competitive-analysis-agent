@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 # Module under test
-from deerflow.branchtree.checkpoint_ops import CheckpointOps  # noqa: E402
+from competition.branchtree.checkpoint_ops import CheckpointOps  # noqa: E402
 
 # ── Helpers ────────────────────────────────────────────────────
 

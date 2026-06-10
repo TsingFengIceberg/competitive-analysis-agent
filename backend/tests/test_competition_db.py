@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from deerflow.competition.db import (
+from competition.db import (
     CREDIBILITY_DELTA,
     upsert_analysis,
     DEFAULT_CREDIBILITY_SCORE,

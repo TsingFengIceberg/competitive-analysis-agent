@@ -1,6 +1,5 @@
 /**
- * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially useful
- * for Docker builds.
+ * CI-Agent Frontend — Next.js Configuration
  */
 import "./src/env.js";
 
@@ -10,16 +9,9 @@ function getInternalServiceURL(envKey, fallbackURL) {
     ? configured.replace(/\/+$/, "")
     : fallbackURL;
 }
-import nextra from "nextra";
-
-const withNextra = nextra({});
 
 /** @type {import("next").NextConfig} */
 const config = {
-  i18n: {
-    locales: ["en", "zh"],
-    defaultLocale: "en",
-  },
   allowedDevOrigins: ["121.43.235.19"],
   devIndicators: false,
   async rewrites() {
@@ -58,13 +50,6 @@ const config = {
         destination: `${gatewayURL}/api/skills/:path*`,
       });
 
-      // Catch-all for remaining gateway API routes (models, threads, memory,
-      // mcp, artifacts, uploads, suggestions, runs, etc.) that don't have
-      // their own NEXT_PUBLIC_* env var toggle.
-      //
-      // NOTE: this must come AFTER the /api/langgraph rewrite above so that
-      // LangGraph-compatible routes keep their public prefix while Gateway
-      // receives its native /api/* paths.
       rewrites.push({
         source: "/api/:path*",
         destination: `${gatewayURL}/api/:path*`,
@@ -75,4 +60,4 @@ const config = {
   },
 };
 
-export default withNextra(config);
+export default config;

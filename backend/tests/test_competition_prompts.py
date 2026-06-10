@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deerflow.competition.prompts import load_prompt, load_prompt_with_vars
+from competition.prompts import load_prompt, load_prompt_with_vars
 
 
 class TestLoadPrompt:
