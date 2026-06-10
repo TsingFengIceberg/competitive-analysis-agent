@@ -1,4 +1,4 @@
-.PHONY: help install start stop restart clean test lint
+.PHONY: help install start stop restart clean test lint build docker docker-stop
 
 help:
 	@echo "Competitive-Analysis-Agent Commands:"
@@ -10,6 +10,8 @@ help:
 	@echo "  make test          - Run backend tests"
 	@echo "  make lint          - Run all linters"
 	@echo "  make build         - Build frontend for production"
+	@echo "  make docker        - Start via Docker Compose"
+	@echo "  make docker-stop   - Stop Docker Compose"
 
 install:
 	@echo "Installing backend dependencies..."
@@ -32,6 +34,12 @@ clean:
 
 build:
 	cd frontend && pnpm build
+
+docker:
+	docker compose -f docker/docker-compose.yaml up -d
+
+docker-stop:
+	docker compose -f docker/docker-compose.yaml down
 
 test:
 	cd backend && PYTHONPATH=packages/competition uv run pytest tests/test_competition_*.py tests/test_branchtree*.py tests/test_checkpoint_ops.py tests/test_conversation_tree.py -v

@@ -70,7 +70,7 @@ CMD ["sh", "-c", "cd backend && PYTHONPATH=. uv run uvicorn app.main:app --host 
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 # Clean image without build-essential — reduces size (~200 MB) and attack surface.
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm AS runtime
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
@@ -98,4 +98,4 @@ COPY --from=builder /app/backend ./backend
 EXPOSE 8001 2024
 
 # Default command (can be overridden in docker-compose)
-CMD ["sh", "-c", "cd backend && PYTHONPATH=. uv run --no-sync uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001"]
+CMD ["sh", "-c", "cd backend && PYTHONPATH=packages/competition uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8001"]
