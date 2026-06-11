@@ -64,8 +64,37 @@ def collector_node(state: dict) -> dict:
         except Exception:
             logger.exception("Questionnaire generation failed — continuing without it")
 
+    # ── Bounded Rework merge: replace old data for gapped product+category, keep rest ──
+    existing_data = state.get("collected_data") or []
+    gaps = state.get("knowledge_gaps") or []
+    if gaps and existing_data:
+        # Determine which (product, category) pairs are being re-collected
+        import re as _re
+        gapped_pairs: set[tuple[str, str]] = set()
+        for g in gaps:
+            task_text = g.get("target_collect_task", "")
+            # Extract product and category hints from the gap task
+            for prod in state.get("target_products", []):
+                if prod.lower() in task_text.lower():
+                    for cat in ["features", "pricing", "users", "market"]:
+                        if cat in task_text.lower() or g.get("type") in ("missing_data", "source_conflict"):
+                            gapped_pairs.add((prod.lower(), cat))
+        # Keep existing data except for gapped pairs
+        kept = [
+            dp for dp in existing_data
+            if (dp.get("product", "").lower(), dp.get("category", "")) not in gapped_pairs
+        ]
+        merged = kept + [dp.model_dump() for dp in data_points]
+        logger.info(
+            "Bounded rework: kept %d existing + %d new data points (gapped pairs: %s)",
+            len(kept), len(data_points), gapped_pairs,
+        )
+        data_points_for_state = merged
+    else:
+        data_points_for_state = [dp.model_dump() for dp in data_points]
+
     return {
-        "collected_data": [dp.model_dump() for dp in data_points],
+        "collected_data": data_points_for_state,
         "collection_summary": summary,
         "collector_self_assessment": self_assessment,
         "questionnaire": questionnaire,
@@ -79,10 +108,15 @@ def _build_collector_task(state: dict) -> str:
     """Construct the task description passed to SubagentExecutor.
 
     Incorporates §3.4.4 search query templates and §3.4.7 data source routing.
+    When knowledge_gaps are present (rework round), restricts to re-collect only
+    the gapped products+dimensions (Bounded Rework, §Torrent2002-inspired).
     """
     user_request = state.get("user_request", "")
     target_products = state.get("target_products", [])
     gaps = state.get("knowledge_gaps") or []
+
+    if gaps:
+        return _build_targeted_rework_task(state, gaps)
 
     products_str = ", ".join(target_products) if target_products else "(from user request)"
 
@@ -108,11 +142,6 @@ Output format: a JSON array of objects, each with:
   source_url, source_type, collected_at (ISO 8601)
 """
 
-    if gaps:
-        task += "\n\nKnowledge gaps from previous round — prioritize these:\n"
-        for g in gaps:
-            task += f"  - [{g.get('type', '?')}] {g.get('target_collect_task', g.get('description', ''))}\n"
-
     context = state.get("context_report")
     if context and isinstance(context, dict):
         sections = context.get("sections", [])
@@ -125,6 +154,30 @@ Output format: a JSON array of objects, each with:
             task += "\nFocus on finding NEW or UPDATED data beyond the above, especially recent changes.\n"
 
     return task
+
+
+def _build_targeted_rework_task(state: dict, gaps: list[dict]) -> str:
+    """Build a bounded-rework task: only re-collect what the gaps specify."""
+    products = state.get("target_products", [])
+    products_str = ", ".join(products) if products else "(unknown)"
+
+    gap_lines = []
+    for g in gaps[:10]:
+        task_text = g.get("target_collect_task", g.get("description", ""))
+        severity = g.get("severity", "major")
+        gap_lines.append(f"  [{severity}] {task_text}")
+
+    return f"""TARGETED RE-COLLECTION — only collect data for the specific gaps below.
+Original products: {products_str}
+
+Gap list (do NOT re-collect everything — only fill these gaps):
+{chr(10).join(gap_lines)}
+
+For each gap, find 2-3 new data points from DIFFERENT sources than before.
+Output format: a JSON array of objects, each with:
+  id, product, category, label, value, confidence (0.0-1.0),
+  source_url, source_type, collected_at (ISO 8601)
+"""
 
 
 # ── Post-processing: Deduplication (§3.4.2) ──
@@ -435,17 +488,21 @@ def _run_searches(state: dict) -> str:
     if not target_products:
         return ""
 
-    # Also include gap-related products for replan rounds
+    # Also include gap-related products for replan rounds (Bounded Rework)
     gaps = state.get("knowledge_gaps") or []
+    is_rework = bool(gaps)
     gap_products: list[str] = []
     if gaps:
+        import re as _re
         for g in gaps:
             task_text = g.get("target_collect_task", "")
-            import re as _re
             found = _re.findall(r"Search for.*?: ([A-Za-z][A-Za-z0-9 ]+)", task_text)
             gap_products.extend(found)
     if gap_products:
-        target_products = list(set(target_products + gap_products))
+        target_products = list(set(gap_products))
+    elif is_rework and not gap_products:
+        # Rework but can't extract products — keep original targets but limit search depth
+        pass
 
     # ── Task complexity adjustment (§3.17.1, v4: Orchestrator-driven) ──
     # Priority: Orchestrator's orchestration_result → state["complexity"] → "standard"
@@ -496,6 +553,9 @@ def _run_searches(state: dict) -> str:
         logger.warning("🦆 DDG search returned ZERO results")
         return ""
 
+    # ── Content persistence: save full fetched page text for evidence verification ──
+    _persist_search_results(results)
+
     # Log what we found
     with_content = sum(1 for r in results if r.raw_content)
     logger.warning("═══ 🦆 DDG DONE: %d unique URLs (%d fetched) ═══",
@@ -516,6 +576,27 @@ def _get_search_info() -> dict:
         "total_results": stats.get("total_results", 0),
         "queries": stats.get("queries", []),
     }
+
+
+def _persist_search_results(results) -> None:
+    """Save full fetched page text to content_store for downstream evidence verification."""
+    import hashlib
+    from competition.db import save_content
+
+    count = 0
+    for r in results:
+        raw = getattr(r, "raw_content", None) or ""
+        if not raw or len(raw) < 100:
+            continue
+        url = getattr(r, "url", "") or ""
+        content_ref = hashlib.sha256(url.encode()).hexdigest()[:16]
+        try:
+            save_content(content_ref, url, raw)
+            count += 1
+        except Exception:
+            pass
+    if count:
+        logger.info("Content store: persisted %d full-text pages", count)
 
 
 # ── Task complexity (§3.17.1) ──

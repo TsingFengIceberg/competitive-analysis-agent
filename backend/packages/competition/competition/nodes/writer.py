@@ -499,14 +499,39 @@ def _render_comparison_table(rows: list[dict], products: list[str], dimensions: 
 
 
 def _build_traceability_map(collected: list[dict]) -> dict:
-    """Build claim_id → {url, timestamp, confidence} mapping."""
+    """Build claim_id → {url, timestamp, confidence, credibility_tier} mapping."""
+    from urllib.parse import urlparse
+
+    # Try to load domain credibility scores for tier assignment
+    domain_scores: dict[str, float] = {}
+    try:
+        from competition.db import get_all_credibilities, init_db
+        conn = init_db()
+        rows = get_all_credibilities(conn)
+        conn.close()
+        for r in rows:
+            domain_scores[r.get("source_domain", "")] = r.get("score", 0.5)
+    except Exception:
+        pass
+
+    def _tier(score: float) -> str:
+        if score >= 0.7:
+            return "strong"
+        if score >= 0.4:
+            return "moderate"
+        return "weak"
+
     trace = {}
     for i, dp in enumerate(collected):
         if isinstance(dp, dict):
+            url = dp.get("source_url", "")
+            domain = urlparse(url).netloc if url else ""
+            score = domain_scores.get(domain, 0.5)
             trace[str(i + 1)] = {
-                "url": dp.get("source_url", ""),
+                "url": url,
                 "timestamp": dp.get("collected_at", ""),
                 "confidence": dp.get("confidence", 0.0),
+                "credibility_tier": _tier(score),
             }
     return trace
 

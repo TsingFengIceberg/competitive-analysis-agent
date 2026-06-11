@@ -744,6 +744,30 @@ export default function CompetitionPage() {
     }
   }, [status]);
 
+  // Reset page state when navigating to /competition/new (Next.js reuses component)
+  useEffect(() => {
+    if (threadId === "new") {
+      setStatus("idle");
+      setPhaseMap(new Map());
+      setStreamingContent({});
+      setCurrentStreamAgent(null);
+      setReportData(null);
+      setTokenUsage([]);
+      setHitlVisible(false);
+      setHitlSubmitting(false);
+      setSseConnected(false);
+      // Close any stale SSE connection from previous thread
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    }
+  }, [threadId]);
+
   // Phase live-timer tick — drives per-phase elapsed display while running
   useEffect(() => {
     if (status !== "running") return;

@@ -98,6 +98,17 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)
     _migrate_phase_history(conn)
+
+    # Content persistence: full fetched page text for evidence verification
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS content_store (
+            content_ref TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            full_text TEXT NOT NULL,
+            char_count INTEGER DEFAULT 0,
+            fetched_at TEXT NOT NULL
+        );
+    """)
     conn.commit()
     return conn
 
@@ -507,3 +518,41 @@ def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
         }
         for row in rows
     ]
+
+
+# ── Content Persistence (§Torrent2002-inspired) ──
+
+
+def save_content(content_ref: str, url: str, full_text: str, conn: sqlite3.Connection | None = None) -> None:
+    """Persist full fetched page text under a content reference key."""
+    from datetime import UTC, datetime
+
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO content_store (content_ref, url, full_text, char_count, fetched_at) VALUES (?, ?, ?, ?, ?)",
+        (content_ref, url, full_text, len(full_text), datetime.now(UTC).isoformat()),
+    )
+    conn.commit()
+    if close_conn:
+        conn.close()
+
+
+def get_content(content_ref: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    """Retrieve full fetched page text by content reference."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    row = conn.execute(
+        "SELECT content_ref, url, full_text, char_count, fetched_at FROM content_store WHERE content_ref = ?",
+        (content_ref,),
+    ).fetchone()
+    if close_conn:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "content_ref": row[0], "url": row[1], "full_text": row[2],
+        "char_count": row[3], "fetched_at": row[4],
+    }

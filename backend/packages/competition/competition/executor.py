@@ -32,6 +32,53 @@ _agent_tokens: dict[str, int] = {}
 # so thread-local storage correctly isolates concurrent analyses.
 _tl = threading.local()
 
+# ── Reliability Harness (§Torrent2002-inspired) ──
+
+
+def _get_call_history() -> list[str]:
+    """Return the per-thread call-signature history for circuit breaker tracking."""
+    hist = getattr(_tl, "call_history", None)
+    if hist is None:
+        hist = []
+        _tl.call_history = hist
+    return hist
+
+
+def _record_agent_call(agent_name: str, task_preview: str) -> None:
+    """Append a call signature to the per-thread history."""
+    sig = f"{agent_name}:{task_preview[:120]}"
+    _get_call_history().append(sig)
+    # Keep only the last 10 entries
+    if len(_get_call_history()) > 10:
+        _get_call_history()[:] = _get_call_history()[-10:]
+
+
+def _check_circuit_breaker(agent_name: str, task_preview: str) -> str | None:
+    """Return an error message if the same call has been made 3+ consecutive times.
+
+    This prevents LLM loops where a node retries an identical task repeatedly,
+    burning tokens for no gain.
+    """
+    history = _get_call_history()
+    sig = f"{agent_name}:{task_preview[:120]}"
+    # Check last 3 entries
+    if len(history) >= 3 and history[-3:] == [sig, sig, sig]:
+        return (
+            f"Circuit breaker tripped: {agent_name} has made 3 identical calls. "
+            f"Task preview: {task_preview[:100]}"
+        )
+    return None
+
+
+def _reset_call_history() -> None:
+    """Clear call history for a new analysis run."""
+    _tl.call_history = []
+
+
+def reset_reliability_state() -> None:
+    """Reset all per-thread reliability state. Call at start of each analysis."""
+    _reset_call_history()
+
 
 def set_stream_callback(cb) -> None:
     """Set the SSE stream callback for the current thread."""
@@ -67,6 +114,19 @@ def get_agent_tokens() -> dict[str, int]:
     return dict(_agent_tokens)
 
 
+def _sanitize_stream_chunk(text: str) -> str:
+    """Strip partial thinking/reasoning markers from streaming chunks."""
+    # Let the THINK sentinel pass through (it's a UI hint, not model output)
+    if text == "\x00THINK\x00":
+        return text
+    import re
+    text = re.sub(r"```\s*THINK\s*[\s\S]*?```", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<thinking[\s\S]*?/thinking>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<reasoning[\s\S]*?/reasoning>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bTHINK\b", "", text)
+    return text
+
+
 def execute_agent(
     system_prompt: str,
     task: str,
@@ -92,6 +152,14 @@ def execute_agent(
         logger.info("LLM call cancelled before start for %s", agent_name)
         return (None, 0)
 
+    # Circuit breaker: detect repeated identical calls (prevents LLM loops)
+    cb_error = _check_circuit_breaker(agent_name, task[:200])
+    if cb_error:
+        logger.warning("Circuit breaker: %s", cb_error)
+        return (None, 0)
+
+    _record_agent_call(agent_name, task[:200])
+
     try:
         from langchain_openai import ChatOpenAI
 
@@ -116,6 +184,10 @@ def execute_agent(
 
         # Check for SSE streaming callback (§19)
         cb = getattr(_tl, "stream_callback", None)
+        if cb is not None:
+            # Wrap callback to strip thinking tokens before they reach SSE clients
+            _raw_cb = cb
+            cb = lambda name, text: _raw_cb(name, _sanitize_stream_chunk(text))
         if cb is not None:
             # Emit a thinking indicator immediately so the UI doesn't look frozen.
             # Thinking models (Doubao seed) may spend 30-60s reasoning with zero

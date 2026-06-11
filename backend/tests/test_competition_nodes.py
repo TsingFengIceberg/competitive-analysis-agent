@@ -173,7 +173,7 @@ class TestBuildCollectorTask:
             ],
         })
         assert "enterprise pricing" in task
-        assert "Knowledge gaps" in task
+        assert "TARGETED RE-COLLECTION" in task
 
 
 # ═══════════════════════════════════════════════════════════════

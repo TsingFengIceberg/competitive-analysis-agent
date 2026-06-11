@@ -14,7 +14,14 @@ export interface SourceInfo {
   confidence?: number;
   verified?: boolean;
   snippet?: string;
+  credibility_tier?: string;  // "strong" | "moderate" | "weak"
 }
+
+const TIER_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
+  strong:   { label: "强证据", color: "text-green-700", bg: "bg-green-100 dark:bg-green-900/30" },
+  moderate: { label: "中等证据", color: "text-amber-700", bg: "bg-amber-100 dark:bg-amber-900/30" },
+  weak:     { label: "弱证据", color: "text-red-600", bg: "bg-red-100 dark:bg-red-900/30" },
+};
 
 export function SourceCard({
   source,
@@ -51,6 +58,18 @@ export function SourceCard({
           </span>
         )}
       </div>
+
+      {/* Credibility tier badge */}
+      {source.credibility_tier && TIER_CONFIG[source.credibility_tier] && (() => {
+        const cfg = TIER_CONFIG[source.credibility_tier]!;
+        return (
+          <div className="mb-2">
+            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${cfg.bg} ${cfg.color}`}>
+              {cfg.label}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* URL */}
       <a

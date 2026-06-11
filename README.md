@@ -4,7 +4,16 @@
 
 # Competitive-Analysis-Agent
 
-AI 驱动的竞品分析 Agent 协作系统 
+AI 驱动的竞品分析 Agent 协作系统
+
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
 ## 目录
 
@@ -46,11 +55,11 @@ Agent 间通过 **结构化 Pydantic Schema** 通信（非纯自然语言），�
 
 ### 反馈闭环
 
-Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可信度、时间新鲜度、维度完整性等），发现 gap 即打回 Collector/Analyst 重做，**最多 2 轮**。每次重做后追踪改善率，确保闭环真实可触发而非伪闭环。
+Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可信度、时间新鲜度、维度完整性等），发现 gap 即打回 Collector/Analyst 重做，**最多 2 轮**。打回时精准定位缺失维度，**定向补采**而非全量重跑，减少 Token 消耗。每次重做后追踪改善率，确保闭环真实可触发而非伪闭环。
 
 ### 信息溯源
 
-每条分析结论标注 `[n]` 上标来源，hover 弹出 source card（URL、采集时间、置信度、验证状态），支持一键跳转到原始数据源。
+每条分析结论标注 `[n]` 上标来源，hover 弹出 source card（URL、采集时间、置信度、验证状态），支持一键跳转到原始数据源。来源按域名历史可信度自动分为**强/中/弱**三档证据强度，低可信来源自动降权。
 
 ### 分支树 BranchTree
 
@@ -69,7 +78,11 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 
 ### 来源可信度动态演化
 
-每个数据源的域名维护可信度分数（0-1），Reviewer 每次校验后根据结果（verified/conflict/error/outdated）自动调分，跨分析 session 累积演化。
+每个数据源的域名维护可信度分数（0-1），Reviewer 每次校验后根据结果（verified/conflict/error/outdated）自动调分，跨分析 session 累积演化。采集时自动**持久化页面全文**，下游 Agent 可回溯原文验证 claim，不做仅靠摘要的二手判断。
+
+### Agent 可靠性
+
+内置**熔断器**（连续 3 次重复调用自动中断）防止 LLM 死循环烧 Token，per-Agent 超时 + 降级兜底保证单点故障不阻塞整体流程。
 
 ---
 

@@ -9,6 +9,9 @@ const ACTION_LABELS: Record<string, string> = {
   initial: "初始分析", merge: "合并", approve: "已批准",
 };
 
+// TODO: re-enable version diff badges when metrics are stable across re-executions
+const SHOW_VERSION_DIFF = false;
+
 interface Props {
   displayReport: ReportData;
   version: number;
@@ -49,10 +52,11 @@ function metricColor(value: number): string {
 }
 
 function diffBadge(current: number, previous: number | null) {
+  if (!SHOW_VERSION_DIFF) return null;
   if (previous == null || previous === 0) return null;
   const delta = current - previous;
+  if (Math.abs(delta) < 0.01) return <span className="text-[10px] text-muted-foreground ml-1">→0%</span>;
   const pct = Math.round(delta * 100);
-  if (pct === 0) return <span className="text-[10px] text-muted-foreground ml-1">→0%</span>;
   const sign = pct > 0 ? "+" : "";
   const cls = pct > 0 ? "text-green-600" : "text-red-500";
   return <span className={`text-[10px] font-medium ${cls} ml-1`}>{sign}{pct}%</span>;
@@ -155,7 +159,7 @@ export default function CompetitionReportCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-2">
-          {hasDiff && (
+          {SHOW_VERSION_DIFF && hasDiff && (
             <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 hidden sm:inline">
               vs v{prevSibling!.version}
             </span>
@@ -209,11 +213,12 @@ export default function CompetitionReportCard({
             </div>
           )}
           {rd.sections && (
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-muted-foreground">章节数</span>
-              <span className="text-[11px] font-bold text-amber-600">
+            <div className="w-1/2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">章节数</span>
+                <span className="text-[11px] font-bold text-amber-600">
                 {rd.sections.length}
-                {prevSibling?.report_data?.sections && (
+                {SHOW_VERSION_DIFF && prevSibling?.report_data?.sections && (
                   (() => {
                     const prevCount = prevSibling.report_data!.sections!.length;
                     const delta = rd.sections.length - prevCount;
@@ -224,6 +229,7 @@ export default function CompetitionReportCard({
                   })()
                 )}
               </span>
+            </div>
             </div>
           )}
         </div>

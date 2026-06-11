@@ -131,6 +131,7 @@ export interface ReportData {
       title?: string;
       snippet?: string;
       verified?: boolean;
+      credibility_tier?: string;  // "strong" | "moderate" | "weak"
     }>;
   quality_summary: Record<string, unknown>;
   forecast: unknown;

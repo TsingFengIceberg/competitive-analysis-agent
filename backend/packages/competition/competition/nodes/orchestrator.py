@@ -155,7 +155,7 @@ def _extract_orchestrator_fields(text: str) -> dict | None:
     if m:
         result["summary"] = m.group(1)
 
-    # Extract dimension_weights: try to parse each weight object
+    # Extract dimension_weights: try to parse each weight object (JSON format)
     dim_weights = []
     for m in re.finditer(
         r'\{\s*"dimension"\s*:\s*"(features|pricing|users|market|technology)"\s*,\s*"weight"\s*:\s*([\d.]+)\s*,\s*"reason"\s*:\s*"([^"]*)"\s*\}',
@@ -166,6 +166,30 @@ def _extract_orchestrator_fields(text: str) -> dict | None:
             "weight": float(m.group(2)),
             "reason": m.group(3),
         })
+
+    # Also try Chinese-prose dimension weight format:
+    #   维度：功能特性
+    #   权重：0.8
+    #   原因：...
+    _DIM_CN_MAP = {
+        "功能特性": "features", "功能": "features",
+        "定价": "pricing", "价格": "pricing", "定价策略": "pricing",
+        "用户": "users", "用户画像": "users", "使用体验": "users",
+        "市场": "market", "市场格局": "market", "竞争格局": "market",
+        "技术": "technology", "技术架构": "technology", "技术栈": "technology",
+    }
+    for m in re.finditer(
+        r'维度[：:]\s*(\S+?)\s*\n\s*权重[：:]\s*([\d.]+)\s*\n\s*原因[：:]\s*([^\n]+)',
+        text,
+    ):
+        cn_dim = m.group(1).strip()
+        eng_dim = _DIM_CN_MAP.get(cn_dim)
+        if eng_dim:
+            dim_weights.append({
+                "dimension": eng_dim,
+                "weight": float(m.group(2)),
+                "reason": m.group(3).strip(),
+            })
     if dim_weights:
         result["dimension_weights"] = dim_weights
 

@@ -454,13 +454,32 @@ def _measure_improvement(prev_gaps: list[dict], current_gaps: list[dict]) -> flo
 
 
 def _build_quality_summary(points: list[dict], gaps: list[dict], improvement: float) -> dict:
+    from urllib.parse import urlparse
+
     sources = set()
     for dp in points:
         url = dp.get("source_url", "")
         if url:
             sources.add(url)
 
-    multi = len([dp for dp in points if dp.get("source_url", "").count(",") >= 1])
+    # Cross-validation: a data point is corroborated if another data point
+    # about the same product+category comes from a DIFFERENT source domain.
+    domain_map: dict[tuple, set[str]] = {}  # (product, category) -> {domains}
+    for dp in points:
+        key = (dp.get("product", ""), dp.get("category", ""))
+        url = dp.get("source_url", "")
+        domain = urlparse(url).netloc if url else "unknown"
+        domain_map.setdefault(key, set()).add(domain)
+
+    multi = 0
+    for dp in points:
+        key = (dp.get("product", ""), dp.get("category", ""))
+        url = dp.get("source_url", "")
+        domain = urlparse(url).netloc if url else "unknown"
+        all_domains = domain_map.get(key, set())
+        if len(all_domains - {domain}) >= 1:
+            multi += 1
+
     single = len(points) - multi
     verified = len(points) - len([g for g in gaps if g.get("type") == "fact_error"])
 

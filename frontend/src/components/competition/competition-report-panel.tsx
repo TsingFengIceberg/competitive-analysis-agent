@@ -110,7 +110,7 @@ export default function CompetitionReportPanel({
       const trace = displayReport?.traceability_map?.[id];
       const url = typeof trace === "object" ? trace.url : String(trace ?? "");
       if (url) {
-        return `<sup class="ref-link" data-trace-id="${id}" data-trace-url="${url}" data-trace-snippet="${escapeAttr(typeof trace === "object" ? (trace.snippet ?? "") : "")}" data-trace-confidence="${typeof trace === "object" ? (trace.confidence ?? "") : ""}" data-trace-verified="${typeof trace === "object" ? (trace.verified ?? "") : ""}" data-trace-timestamp="${typeof trace === "object" ? (trace.timestamp ?? "") : ""}"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup>`;
+        return `<sup class="ref-link" data-trace-id="${id}" data-trace-url="${url}" data-trace-snippet="${escapeAttr(typeof trace === "object" ? (trace.snippet ?? "") : "")}" data-trace-confidence="${typeof trace === "object" ? (trace.confidence ?? "") : ""}" data-trace-verified="${typeof trace === "object" ? (trace.verified ?? "") : ""}" data-trace-timestamp="${typeof trace === "object" ? (trace.timestamp ?? "") : ""}" data-trace-credibility-tier="${typeof trace === "object" ? (trace.credibility_tier ?? "") : ""}"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup>`;
       }
       return `<sup class="ref-link" data-trace-id="${id}">[${id}]</sup>`;
     });
@@ -126,7 +126,8 @@ export default function CompetitionReportPanel({
     setHoveredSource({ id: traceId, url: traceUrl, snippet: target.dataset.traceSnippet ?? undefined,
       confidence: target.dataset.traceConfidence ? parseFloat(target.dataset.traceConfidence) : undefined,
       verified: target.dataset.traceVerified === "" ? undefined : target.dataset.traceVerified === "true",
-      timestamp: target.dataset.traceTimestamp ?? undefined });
+      timestamp: target.dataset.traceTimestamp ?? undefined,
+      credibility_tier: target.dataset.traceCredibilityTier ?? undefined });
     setSourcePos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX });
   }, []);
 
