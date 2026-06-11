@@ -63,19 +63,25 @@ def _parse_orchestrator_output(raw: str) -> dict | None:
       - markdown code blocks (```json ... ```)
       - leading/trailing text outside the JSON object
       - unescaped newlines in string values (common with Doubao)
+      - Chinese punctuation in JSON (： → :, ， → ,)
+      - mixed Chinese-prose / JSON hybrid output
     """
+    import re
+
     text = raw.strip()
 
     # Strip markdown code blocks
     if text.startswith("```"):
         lines = text.split("\n")
-        # Remove opening ```json or ```
         if lines[0].startswith("```"):
             lines = lines[1:]
-        # Remove closing ```
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+
+    # Normalize Chinese punctuation to ASCII for JSON compatibility
+    text = text.replace("“", '"').replace("”", '"')  # Chinese double quotes
+    text = text.replace("：", ":").replace("，", ",")  # ：→: ，→,
 
     # Try direct parse first
     try:
@@ -88,7 +94,6 @@ def _parse_orchestrator_output(raw: str) -> dict | None:
     if first_brace == -1:
         return None
 
-    # Find matching closing brace by counting nesting levels
     depth = 0
     last_brace = -1
     for i in range(first_brace, len(text)):
@@ -107,11 +112,8 @@ def _parse_orchestrator_output(raw: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-        # Last resort: try to fix unescaped newlines in string values
-        # Replace literal newlines within quoted strings with \\n
+        # Fix unescaped newlines in string values
         try:
-            import re
-            # Find all string values that span multiple lines and escape them
             fixed = re.sub(
                 r'"(?P<value>[^"]*\n[^"]*)"',
                 lambda m: '"' + m.group("value").replace("\n", "\\n") + '"',
@@ -121,7 +123,72 @@ def _parse_orchestrator_output(raw: str) -> dict | None:
         except (json.JSONDecodeError, Exception):
             pass
 
+        # Last resort: field-by-field regex extraction
+        return _extract_orchestrator_fields(text)
+
     return None
+
+
+def _extract_orchestrator_fields(text: str) -> dict | None:
+    """Extract orchestrator fields from broken JSON using regex."""
+    import re
+
+    result: dict = {}
+
+    # Extract complexity
+    m = re.search(r'"complexity"\s*:\s*"(quick|standard|deep)"', text)
+    if m:
+        result["complexity"] = m.group(1)
+
+    # Extract complexity_reason
+    m = re.search(r'"complexity_reason"\s*:\s*"([^"]*)"', text)
+    if m:
+        result["complexity_reason"] = m.group(1)
+
+    # Extract schema_profile
+    m = re.search(r'"schema_profile"\s*:\s*"(baseline|deep)"', text)
+    if m:
+        result["schema_profile"] = m.group(1)
+
+    # Extract summary
+    m = re.search(r'"summary"\s*:\s*"([^"]*)"', text)
+    if m:
+        result["summary"] = m.group(1)
+
+    # Extract dimension_weights: try to parse each weight object
+    dim_weights = []
+    for m in re.finditer(
+        r'\{\s*"dimension"\s*:\s*"(features|pricing|users|market|technology)"\s*,\s*"weight"\s*:\s*([\d.]+)\s*,\s*"reason"\s*:\s*"([^"]*)"\s*\}',
+        text,
+    ):
+        dim_weights.append({
+            "dimension": m.group(1),
+            "weight": float(m.group(2)),
+            "reason": m.group(3),
+        })
+    if dim_weights:
+        result["dimension_weights"] = dim_weights
+
+    # Extract emphasized_aspects
+    aspects = []
+    for m in re.finditer(r'"([^"]+)"', text):
+        # Grab quoted strings that look like Chinese analysis aspects (not JSON keys)
+        val = m.group(1)
+        if val and not val.startswith("dimension") and not val.startswith("complexity") \
+           and not val.startswith("schema") and not val.startswith("summary") \
+           and not val.startswith("reason") and not val.startswith("weight") \
+           and not val.startswith("features") and not val.startswith("pricing") \
+           and not val.startswith("users") and not val.startswith("market") \
+           and not val.startswith("technology") \
+           and any('一' <= c <= '鿿' for c in val):
+            aspects.append(val)
+    # Only keep aspects between complexity_reason and the end
+    if aspects:
+        result["emphasized_aspects"] = aspects[:3]  # max 3
+
+    if "complexity" not in result:
+        return None
+    return result
 
 
 # ── Main node function ──

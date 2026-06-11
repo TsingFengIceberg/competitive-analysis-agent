@@ -194,17 +194,29 @@ def _extract_content(response) -> str:
 
     Some providers (Doubao seed) put output in reasoning_content while
     LangChain's ChatOpenAI strips it. This checks all known locations.
+    Also strips any thinking/reasoning XML tags that the model may output.
     """
+    import re
+
     content = getattr(response, "content", None)
     if content:
-        return str(content)
+        text = str(content)
+        # Strip thinking/reasoning XML blocks that leak through from the model
+        text = re.sub(r"```\s*THINK\s*[\s\S]*?```", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<thinking[\s\S]*?/thinking>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<reasoning[\s\S]*?/reasoning>", "", text, flags=re.IGNORECASE)
+        return text.strip()
 
     # Check content_blocks (newer LangChain format)
     blocks = getattr(response, "content_blocks", None)
     if blocks:
         for b in blocks:
             if isinstance(b, dict) and b.get("type") == "text":
-                return str(b.get("text", ""))
+                text = str(b.get("text", ""))
+                text = re.sub(r"```\s*THINK\s*[\s\S]*?```", "", text, flags=re.IGNORECASE)
+                text = re.sub(r"<thinking[\s\S]*?/thinking>", "", text, flags=re.IGNORECASE)
+                text = re.sub(r"<reasoning[\s\S]*?/reasoning>", "", text, flags=re.IGNORECASE)
+                return text.strip()
 
     # Check additional_kwargs for reasoning_content or similar
     ak = getattr(response, "additional_kwargs", {}) or {}

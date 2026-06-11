@@ -1086,18 +1086,18 @@ export default function CompetitionPage() {
     }
   }, [threadId, api, viewingHistory]);
 
-  const handleReanalyze = useCallback((action: string, comment: string) => {
+  const handleReanalyze = useCallback((action: string, comment: string, cardVersion: number) => {
     if (!threadId) return;
     setHitlSubmitting(true);
     setStatus("running");
     api.submitDecision(threadId, {
       action, comment, target_focus: null,
-      fork_version: viewingHistory ? viewingHistory.version : null,
+      fork_version: cardVersion,
     }).catch((err) => {
       console.error("HITL submit failed:", err);
       setHitlSubmitting(false);
     });
-  }, [threadId, api, viewingHistory]);
+  }, [threadId, api]);
 
   const handleExportMD = useCallback(() => {
     if (threadId) window.open(`/api/competition/report/${threadId}/export?format=md`, "_blank");
@@ -1219,7 +1219,7 @@ export default function CompetitionPage() {
               hitlSubmitting={hitlSubmitting}
               status={status}
               onApprove={handleApprove}
-              onReanalyze={handleReanalyze}
+              onReanalyze={(action, comment) => handleReanalyze(action, comment, viewingHistory?.version ?? 0)}
               threadIdForApi={threadId}
             />
           </div>

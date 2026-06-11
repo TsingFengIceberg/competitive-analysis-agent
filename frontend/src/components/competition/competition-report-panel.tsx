@@ -12,6 +12,57 @@ import ApprovalCard from "@/components/competition/hitl-card";
 import { SideBySideDiff, VersionDiff, SourceCard, type SourceInfo } from "@/components/competition/source-card";
 import { VersionTree } from "@/components/competition/version-tree";
 
+function parseMarkdownTable(content: string): { headers: string[]; rows: string[][] } | null {
+  if (!content || !content.includes("|")) return null;
+
+  // Normalize: split by common row delimiters
+  let lines: string[];
+  if (content.includes("\n")) {
+    lines = content.split("\n").map(l => l.trim()).filter(l => l.includes("|"));
+  } else {
+    // Single-line compressed format: split by separator row pattern
+    // e.g. "| H1 | H2 | |---|---| | A | B |"
+    lines = content.split(/\|(?=\s*-)/).flatMap(part => {
+      const sub = part.split(/(?<=\|)\s*(?=\|)/);
+      return sub.map(s => s.trim()).filter(s => s.includes("|"));
+    });
+    // If the above didn't work well, try simpler: find all pipe-delimited segments
+    if (lines.length < 2) {
+      // Find separator pattern and split around it
+      const sepMatch = content.match(/\|[\s\-:|]+\|/);
+      if (sepMatch) {
+        const idx = content.indexOf(sepMatch[0]);
+        const before = content.slice(0, idx);
+        const after = content.slice(idx + sepMatch[0].length);
+        lines = [before, ...after.split(/(?<=\|)\s*(?=\|)/)].filter(l => l.includes("|"));
+      }
+    }
+  }
+
+  if (lines.length < 2) return null;
+
+  // Find separator line
+  const sepIdx = lines.findIndex(l => /^\|[\s\-:|]+\|$/.test(l.trim()));
+  if (sepIdx < 1) return null;
+
+  const parseRow = (line: string): string[] =>
+    line.split("|").map(c => c.trim()).filter((c, i, arr) => c !== "" || (i > 0 && i < arr.length - 1));
+
+  const headerLine = lines[sepIdx - 1];
+  if (!headerLine) return null;
+  const headers = parseRow(headerLine);
+  const rows: string[][] = [];
+  for (let i = sepIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const cells = parseRow(line);
+    if (cells.length > 0) rows.push(cells);
+  }
+
+  if (headers.length === 0 || rows.length === 0) return null;
+  return { headers, rows };
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -96,6 +147,25 @@ export default function CompetitionReportPanel({
           {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
         </div>
       );
+    }
+    // Fallback: content_type=table without chart_path → try parse markdown table
+    if (section.content_type === "table" && !section.chart_path) {
+      const parsed = parseMarkdownTable(section.content);
+      if (parsed) {
+        const { headers: mdHeaders, rows: mdRows } = parsed;
+        return (
+          <div key={section.id} className="mb-4" style={{ marginLeft: depth * 16 }}>
+            <h3 className="text-sm font-semibold mb-1">{section.title}</h3>
+            <div className="overflow-x-auto rounded border">
+              <table className="w-full text-xs border-collapse">
+                <thead className="bg-muted"><tr>{mdHeaders.map((h, i) => <th key={i} className="border px-2 py-1 text-left font-medium">{h}</th>)}</tr></thead>
+                <tbody>{mdRows.map((row, ri) => <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-muted/30"}>{row.map((cell, ci) => <td key={ci} className="border px-2 py-1">{cell}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+            {section.subsections?.map((sub) => renderSection(sub, depth + 1))}
+          </div>
+        );
+      }
     }
     if (section.content_type === "chart" && section.chart_path) {
       const cp = section.chart_path;

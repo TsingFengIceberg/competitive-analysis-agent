@@ -66,7 +66,7 @@ interface Props {
   viewingHistory: ReportHistoryItem | null;
   onExpandReport: (version: number) => void;
   onApprove: () => void;
-  onReanalyze: (action: string, comment: string) => void;
+  onReanalyze: (action: string, comment: string, cardVersion: number) => void;
   onExportMD: () => void;
   onExportJSON: () => void;
   onNavigateVersion: (version: number) => void;
@@ -848,9 +848,32 @@ function DynamicBlock({ block }: { block: Record<string, unknown> }) {
     );
   }
   if (btype === "comparison_table" && data) {
-    const headers = data.headers as string[] | undefined;
-    const rows = data.rows as string[] | undefined;
-    return <div className="rounded border border-border/60 bg-background/50 p-2">{title && <div className="text-[11px] font-medium mb-1">{title}</div>}{headers && <div className="text-[10px] font-medium text-muted-foreground mb-0.5">{headers.join(" ｜ ")}</div>}{rows && <div className="text-[11px]">{rows.join(" ｜ ")}</div>}</div>;
+    const headers = (data.headers as string[]) || [];
+    const rows = (data.rows as unknown[][]) || [];
+    return (
+      <div className="rounded border border-border/60 bg-background/50 p-2 overflow-x-auto">
+        {title && <div className="text-[11px] font-medium mb-1">{title}</div>}
+        <table className="w-full text-[10px] border-collapse">
+          <thead>
+            <tr className="border-b">
+              {headers.map((h, i) => (
+                <th key={i} className="text-left py-1 px-1.5 text-muted-foreground font-medium">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} className="border-b border-border/40 last:border-0">
+                {(Array.isArray(row) ? row : [row]).map((cell, ci) => (
+                  <td key={ci} className="py-1 px-1.5">{String(cell ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {data.summary != null && <div className="text-[10px] text-muted-foreground mt-1">{String(data.summary)}</div>}
+      </div>
+    );
   }
   if (btype === "stat_chart" && data) {
     const labels = data.labels as string[] | undefined;

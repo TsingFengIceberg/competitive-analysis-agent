@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
-
+import { useState } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from "lucide-react";
 import type { ReportData, ReportHistoryItem } from "@/components/competition/api-client";
 
 const ACTION_LABELS: Record<string, string> = {
@@ -21,13 +21,41 @@ interface Props {
   viewingHistory: ReportHistoryItem | null;
   onExpand: (version: number) => void;
   onApprove: () => void;
-  onReanalyze: (action: string, comment: string) => void;
+  onReanalyze: (action: string, comment: string, cardVersion: number) => void;
   onExportMD: () => void;
   onExportJSON: () => void;
   onNavigateVersion: (version: number) => void;
   onViewTrace?: () => void;
   onViewBranchTree?: () => void;
   onEdit?: () => void;
+}
+
+function metricBar(value: number, color: string) {
+  const pct = Math.min(100, Math.max(0, Math.round(value * 100)));
+  return (
+    <div className="h-1 w-full rounded-full bg-muted/50 overflow-hidden">
+      <div
+        className={`h-full rounded-full transition-all duration-500 ${color}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+function metricColor(value: number): string {
+  if (value >= 0.8) return "bg-green-500";
+  if (value >= 0.5) return "bg-amber-500";
+  return "bg-red-400";
+}
+
+function diffBadge(current: number, previous: number | null) {
+  if (previous == null || previous === 0) return null;
+  const delta = current - previous;
+  const pct = Math.round(delta * 100);
+  if (pct === 0) return <span className="text-[10px] text-muted-foreground ml-1">→0%</span>;
+  const sign = pct > 0 ? "+" : "";
+  const cls = pct > 0 ? "text-green-600" : "text-red-500";
+  return <span className={`text-[10px] font-medium ${cls} ml-1`}>{sign}{pct}%</span>;
 }
 
 export default function CompetitionReportCard({
@@ -50,6 +78,7 @@ export default function CompetitionReportCard({
   onViewBranchTree,
   onEdit,
 }: Props) {
+  const [expanded, setExpanded] = useState(false);
   const rd = displayReport;
   const metrics = rd.metrics;
 
@@ -65,16 +94,30 @@ export default function CompetitionReportCard({
     ? (ACTION_LABELS[thisEntry.action] ?? thisEntry.action)
     : version === 1 ? "初始分析" : `版本 ${version}`;
 
+  // ── Diff vs previous sibling ──
+  const prevSibling = siblingIndex > 0 ? siblings[siblingIndex - 1] : null;
+  const prevMetrics = prevSibling?.report_data?.metrics ?? null;
+
+  // ── Section preview titles (first 5) ──
+  const sectionPreviews = rd.sections?.slice(0, 5).map((s) => ({
+    title: s.title,
+    type: s.content_type,
+    snippet: s.content?.replace(/[#*`|]/g, "").trim().slice(0, 60) || "",
+  })) ?? [];
+
+  // ── Has meaningful diff? ──
+  const hasDiff = prevSibling != null;
+
   return (
-    <div className="rounded-xl border bg-card shadow-sm">
+    <div className="rounded-xl border bg-card shadow-sm transition-shadow hover:shadow-md">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">📊</span>
-          <div>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg shrink-0">📊</span>
+          <div className="min-w-0">
             {/* Version badge + navigation */}
             <div className="flex items-center gap-1 mb-0.5">
-              <span className={`text-[10px] font-medium rounded px-1.5 py-px ${isLatest ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" : "bg-muted text-muted-foreground"}`}>
+              <span className={`text-[10px] font-medium rounded px-1.5 py-px shrink-0 ${isLatest ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" : "bg-muted text-muted-foreground"}`}>
                 {actionLabel}
               </span>
               {hasSiblings && (
@@ -85,11 +128,11 @@ export default function CompetitionReportCard({
                       if (prev != null) onNavigateVersion(prev.version);
                     }}
                     disabled={siblingIndex <= 0}
-                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default"
+                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default shrink-0"
                   >
                     <ChevronLeft className="size-3" />
                   </button>
-                  <span className="text-[10px] text-muted-foreground font-mono tabular-nums select-none">
+                  <span className="text-[10px] text-muted-foreground font-mono tabular-nums select-none shrink-0">
                     {siblingIndex + 1}/{siblings.length}
                   </span>
                   <button
@@ -98,106 +141,177 @@ export default function CompetitionReportCard({
                       if (next != null) onNavigateVersion(next.version);
                     }}
                     disabled={siblingIndex >= siblings.length - 1}
-                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default"
+                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default shrink-0"
                   >
                     <ChevronRight className="size-3" />
                   </button>
                 </>
               )}
             </div>
-            <h4 className="text-sm font-semibold leading-tight">{rd.title}</h4>
-            <p className="text-[11px] text-muted-foreground">
+            <h4 className="text-sm font-semibold leading-tight truncate">{rd.title}</h4>
+            <p className="text-[11px] text-muted-foreground truncate">
               {rd.products?.join(", ")}
             </p>
           </div>
         </div>
-        <button
-          onClick={() => onExpand(version)}
-          className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
-        >
-          <span>展开报告</span>
-          <ChevronDown className="size-3" />
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {hasDiff && (
+            <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 hidden sm:inline">
+              vs v{prevSibling!.version}
+            </span>
+          )}
+          <button
+            onClick={() => onExpand(version)}
+            className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+          >
+            展开报告
+          </button>
+        </div>
       </div>
 
-      {/* Metrics */}
+      {/* Metrics — with progress bars */}
       {metrics && (
-        <div className="grid grid-cols-4 gap-3 px-4 py-3 text-center">
+        <div className="px-4 py-3 space-y-2">
           {metrics.coverage != null && (
-            <div>
-              <div className="text-lg font-bold text-blue-600">{((metrics.coverage as number) * 100).toFixed(0)}%</div>
-              <div className="text-[10px] text-muted-foreground">覆盖率</div>
+            <div className="w-1/2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-muted-foreground">覆盖率</span>
+                <span className="text-[11px] font-bold text-blue-600">
+                  {((metrics.coverage as number) * 100).toFixed(0)}%
+                  {diffBadge(metrics.coverage as number, prevMetrics?.coverage as number | null)}
+                </span>
+              </div>
+              {metricBar(metrics.coverage as number, metricColor(metrics.coverage as number))}
             </div>
           )}
           {metrics.cross_validation_rate != null && (
-            <div>
-              <div className="text-lg font-bold text-green-600">{((metrics.cross_validation_rate as number) * 100).toFixed(0)}%</div>
-              <div className="text-[10px] text-muted-foreground">交叉验证率</div>
+            <div className="w-1/2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-muted-foreground">交叉验证率</span>
+                <span className="text-[11px] font-bold text-green-600">
+                  {((metrics.cross_validation_rate as number) * 100).toFixed(0)}%
+                  {diffBadge(metrics.cross_validation_rate as number, prevMetrics?.cross_validation_rate as number | null)}
+                </span>
+              </div>
+              {metricBar(metrics.cross_validation_rate as number, metricColor(metrics.cross_validation_rate as number))}
             </div>
           )}
           {metrics.trace_completeness != null && (
-            <div>
-              <div className="text-lg font-bold text-purple-600">{((metrics.trace_completeness as number) * 100).toFixed(0)}%</div>
-              <div className="text-[10px] text-muted-foreground">溯源率</div>
+            <div className="w-1/2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-muted-foreground">溯源率</span>
+                <span className="text-[11px] font-bold text-purple-600">
+                  {((metrics.trace_completeness as number) * 100).toFixed(0)}%
+                  {diffBadge(metrics.trace_completeness as number, prevMetrics?.trace_completeness as number | null)}
+                </span>
+              </div>
+              {metricBar(metrics.trace_completeness as number, metricColor(metrics.trace_completeness as number))}
             </div>
           )}
           {rd.sections && (
-            <div>
-              <div className="text-lg font-bold text-amber-600">{rd.sections.length}</div>
-              <div className="text-[10px] text-muted-foreground">章节数</div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground">章节数</span>
+              <span className="text-[11px] font-bold text-amber-600">
+                {rd.sections.length}
+                {prevSibling?.report_data?.sections && (
+                  (() => {
+                    const prevCount = prevSibling.report_data!.sections!.length;
+                    const delta = rd.sections.length - prevCount;
+                    if (delta === 0) return <span className="text-[10px] text-muted-foreground ml-1">→0</span>;
+                    const sign = delta > 0 ? "+" : "";
+                    const cls = delta > 0 ? "text-green-600" : "text-red-500";
+                    return <span className={`text-[10px] font-medium ${cls} ml-1`}>{sign}{delta}</span>;
+                  })()
+                )}
+              </span>
             </div>
           )}
         </div>
       )}
 
-      {/* Key findings */}
-      {rd.sections?.[1]?.content && (
-        <div className="px-4 py-2 border-t bg-muted/20">
-          <p className="text-[11px] text-muted-foreground line-clamp-2">
-            {rd.sections[1].content.replace(/[#*`]/g, "").slice(0, 200)}
-          </p>
+      {/* Structured section preview */}
+      {sectionPreviews.length > 0 && (
+        <div className="border-t bg-muted/20">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-muted/30 transition-colors"
+          >
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+              {expanded ? "报告结构" : "报告结构（点击展开）"}
+            </span>
+            {expanded ? <ChevronUp className="size-3 text-muted-foreground" /> : <ChevronDown className="size-3 text-muted-foreground" />}
+          </button>
+          {expanded && (
+            <div className="px-4 pb-2 space-y-1">
+              {sectionPreviews.map((s, i) => (
+                <div key={i} className="flex items-start gap-2 text-[11px]">
+                  <span className="text-muted-foreground font-mono shrink-0 mt-0.5">{i + 1}.</span>
+                  <div className="min-w-0">
+                    <span className="font-medium">{s.title}</span>
+                    {s.snippet && (
+                      <span className="text-muted-foreground"> — {s.snippet}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {rd.sections && rd.sections.length > 5 && (
+                <div className="text-[10px] text-muted-foreground pl-4">
+                  + {rd.sections.length - 5} 个章节...
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Actions — HITL only on latest card */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-t bg-muted/10 flex-wrap">
-        {isLatest && hitlVisible && status === "completed" && (
-          <button
-            onClick={onApprove}
-            className="inline-flex items-center gap-1 rounded bg-green-500 px-2.5 py-1 text-[11px] text-white hover:bg-green-600 transition-colors"
-          >
-            ✅ 批准发布
-          </button>
+      {/* Actions — grouped layout */}
+      <div className="border-t bg-muted/10">
+        {/* Primary: HITL actions */}
+        {(hitlVisible || isLatest) && (
+          <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
+            {isLatest && hitlVisible && status !== "approved" && status !== "completed" && (
+              <span className="text-[11px] text-muted-foreground">⏳ {hitlSubmitting ? "处理中..." : "审批中..."}</span>
+            )}
+            {hitlVisible && (
+              <>
+                <button onClick={() => onReanalyze("rewrite", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">✏️ 重写</button>
+                <button onClick={() => onReanalyze("reanalyze", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔄 重分析</button>
+                <button onClick={() => onReanalyze("replan", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔍 重采集</button>
+              </>
+            )}
+            <div className="flex-1" />
+            {isLatest && hitlVisible && status === "completed" && (
+              <button
+                onClick={onApprove}
+                className="inline-flex items-center gap-1 rounded bg-green-500 px-2.5 py-1 text-[11px] text-white hover:bg-green-600 transition-colors"
+              >
+                ✅ 批准发布
+              </button>
+            )}
+          </div>
         )}
-        {isLatest && hitlVisible && status !== "approved" && status !== "completed" && (
-          <span className="text-[11px] text-muted-foreground">⏳ {hitlSubmitting ? "处理中..." : "审批中..."}</span>
-        )}
-        {hitlVisible && (
-          <>
-            <button onClick={() => onReanalyze("rewrite", "")} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">✏️ 重写</button>
-            <button onClick={() => onReanalyze("reanalyze", "")} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔄 重分析</button>
-            <button onClick={() => onReanalyze("replan", "")} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔍 重采集</button>
-          </>
-        )}
-        {/* Divider */}
-        <div className="flex-1" />
-        {onViewBranchTree && (
-          <button onClick={onViewBranchTree} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">
-            🌳 分支树
-          </button>
-        )}
-        {onViewTrace && (
-          <button onClick={onViewTrace} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">
-            🔍 流程
-          </button>
-        )}
-        {onEdit && (
-          <button onClick={onEdit} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">
-            ✏️ 修正
-          </button>
-        )}
-        <button onClick={onExportMD} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
-        <button onClick={onExportJSON} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
+
+        {/* Secondary: tools + export */}
+        <div className="flex items-center gap-1.5 px-4 py-1.5 flex-wrap border-t border-border/30">
+          {onViewBranchTree && (
+            <button onClick={onViewBranchTree} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+              🌳 分支树
+            </button>
+          )}
+          {onViewTrace && (
+            <button onClick={onViewTrace} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+              🔍 流程
+            </button>
+          )}
+          {onEdit && (
+            <button onClick={onEdit} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+              ✏️ 修正
+            </button>
+          )}
+          <div className="flex-1" />
+          <button onClick={onExportMD} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
+          <button onClick={onExportJSON} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
+        </div>
       </div>
     </div>
   );
