@@ -42,6 +42,9 @@ def reviewer_node(state: dict) -> dict:
     # G9: Extra fields validation (§3.17.3) — domain-specific dimensions must have sources
     gaps.extend(_check_dynamic_blocks(analysis))   # G9: dynamic blocks validation
 
+    # G10: Claim number verification — check numbers in claims against source full text
+    gaps.extend(_check_claim_numbers(analysis, collected, review_round))
+
     # Detect feedback loop (§3.15.6.2): same gap 3x → force close
     gaps = _filter_loop_gaps(gaps, prev_gaps, review_round)
 
@@ -50,8 +53,19 @@ def reviewer_node(state: dict) -> dict:
     # Compute improvement (§3.12.1)
     improvement = _measure_improvement(prev_gaps, gaps)
 
+    # Compute round metrics for repair_delta tracking (§CrepuscularIRIS-inspired)
+    round_metrics = _compute_round_metrics(collected, gaps, review_round)
+    prev_metrics = state.get("round_metrics") or {}
+
     # Build quality summary
     quality = _build_quality_summary(collected, gaps, improvement)
+    quality["round_metrics"] = round_metrics
+    quality["round_metrics_prev"] = prev_metrics
+    # repair_delta: improvement in evidence tier distribution from previous round
+    prev_strong = prev_metrics.get("strong", 0) if prev_metrics else 0
+    curr_strong = round_metrics.get("strong", 0)
+    prev_total = prev_metrics.get("total", 1) if prev_metrics else 1
+    quality["repair_delta"] = round((curr_strong - prev_strong) / max(prev_total, 1), 2)
 
     new_round = review_round + 1 if not passed else review_round
 
@@ -68,6 +82,7 @@ def reviewer_node(state: dict) -> dict:
         "review_verdict": verdict,
         "review_round": new_round,
         "gap_coverage_improvement": improvement,
+        "round_metrics": round_metrics,
     }
 
 
@@ -494,6 +509,137 @@ def _build_quality_summary(points: list[dict], gaps: list[dict], improvement: fl
         "improvement_ratio": improvement,
     }
 
+
+def _check_claim_numbers(analysis: dict, collected: list[dict], review_round: int) -> list[dict]:
+    """G10: Verify numbers in claims appear in source full text.
+
+    Uses the content_store (persisted by Collector) to check that numeric claims
+    aren't hallucinated. A claim like "Notion has 100M users" must have "100M"
+    (or "100" and "M") in the source page text.
+    """
+    import re
+    gaps: list[dict] = []
+    try:
+        from competition.db import get_content, init_db
+    except ImportError:
+        return gaps
+
+    # Build source URL → content_ref map from collected data
+    import hashlib
+    source_cache: dict[str, str] = {}  # source_url → full_text
+    for dp in collected:
+        if not isinstance(dp, dict):
+            continue
+        url = dp.get("source_url", "")
+        if not url or url in source_cache:
+            continue
+        content_ref = hashlib.sha256(url.encode()).hexdigest()[:16]
+        try:
+            conn = init_db()
+            content = get_content(content_ref, conn=conn)
+            conn.close()
+            if content:
+                source_cache[url] = content.get("full_text", "")
+        except Exception:
+            pass
+
+    if not source_cache:
+        return gaps
+
+    # Collect all claims: comparison cells + SWOT items
+    claims: list[dict] = []
+    matrix = analysis.get("comparison_matrix") or {}
+    for cell in matrix.get("cells", []):
+        if cell.get("evidence"):
+            claims.append({"text": cell["evidence"], "source_ids": cell.get("source_data_point_ids", [])})
+    for item in analysis.get("swot", {}).get("items", []):
+        for field in ("detail", "evidence", "description"):
+            val = item.get(field, "")
+            if isinstance(val, str) and len(val) > 20:
+                claims.append({"text": val, "source_ids": item.get("source_data_point_ids", [])})
+                break
+
+    for ci, claim in enumerate(claims):
+        text = claim.get("text", "")
+        # Extract numbers: digits with optional suffix (%/万/亿/M/K/B/元/美元)
+        numbers = re.findall(r'\d+[\d,.]*\s*(?:%|万|亿|M|K|B|元|美元|美|千|万)?', text)
+        if not numbers:
+            continue
+        # Find which source URLs this claim references
+        source_ids = claim.get("source_ids", [])
+        source_urls: list[str] = []
+        for sid in source_ids:
+            for dp in collected:
+                if isinstance(dp, dict) and dp.get("id") == sid:
+                    url = dp.get("source_url", "")
+                    if url:
+                        source_urls.append(url)
+        if not source_urls:
+            continue
+        # Check each number
+        missing = []
+        for n in numbers:
+            found = False
+            for url in source_urls:
+                full_text = source_cache.get(url, "")
+                if full_text and n in full_text:
+                    found = True
+                    break
+            if not found:
+                missing.append(n)
+        if missing:
+            gaps.append({
+                "gap_id": f"gap-{review_round}-g10-{ci}",
+                "type": "fact_error",
+                "check_method": "source_text_verification",
+                "description": f"Claim numbers not found in source: {', '.join(missing)}",
+                "evidence": text[:200],
+                "target_collect_task": f"Re-collect data to verify: {text[:100]}",
+                "severity": "major",
+                "related_data_point_ids": source_ids,
+            })
+
+    return gaps
+
+
+def _compute_round_metrics(collected: list[dict], gaps: list[dict], review_round: int) -> dict:
+    """Compute per-round evidence tier distribution for repair_delta tracking."""
+    from urllib.parse import urlparse
+    total = len(collected) if collected else 1
+    # Count unique source domains
+    domains: set[str] = set()
+    for dp in collected:
+        if isinstance(dp, dict):
+            url = dp.get("source_url", "")
+            if url:
+                domains.add(urlparse(url).netloc)
+    gap_count = len(gaps)
+    critical_count = len([g for g in gaps if g.get("severity") == "critical"])
+    # Estimate tier distribution: strong = multi-source verified, weak = single-source
+    multi_source = 0
+    seen: dict[tuple, set[str]] = {}
+    for dp in collected:
+        if isinstance(dp, dict):
+            key = (dp.get("product", ""), dp.get("category", ""))
+            url = dp.get("source_url", "")
+            domain = urlparse(url).netloc if url else "unknown"
+            seen.setdefault(key, set()).add(domain)
+    for domains_set in seen.values():
+        if len(domains_set) >= 2:
+            multi_source += 1
+    strong = multi_source
+    weak = max(0, total - strong - (gap_count // 2))
+    moderate = total - strong - weak
+    return {
+        "round": review_round + 1,
+        "total": total,
+        "domains": len(domains),
+        "strong": strong,
+        "moderate": moderate,
+        "weak": weak,
+        "gaps": gap_count,
+        "critical_gaps": critical_count,
+    }
 
 def _filter_loop_gaps(gaps: list[dict], prev_gaps: list[dict], review_round: int) -> list[dict]:
     """§3.15.6.2: same gap appearing 3+ times → downgrade to minor, don't re-collect."""

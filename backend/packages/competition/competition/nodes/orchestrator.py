@@ -19,17 +19,26 @@ logger = logging.getLogger(__name__)
 # ── Prompt loading ──
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "orchestrator.md"
+_PROFILE_PATH = Path(__file__).parent.parent / "profile.md"
 
 
 def _load_prompt() -> str:
     """Load the orchestrator system prompt from the prompt file."""
     if _PROMPT_PATH.exists():
-        return _PROMPT_PATH.read_text(encoding="utf-8")
-    logger.warning("Orchestrator prompt file not found at %s — using minimal fallback", _PROMPT_PATH)
-    return (
-        "You are the Orchestrator Agent for a competitive analysis system. "
-        "Parse the user's query intent and output a structured JSON routing instruction."
-    )
+        prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+    else:
+        logger.warning("Orchestrator prompt file not found at %s — using minimal fallback", _PROMPT_PATH)
+        prompt = (
+            "You are the Orchestrator Agent for a competitive analysis system. "
+            "Parse the user's query intent and output a structured JSON routing instruction."
+        )
+    # Append project profile if available (§curryxjh-inspired)
+    if _PROFILE_PATH.exists():
+        profile = _PROFILE_PATH.read_text(encoding="utf-8").strip()
+        if profile:
+            prompt += "\n\n## 项目长期偏好（profile.md）\n\n" + profile
+            prompt += "\n\n以上偏好是本项目的长期配置，请在所有决策中优先遵守。"
+    return prompt
 
 
 # ── Default fallback values (used when Orchestrator fails) ──

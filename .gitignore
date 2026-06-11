@@ -87,6 +87,40 @@ backend/app/channels/
 backend/app/gateway/
 backend/packages/harness/
 
+# DeerFlow frontend original files (kept on disk for reference, not tracked)
+frontend/public/demo/
+frontend/src/app/\[lang\]/
+frontend/src/app/api/memory/
+frontend/src/app/blog/
+frontend/src/app/mock/
+frontend/src/app/workspace/
+frontend/src/components/landing/
+frontend/src/components/workspace/
+frontend/src/content/
+frontend/src/core/agents/
+frontend/src/core/api/api-client.ts
+frontend/src/core/api/feedback.ts
+frontend/src/core/api/index.ts
+frontend/src/core/api/stream-mode.ts
+frontend/src/core/artifacts/
+frontend/src/core/blog/
+frontend/src/core/mcp/
+frontend/src/core/memory/
+frontend/src/core/messages/
+frontend/src/core/models/
+frontend/src/core/notification/
+frontend/src/core/rehype/
+frontend/src/core/settings/
+frontend/src/core/skills/
+frontend/src/core/streamdown/
+frontend/src/core/tasks/
+frontend/src/core/threads/
+frontend/src/core/todos/
+frontend/src/core/tools/
+frontend/src/core/utils/
+frontend/src/mdx-components.ts
+frontend/src/typings/
+
 # Internal development docs (not needed by judges)
 CLAUDE.md
 frontend/CLAUDE.md

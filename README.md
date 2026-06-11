@@ -2,7 +2,7 @@
   <img src="images/logo.png" alt="Competitive-Analysis-Agent" width="80" />
 </p>
 
-# Competitive-Analysis-Agent
+<h1 align="center">Competitive-Analysis-Agent</h1>
 
 AI 驱动的竞品分析 Agent 协作系统
 
@@ -23,6 +23,7 @@ AI 驱动的竞品分析 Agent 协作系统
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
 - [配置](#配置)
+- [运行示例](#运行示例)
 - [目录结构](#目录结构)
 - [竞赛要求覆盖](#竞赛要求覆盖)
 
@@ -55,7 +56,7 @@ Agent 间通过 **结构化 Pydantic Schema** 通信（非纯自然语言），�
 
 ### 反馈闭环
 
-Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可信度、时间新鲜度、维度完整性等），发现 gap 即打回 Collector/Analyst 重做，**最多 2 轮**。打回时精准定位缺失维度，**定向补采**而非全量重跑，减少 Token 消耗。每次重做后追踪改善率，确保闭环真实可触发而非伪闭环。
+Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可信度、时间新鲜度、维度完整性等）+ **数字源头校验**（claim 中数字须在采集原文逐字可查），发现 gap 即打回 Collector/Analyst 重做，**最多 2 轮**。打回时精准定位缺失维度，**定向补采**而非全量重跑，减少 Token 消耗。每次重做后追踪改善率 + **修复增量**（repair delta），确保闭环真实可触发而非伪闭环。
 
 ### 信息溯源
 
@@ -83,6 +84,10 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 ### Agent 可靠性
 
 内置**熔断器**（连续 3 次重复调用自动中断）防止 LLM 死循环烧 Token，per-Agent 超时 + 降级兜底保证单点故障不阻塞整体流程。
+
+### 项目偏好配置
+
+`profile.md` 定义分析风格、维度权重、来源规则等持久化偏好，Orchestrator 启动时自动注入 Prompt，跨 session 保持一致性。
 
 ---
 
@@ -244,12 +249,109 @@ competition:
 两项配置均放在**项目根目录**：
 
 ```
-ci-agent/
+competitive-analysis-agent/
 ├── .env               # API 密钥（不提交 Git）
 ├── config.yaml        # Agent 参数调优（不提交 Git）
 ├── .env.example       # 密钥模板（可提交）
 └── config.example.yaml # 参数模板（可提交）
 ```
+
+---
+
+## 运行示例
+
+> **Query**: "深度分析 Claude Code 和 Codex，特别是定价方面"  
+> **Thread**: `comp-05350dc0770f` · 耗时 ~15 分钟 · 总 Token 20,840 · 产出 9 章节报告
+
+### 全流程截图
+
+<table>
+<tr>
+<td width="50%"><img src="images/sample/01竞品解析.png" width="100%"></td>
+<td width="50%"><img src="images/sample/02意图解析.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>竞品解析</b> — 产品名识别 + 纠错</td>
+<td align="center" width="50%"><b>意图解析</b> — Orchestrator 判定 standard 模式</td>
+</tr>
+<tr>
+<td width="50%"><img src="images/sample/03信息采集.png" width="100%"></td>
+<td width="50%"><img src="images/sample/04信息分析1.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>信息采集</b> — 多源搜索 12 条结构化数据点</td>
+<td align="center" width="50%"><b>对比分析</b> — 功能 × 定价 × 用户 × 市场矩阵</td>
+</tr>
+<tr>
+<td width="50%"><img src="images/sample/04信息分析2.png" width="100%"></td>
+<td width="50%"><img src="images/sample/05质量审查.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>SWOT + 趋势</b> — 预测推演 + What-if</td>
+<td align="center" width="50%"><b>质量审查</b> — G7 语义矛盾检测 + 定向返工</td>
+</tr>
+<tr>
+<td width="50%"><img src="images/sample/06报告卡片.png" width="100%"></td>
+<td width="50%"><img src="images/sample/07报告展开.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>报告卡片</b> — 指标条 + 证据强度 + 可折叠</td>
+<td align="center" width="50%"><b>报告展开</b> — 内联溯源 [n] + DAG 图 + 追踪面板</td>
+</tr>
+<tr>
+<td width="50%"><img src="images/sample/08人工修正.png" width="100%"></td>
+<td width="50%"><img src="images/sample/09重采集.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>人工修正</b> — 就地编辑 + 改善率追踪</td>
+<td align="center" width="50%"><b>重采集 / 重分析</b> — HITL 四按钮干预</td>
+</tr>
+<tr>
+<td width="50%"><img src="images/sample/09重分析.png" width="100%"></td>
+<td width="50%"><img src="images/sample/10报告版本分支树.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>重分析结果</b> — 版本间指标对比</td>
+<td align="center" width="50%"><b>分支树</b> — v1 初始分析 → v2 重分析</td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="images/sample/11会话界面总览.png" width="80%"><br/>
+  <b>会话界面总览</b> — 左侧阶段气泡 + 中间报告卡片 + 右侧面板
+</p>
+
+### 内部流转
+
+
+
+| 阶段 | Agent | 耗时 | Token | 关键产出 |
+|------|-------|------|-------|---------|
+| 🔍 竞品解析 | (前置) | 125s | 1,713 | "Claude Code" → Claude Code (Anthropic) |
+| 🎯 意图解析 | Orchestrator | 12s | 51 | complexity=standard, 定价权重 0.9 |
+| 📊 信息采集 | Collector | 259s | 4,002 | 12 条结构化数据点 (products×dimensions) |
+| 🔬 对比分析 | Analyst | 66s | 3,529 | 2×4 对比矩阵 + SWOT + 趋势预测 |
+| ✅ 质量审查 | Reviewer | 97s | 10,591 | G1-G8 8 项检查, 发现 3 个 gap |
+| 🔄 定向返工 | Analyst→Reviewer | 71s+34s | — | 补采缺失维度, 交叉验证通过 |
+| 📝 报告撰写 | Writer | 264s | 954 | 9 章节: 摘要·矩阵·SWOT·趋势·建议 |
+| 📋 **合计** | — | **~15min** | **20,840** | **覆盖率 100% · 溯源率 100%** |
+
+> **关键指标**: 交叉验证率 0%（初版已知 Bug，已修复）· 改善率 80% · 9 章节约 3,000 字 · 溯源链接 12 条
+
+### 定向返工闭环
+
+当 Reviewer 检测到数据覆盖不足时，系统自动触发**定向返工**——精确指定缺失的产品×维度组合，Collector **只补采缺口数据**而非全量重跑：
+
+```
+Collector → Analyst → Reviewer
+              ↑          │
+              │          ├─ pass → Writer → HITL Gate
+              │          └─ gap → rework_plan: {product: "Claude Code", dimension: "pricing"}
+              │                    │
+              └────────────────────┘ (定向补采, 非全量重跑)
+```
+
+本示例中，Reviewer 识别到 3 个 gap 后触发 1 轮定向返工，改善率提升至 80%。
 
 ---
 

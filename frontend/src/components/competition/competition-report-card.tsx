@@ -212,6 +212,16 @@ export default function CompetitionReportCard({
               {metricBar(metrics.trace_completeness as number, metricColor(metrics.trace_completeness as number))}
             </div>
           )}
+          {metrics.repair_delta != null && (metrics.repair_delta as number) !== 0 && (
+            <div className="w-1/2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">质量修复增量</span>
+                <span className={`text-[11px] font-bold ${(metrics.repair_delta as number) > 0 ? "text-green-600" : (metrics.repair_delta as number) < 0 ? "text-red-500" : "text-muted-foreground"}`}>
+                  {(metrics.repair_delta as number) > 0 ? "+" : ""}{((metrics.repair_delta as number) * 100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
+          )}
           {rd.sections && (
             <div className="w-1/2">
               <div className="flex items-center justify-between">

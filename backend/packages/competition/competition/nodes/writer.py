@@ -593,6 +593,8 @@ def _compute_report_metrics(collected: list[dict], verdict: dict, traceability: 
             "cross_validation_rate": quality.get("multi_source_count", 0) / max(quality.get("total_data_points", 1), 1),
             "trace_completeness": len(traceability) / max(len(collected), 1),
             "improvement_ratio": quality.get("improvement_ratio", 0),
+            "repair_delta": quality.get("repair_delta", 0),
+            "round_metrics": quality.get("round_metrics", {}),
         }
     return {}
 
