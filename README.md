@@ -25,7 +25,9 @@ AI 驱动的竞品分析 Agent 协作系统
 - [配置](#配置)
 - [运行示例](#运行示例)
 - [目录结构](#目录结构)
+- [API 接口](#api-接口)
 - [竞赛要求覆盖](#竞赛要求覆盖)
+- [License](#license)
 
 ## 定位
 
@@ -88,6 +90,10 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 ### 项目偏好配置
 
 `profile.md` 定义分析风格、维度权重、来源规则等持久化偏好，Orchestrator 启动时自动注入 Prompt，跨 session 保持一致性。
+
+### 飞书消息推送
+
+分析完成后自动通过飞书应用机器人推送私聊通知，包含报告标题与产品名。配置可选，不影响分析主流程。
 
 ---
 
@@ -243,6 +249,32 @@ competition:
 ```
 
 **当前状态说明：** `config.yaml` 中每个 Agent 的 `model` 字段已定义但尚未接入路由层。目前所有 Agent **统一使用 `.env` 中 `DOUBAO_MODEL` 指定的模型**。如需为不同 Agent 分配不同模型（例如 Collector 用搜索强模型、Writer 用长文模型），可先在 `config.yaml` 中预配置，后续路由层接入后即时生效。
+
+### 飞书消息推送（可选）
+
+分析完成后通过飞书应用机器人推送私聊通知。
+
+**前提准备**：
+
+1. 登录 [飞书开放平台](https://open.feishu.cn/app) → 创建「企业自建应用」
+2. 添加应用能力 → 开启「机器人」
+3. 权限管理 → 添加 `im:message:send_as_bot` → 发布新版本
+
+**获取配置变量**：
+
+| 变量 | 说明 | 获取方式 |
+|------|------|---------|
+| `FEISHU_APP_ID` | 应用 ID | 应用详情页 → 凭证与基础信息 |
+| `FEISHU_APP_SECRET` | 应用密钥 | 同上 |
+| `FEISHU_NOTIFY_OPEN_ID` | 通知接收人 Open ID | API 调试台 → 发送消息接口 → 快速复制 open_id |
+
+填入 `.env`：
+
+```bash
+FEISHU_APP_ID=your-feishu-app-id
+FEISHU_APP_SECRET=your-feishu-app-secret
+FEISHU_NOTIFY_OPEN_ID=your-feishu-open-id
+```
 
 ### 配置文件位置
 
@@ -467,4 +499,29 @@ competitive-analysis-agent/
 | R14 | 前瞻性：BranchTree + CheckpointOps + 来源可信度 | `branchtree/` + `db.py` source_credibility |
 | R15 | 输出指标可量化（覆盖率/交叉验证率/改善率） | `nodes/writer.py` compute_metrics() + `schema.py` metrics |
 
+---
+
+## API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/competition/analyze` | 创建竞品分析任务，返回 thread_id |
+| GET | `/api/competition/stream/{thread_id}` | SSE 实时事件流（进度推送 + Agent 输出） |
+| GET | `/api/competition/report/{thread_id}` | 获取分析报告与阶段数据 |
+| GET | `/api/competition/report/{thread_id}/history` | 获取版本历史与分支树 |
+| GET | `/api/competition/report/{thread_id}/trace` | 获取 Agent 执行追踪日志 |
+| PATCH | `/api/competition/report/{thread_id}/sections` | 人工修正报告章节 |
+| PUT | `/api/competition/report/{thread_id}` | 提交 HITL 审批决策 |
+| POST | `/api/competition/{thread_id}/cancel` | 终止运行中的分析 |
+| GET | `/api/competition/report/{thread_id}/export` | 导出报告（Markdown / JSON） |
+| GET | `/api/competition/me` | 获取当前用户信息 |
+| GET | `/api/competition/history` | 获取历史分析列表 |
+
+后端 FastAPI 自动生成 Swagger 文档：`http://localhost:8001/docs`
+
+---
+
+## License
+
+[MIT](LICENSE)
 

@@ -84,6 +84,21 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "healthy", "service": "competitive-analysis-agent"}
 
+    @app.get("/health/live")
+    async def health_live():
+        return {"status": "alive"}
+
+    @app.get("/health/ready")
+    async def health_ready():
+        try:
+            from competition.db import init_db
+            conn = init_db()
+            conn.execute("SELECT 1")
+            conn.close()
+            return {"status": "ready", "database": "connected"}
+        except Exception as e:
+            return {"status": "not ready", "database": str(e)[:100]}
+
     return app
 
 

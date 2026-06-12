@@ -87,8 +87,9 @@ function fmtTokens(tokens: number): string {
 }
 
 function getPhaseGen(key: string): number {
-  const match = key.match(/_r(\d+)$/);
-  return match ? parseInt(match[1]!, 10) : 0;
+  const match = key.match(/_r(\d+)$|_ir(\d+)$/);
+  if (!match) return 0;
+  return parseInt(match[1] || match[2] || "0", 10);
 }
 
 export default function CompetitionChatArea({
@@ -188,7 +189,9 @@ export default function CompetitionChatArea({
             {!isRunning && genPhases.length > 0 && (
               <div className="flex justify-center py-1">
                 <span className="text-xs text-muted-foreground font-medium">
-                  {gen === 0 ? "初始分析完成" : `第 ${gen} 次重执行完成`}
+                  {gen === 0 ? "初始分析完成" : genPhases.some(p => p.key.includes("_ir"))
+                    ? `第 ${gen} 轮自动修正完成`
+                    : `第 ${gen} 次重执行完成`}
                   {" · "}耗时 {fmtTime(genElapsed(genPhases))}
                   {genTokens(genPhases) > 0 && <> · Tokens: {fmtTokens(genTokens(genPhases))}</>}
                 </span>

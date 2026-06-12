@@ -32,6 +32,24 @@ _agent_tokens: dict[str, int] = {}
 # so thread-local storage correctly isolates concurrent analyses.
 _tl = threading.local()
 
+# ── Thread context (request tracing) ──
+
+
+def set_thread_context(thread_id: str) -> None:
+    """Set the thread_id for the current analysis context (enables per-thread logging)."""
+    _tl.thread_id = thread_id
+
+
+def clear_thread_context() -> None:
+    """Clear the analysis context."""
+    _tl.thread_id = None
+
+
+def _thread_prefix() -> str:
+    """Return a log prefix like '[comp-abc123] ' if context is set."""
+    tid = getattr(_tl, "thread_id", None)
+    return f"[{tid[:12]}] " if tid else ""
+
 # ── Reliability Harness (§Torrent2002-inspired) ──
 
 
@@ -149,7 +167,7 @@ def execute_agent(
     # Check for cancellation before any LLM call
     cancel_checker = getattr(_tl, "cancel_checker", None)
     if cancel_checker and cancel_checker():
-        logger.info("LLM call cancelled before start for %s", agent_name)
+        logger.info("%sLLM call cancelled before start for %s", _thread_prefix(), agent_name)
         return (None, 0)
 
     # Circuit breaker: detect repeated identical calls (prevents LLM loops)
@@ -249,7 +267,7 @@ def execute_agent(
                 logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
                 content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
 
-        logger.info("Agent response: %d chars (%d tokens)", len(str(content)), usage)
+        logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
         global _total_tokens_used
         _total_tokens_used += usage
         if agent_name:

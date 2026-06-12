@@ -30,6 +30,8 @@ class CompetitionState(AgentState):
     user_request: NotRequired[str | None]
     """Natural language analysis request from user."""
     target_products: NotRequired[list[str] | None]
+    thread_id: NotRequired[str | None]
+    """Analysis thread ID for logging and notification routing."""
     """Products to compare, e.g. ['cursor', 'copilot', 'windsurf']."""
     persona: NotRequired[str | None]
     """"pm" | "entrepreneur" | "both" — drives Writer dual-perspective output."""

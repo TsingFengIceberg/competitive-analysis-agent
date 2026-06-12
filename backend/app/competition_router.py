@@ -2120,6 +2120,18 @@ def _run_graph_sync(thread_id: str) -> None:
 
         logger.info("Analysis %s completed", thread_id)
 
+        # ── Feishu notification ──
+        try:
+            from competition.feishu_notify import notify_analysis_complete
+            st = _store[thread_id].get("state", {})
+            rd = st.get("report_data")
+            if rd:
+                title = rd.get("title", "") if isinstance(rd, dict) else str(getattr(rd, "title", ""))
+                products = rd.get("products", []) if isinstance(rd, dict) else getattr(rd, "products", [])
+                notify_analysis_complete(thread_id, title, ", ".join(products[:3]))
+        except Exception as ex:
+            logger.warning("Feishu notify error: %s", ex)
+
     except Exception as e:
         logger.exception("Analysis %s failed: %s", thread_id, e)
         clear_stream_callback()

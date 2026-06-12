@@ -41,6 +41,24 @@ const PHASE_INFO: Record<string, { label: string; icon: string }> = {
   hitl_gate:  { label: "等待审批", icon: "👤" },
 };
 
+// Internal rework labels (auto-triggered by Reviewer, not manual HITL)
+const _IR_LABELS: Record<string, string> = {
+  collector: "自动补采",
+  analyst:   "自动补分析",
+  reviewer:  "自动补审查",
+  writer:    "补报告",
+};
+
+function resolvePhaseInfo(phaseKey: string): { label: string; icon: string } {
+  const irMatch = phaseKey.match(/^(.+?)_ir\d+$/);
+  if (irMatch) {
+    const base = irMatch[1]!;
+    const baseInfo = PHASE_INFO[base] ?? { label: base, icon: "⚙️" };
+    return { label: _IR_LABELS[base] ?? baseInfo.label, icon: baseInfo.icon };
+  }
+  return PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
+}
+
 // Phase execution order — used to eagerly create the next phase bubble on node_end
 const PHASE_ORDER = ["resolving", "orchestrator", "collector", "analyst", "reviewer", "writer", "hitl_gate"];
 
@@ -553,7 +571,7 @@ export default function CompetitionPage() {
         if (phaseKey === "resolved") phaseKey = "resolving";
 
         if (phaseKey) {
-          const info = PHASE_INFO[phaseKey] ?? { label: (data.label as string) ?? phaseKey, icon: (data.icon as string) ?? "⚙️" };
+          const info = resolvePhaseInfo(phaseKey);
           setPhaseMap((prev) => {
             const next = new Map(prev);
             const existing = next.get(phaseKey);
@@ -588,17 +606,29 @@ export default function CompetitionPage() {
         const phaseKey = node; // node name matches phase key directly
         const eventLabel = data.label as string | undefined;
         const eventIcon = data.icon as string | undefined;
-        const info = PHASE_INFO[phaseKey];
+        const info = resolvePhaseInfo(phaseKey);
         const currentContent = { ...streamingRef.current };
         const perPhaseTokens = (data.tokens as number) ?? 0;
 
         setPhaseMap((prev) => {
           const next = new Map(prev);
           const existing = next.get(phaseKey);
+
+          // ── Rework detection: if this phase was already completed, downstream
+          //     bubbles (writer, hitl_gate) are stale — remove them.
+          const phaseIdx = PHASE_ORDER.indexOf(phaseKey);
+          const wasCompleted = existing?.status === "completed" && existing.endTime != null;
+          if (wasCompleted && phaseIdx >= 0) {
+            for (const [k, v] of next) {
+              const i = PHASE_ORDER.indexOf(k);
+              if (i > phaseIdx && v.status === "running") next.delete(k);
+            }
+          }
+
           next.set(phaseKey, {
             key: phaseKey,
-            label: existing?.label ?? eventLabel ?? info?.label ?? phaseKey,
-            icon: existing?.icon ?? eventIcon ?? info?.icon ?? "⚙️",
+            label: existing?.label ?? eventLabel ?? info.label,
+            icon: existing?.icon ?? eventIcon ?? info.icon,
             status: "completed",
             startTime: existing?.startTime ?? Date.now(),
             endTime: Date.now(),
@@ -612,7 +642,7 @@ export default function CompetitionPage() {
           if (idx >= 0 && idx < PHASE_ORDER.length - 1) {
             const nextKey = PHASE_ORDER[idx + 1]!;
             if (!next.has(nextKey)) {
-              const nextInfo = PHASE_INFO[nextKey] ?? { label: nextKey, icon: "⚙️" };
+              const nextInfo = resolvePhaseInfo(nextKey);
               next.set(nextKey, {
                 key: nextKey,
                 label: nextInfo.label,
@@ -884,7 +914,7 @@ export default function CompetitionPage() {
             if (prev.size > 0) return prev; // already populated by SSE or cache
             const restored = new Map<string, PhaseState>();
             for (const p of report.phases) {
-              const info = PHASE_INFO[p.phase_key] ?? { label: p.label, icon: p.icon };
+              const info = resolvePhaseInfo(p.phase_key);
               restored.set(p.phase_key, {
                 key: p.phase_key,
                 label: p.label || info.label,
@@ -965,7 +995,7 @@ export default function CompetitionPage() {
     const newPhaseMap = new Map<string, PhaseState>();
     const baseTime = Date.now();
     phaseKeysToShow.forEach((phaseKey, idx) => {
-      const info = PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
+      const info = resolvePhaseInfo(phaseKey);
       const agentName = Object.entries(AGENT_TO_PHASE).find(([, pk]) => pk === phaseKey)?.[0];
       const tokens = agentName ? (agents[agentName] ?? 0) : 0;
 

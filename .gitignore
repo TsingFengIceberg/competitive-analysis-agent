@@ -146,6 +146,4 @@ TEMP_IMG/
 # Runtime artifacts
 backend/model_context_registry.json
 
-LICENSE
-
 backend/.ci-agent
