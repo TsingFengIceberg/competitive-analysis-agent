@@ -91,9 +91,10 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 
 `profile.md` 定义分析风格、维度权重、来源规则等持久化偏好，Orchestrator 启动时自动注入 Prompt，跨 session 保持一致性。
 
-### 飞书消息推送
+### 飞书接入
 
-分析完成后自动通过飞书应用机器人推送私聊通知，包含报告标题与产品名。配置可选，不影响分析主流程。
+支持分析完成自动私聊通知、自动导出飞书文档、报告卡片手动导出飞书文档三项能力。通过环境变量开关独立控制，默认关闭，不影响分析主流程。
+
 
 ---
 
@@ -250,15 +251,24 @@ competition:
 
 **当前状态说明：** `config.yaml` 中每个 Agent 的 `model` 字段已定义但尚未接入路由层。目前所有 Agent **统一使用 `.env` 中 `DOUBAO_MODEL` 指定的模型**。如需为不同 Agent 分配不同模型（例如 Collector 用搜索强模型、Writer 用长文模型），可先在 `config.yaml` 中预配置，后续路由层接入后即时生效。
 
-### 飞书消息推送（可选）
+### 飞书接入（可选）
 
-分析完成后通过飞书应用机器人推送私聊通知。
+分析完成自动通知、自动导出飞书文档、手动导出飞书文档三项能力，通过三个开关独立控制：
 
-**前提准备**：
+```bash
+FEISHU_NOTIFY_ENABLED=true       # 分析完成飞书私聊通知
+FEISHU_DOC_AUTO_EXPORT=true      # 分析完成自动导出为飞书文档
+FEISHU_DOC_MANUAL_EXPORT=true    # 报告卡片显示「导出飞书」按钮
+```
+
+**前提准备**（全部功能共用）：
 
 1. 登录 [飞书开放平台](https://open.feishu.cn/app) → 创建「企业自建应用」
 2. 添加应用能力 → 开启「机器人」
-3. 权限管理 → 添加 `im:message:send_as_bot` → 发布新版本
+3. 权限管理 → 添加以下权限后发布新版本：
+   - `im:message:send_as_bot`（通知）
+   - `docx:document`（创建文档）
+   - `drive:drive`（转让文档所有权）
 
 **获取配置变量**：
 
@@ -267,6 +277,7 @@ competition:
 | `FEISHU_APP_ID` | 应用 ID | 应用详情页 → 凭证与基础信息 |
 | `FEISHU_APP_SECRET` | 应用密钥 | 同上 |
 | `FEISHU_NOTIFY_OPEN_ID` | 通知接收人 Open ID | API 调试台 → 发送消息接口 → 快速复制 open_id |
+| `FEISHU_TENANT` | 飞书租户域名 | 飞书网页版地址 `xxx.feishu.cn` 的 `xxx` 部分 |
 
 填入 `.env`：
 
@@ -274,7 +285,12 @@ competition:
 FEISHU_APP_ID=your-feishu-app-id
 FEISHU_APP_SECRET=your-feishu-app-secret
 FEISHU_NOTIFY_OPEN_ID=your-feishu-open-id
+FEISHU_TENANT=your-tenant
 ```
+
+<p align="center"><img src="images/feishu_notify_sample.png" width="60%"></p>
+
+> 手动导出时浏览器可能拦截新窗口弹窗，请允许弹窗；文档所有权转让有数秒延迟，刷新或稍等即可看到。
 
 ### 配置文件位置
 

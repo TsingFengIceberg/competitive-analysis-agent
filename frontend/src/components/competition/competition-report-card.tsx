@@ -66,7 +66,7 @@ export default function CompetitionReportCard({
   displayReport,
   version,
   isLatest,
-  threadId: _threadId,
+  threadId,
   hitlVisible,
   hitlSubmitting,
   status,
@@ -327,6 +327,26 @@ export default function CompetitionReportCard({
           <div className="flex-1" />
           <button onClick={onExportMD} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
           <button onClick={onExportJSON} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
+          <button
+            onClick={() => {
+              fetch(`/api/competition/report/${threadId}/export-feishu`)
+                .then(r => r.json())
+                .then(d => { if (d.doc_url) window.open(d.doc_url, "_blank"); else alert("导出失败"); })
+                .catch(() => alert("请求失败"));
+            }}
+            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >📄 飞书</button>
+          <button
+            onClick={() => {
+              const sections = rd.sections?.map((s) =>
+                `<h2>${s.title}</h2>${s.content.replace(/\n/g, "<br>")}<br><br>`
+              ).join("") || "";
+              const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${rd.title}</title><style>body{font-family:sans-serif;max-width:800px;margin:0 auto;padding:20px;font-size:13px;line-height:1.6}h2{color:#333;margin-top:24px}</style></head><body><h1>${rd.title}</h1><p>${rd.products?.join(", ") || ""}</p><hr>${sections}</body></html>`;
+              const w = window.open("", "_blank");
+              if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 500); }
+            }}
+            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >📋 PDF</button>
         </div>
       </div>
     </div>

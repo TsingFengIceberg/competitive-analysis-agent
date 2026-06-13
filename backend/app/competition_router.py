@@ -1521,6 +1521,39 @@ async def export_report(thread_id: str, format: str = "md"):
     )
 
 
+@router.get("/report/{thread_id}/export-feishu")
+async def export_to_feishu(thread_id: str):
+    """Export a completed report to Feishu Docx. Returns the doc URL."""
+    from competition.feishu_doc import export_report_to_doc, is_manual_export_enabled
+
+    if not is_manual_export_enabled():
+        raise HTTPException(status_code=400, detail="Feishu manual export is not enabled")
+
+    entry = _store.get(thread_id)
+    if entry is None:
+        # Fallback: load from SQLite
+        from competition.db import get_analysis, init_db
+        conn = init_db()
+        db_record = get_analysis(thread_id, conn=conn)
+        conn.close()
+        if db_record is None:
+            raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+        report = db_record.get("report_data") or {}
+        title = db_record.get("title", "")
+    else:
+        report = entry.get("state", {}).get("report_data") or {}
+        title = report.get("title", "") if isinstance(report, dict) else str(getattr(report, "title", ""))
+
+    sections = report.get("sections", []) if isinstance(report, dict) else getattr(report, "sections", [])
+    products = report.get("products", []) if isinstance(report, dict) else getattr(report, "products", [])
+
+    md = _render_report_markdown({"state": {"report_data": report}, "title": title, "products": products})
+    doc_url = export_report_to_doc(str(title), md)
+    if doc_url:
+        return {"status": "ok", "doc_url": doc_url}
+    raise HTTPException(status_code=500, detail="Failed to create Feishu document")
+
+
 @router.get("/stream/{thread_id}")
 async def stream(thread_id: str, fastapi_request: Request):
     """SSE stream of graph execution events.
@@ -2120,17 +2153,28 @@ def _run_graph_sync(thread_id: str) -> None:
 
         logger.info("Analysis %s completed", thread_id)
 
-        # ── Feishu notification ──
+        # ── Feishu: auto-export doc + notification ──
         try:
-            from competition.feishu_notify import notify_analysis_complete
+            from competition.feishu_doc import export_report_to_doc, is_doc_export_enabled
+            from competition.feishu_notify import notify_analysis_complete, is_notify_enabled
+
             st = _store[thread_id].get("state", {})
             rd = st.get("report_data")
             if rd:
                 title = rd.get("title", "") if isinstance(rd, dict) else str(getattr(rd, "title", ""))
                 products = rd.get("products", []) if isinstance(rd, dict) else getattr(rd, "products", [])
-                notify_analysis_complete(thread_id, title, ", ".join(products[:3]))
+                products_str = ", ".join(products[:3])
+
+                doc_url = ""
+                if is_doc_export_enabled():
+                    sections = rd.get("sections", []) if isinstance(rd, dict) else getattr(rd, "sections", [])
+                    md = _render_report_markdown({"state": {"report_data": rd}, "products": products, "title": title})
+                    doc_url = export_report_to_doc(str(title), md) or ""
+
+                if is_notify_enabled():
+                    notify_analysis_complete(thread_id, str(title), products_str, doc_url)
         except Exception as ex:
-            logger.warning("Feishu notify error: %s", ex)
+            logger.warning("Feishu post-completion error: %s", ex)
 
     except Exception as e:
         logger.exception("Analysis %s failed: %s", thread_id, e)
