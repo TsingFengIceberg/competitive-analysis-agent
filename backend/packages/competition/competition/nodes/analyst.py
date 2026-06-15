@@ -131,10 +131,6 @@ def _build_analyst_task(state: dict) -> str:
     user_request = state.get("user_request", "")
     target_products = state.get("target_products", [])
     collected = state.get("collected_data") or []
-    persona = state.get("persona", "pm")
-    review_round = state.get("review_round", 0)
-
-    # v4: Orchestrator-driven emphasis
     orch = state.get("orchestration_result") or {}
     emphasized = orch.get("emphasized_aspects") or []
     dim_weights = orch.get("dimension_weights") or []
@@ -170,6 +166,7 @@ def _build_analyst_task(state: dict) -> str:
         emphasis_hint = (emphasis_hint or "") + f"\nINDUSTRY FOCUS ({industry_profile['label']}): {industry_bias}\n"
 
     # Tier 4: only available when replan has been attempted (review_round >= 1)
+    review_round = state.get("review_round", 0) or 0
     tier4_section = ""
     if review_round >= 1:
         tier4_section = """
@@ -184,7 +181,6 @@ Tier 4 "estimated" (LAST RESORT — use ONLY after Tier 1/2/3 exhausted):
     return f"""Analyze competitive intelligence data for: {products_str}
 
 User request: {user_request}{emphasis_hint}{dim_weight_hint}
-Persona: {persona}
 Available data points: {data_count}
 
 OUTPUT JSON WITH THESE SECTIONS:
@@ -639,12 +635,8 @@ def _execute_analyst(task: str, state: dict) -> tuple[dict | str | None, int]:
     from competition.executor import execute_structured_agent
     from competition.prompts import load_prompt_with_vars
 
-    persona = state.get("persona", "pm")
-    profile = {"pm": "PM 视角：从产品功能角度看，侧重功能维度比较", "entrepreneur": "创业者视角：从市场机会角度看，侧重定价和商业模式比较"}
-    persona_str = profile.get(persona, profile["pm"])
-
     logger.info("Analyst executing task (%d chars)", len(task))
-    prompt = load_prompt_with_vars("analyst", persona_profile=persona_str)
+    prompt = load_prompt_with_vars("analyst")
     result, tokens = execute_structured_agent(prompt, task, agent_name="Analyst", max_tokens=8192)
     # Pass raw string through for fallback parsing in _build_analysis_result
     return (result if isinstance(result, (dict, str)) else None, tokens)

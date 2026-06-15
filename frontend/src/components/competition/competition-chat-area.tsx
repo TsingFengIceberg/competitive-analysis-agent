@@ -236,11 +236,13 @@ export default function CompetitionChatArea({
         {status === "interrupted" && !displayReport && (
           <div className="flex flex-col items-center py-8 gap-1">
             <p className="text-sm font-medium text-muted-foreground">⏸ 分析已终止</p>
+            <p className="text-[11px] text-muted-foreground">数据已保存，可再次输入 query 重试</p>
           </div>
         )}
         {(status === "failed" || status === "error") && !displayReport && (
-          <div className="flex flex-col items-center py-8 gap-1">
+          <div className="flex flex-col items-center py-8 gap-2 rounded-xl border border-red-200 bg-red-50 mx-auto max-w-sm">
             <p className="text-sm font-medium text-red-600">❌ 分析失败</p>
+            <p className="text-[11px] text-red-500 text-center px-4">可能是 API Key 过期、网络超时或模型服务异常。请检查 .env 配置后重试。</p>
           </div>
         )}
       </div>
@@ -302,6 +304,14 @@ const PhaseMessage = memo(function PhaseMessage({
           )}
           <span className="text-[10px] text-muted-foreground">{fmtTime(elapsed)}</span>
         </div>
+
+        {/* Running skeleton — pulse animation while agent is working */}
+        {!isCompleted && !hasContent && (
+          <div className="mt-2 space-y-1.5 animate-pulse">
+            <div className="h-2 bg-muted-foreground/20 rounded w-3/4" />
+            <div className="h-2 bg-muted-foreground/20 rounded w-1/2" />
+          </div>
+        )}
 
         {/* Expand button — below header */}
         {hasContent && (

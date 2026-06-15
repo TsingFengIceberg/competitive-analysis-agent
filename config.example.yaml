@@ -1,89 +1,172 @@
 # Competitive-Analysis-Agent Configuration
+# ============================================================================
+# 使用方法:
+#   1. 复制此文件为 `config.yaml`
+#   2. API 密钥放在 `.env` 文件（保密），其余配置放在本文件（可提交 Git）
+#   3. 修改 active_group 切换预设配置组，或修改组内参数自定义
 #
-# Copy this file to `config.yaml` and customize it for your environment.
-# Only the `competition` section is required; everything else has defaults.
+# Usage:
+#   1. Copy this file to `config.yaml`
+#   2. Put API keys in `.env` (secret), everything else here (can commit to Git)
+#   3. Switch active_group to change presets, or edit within a group
 
-config_version: 9
-
-# ============================================================================
-# Competition Module — Multi-Agent Competitive Analysis
-# ============================================================================
-# All fields and sub-sections have sensible defaults; only override what you need.
+config_version: 12
 
 competition:
 
-  # Default LLM model for all agents
-  default_model: "doubao-seed-2-0-lite-260215"
+  # ═══════════════════════════════════════════════════════════════════════
+  # 活跃配置组 — 切换下面 groups 里的预设名称即可
+  # Active config group — change to any group name defined below
+  # ═══════════════════════════════════════════════════════════════════════
+  active_group: "groupA"
 
-  # Default report persona: "pm" / "entrepreneur" / "both"
-  default_persona: "both"
+  # ═══════════════════════════════════════════════════════════════════════
+  # LLM 提供商 — 定义可用的模型服务
+  #   api_key_env: .env 中存放对应 API Key 的变量名
+  #   api_base:    OpenAI 兼容的 Chat Completions 端点地址
+  # 新增提供商: 在这里加一段，然后在下方 group 里引用即可
+  # ═══════════════════════════════════════════════════════════════════════
+  providers:
+    # 火山引擎方舟 (Doubao)
+    doubao:
+      api_key_env: "DOUBAO_API_KEY"
+      api_base: "https://ark.cn-beijing.volces.com/api/v3"
+    # DeepSeek
+    deepseek:
+      api_key_env: "DEEPSEEK_API_KEY"
+      api_base: "https://api.deepseek.com/v1"
+    # 通义千问 (DashScope)
+    qwen:
+      api_key_env: "QWEN_API_KEY"
+      api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-  # Max retries for schema validation failures
-  schema_validation_retries: 2
+  # ═══════════════════════════════════════════════════════════════════════
+  # 配置组 — 每组是完整的独立预设，通过 active_group 切换
+  # 如果没有定义 groups，顶层字段直接作为默认配置（向后兼容）
+  # ═══════════════════════════════════════════════════════════════════════
+  groups:
 
-  # ── Orchestrator Agent ─────────────────────────────────────────────────
-  orchestrator:
-    model: "doubao-seed-2-0-lite-260215"
-    timeout_seconds: 60
-    max_turns: 1
-    temperature: 0.0
-    max_tokens: 800
-    tools: []
-    skills: []
+    # ── groupA: 火山引擎 Doubao ──────────────────────────────────────────
+    groupA:
+      # 默认提供商与模型（用于未单独配置的 Agent）
+      default_provider: "doubao"
+      default_model: "your-doubao-model-or-endpoint-id"
+      # Schema 校验失败最大重试次数
+      schema_validation_retries: 2
 
-  # ── Collector Agent ────────────────────────────────────────────────────
-  collector:
-    model: "doubao-seed-2-0-lite-260215"
-    max_turns: 30
-    timeout_seconds: 600
-    tools:
-      - web_search
-      - web_fetch
-      - python
-      - write_file
-      - read_file
+      # 搜索后端开关
+      #   provider_search: 是否使用 LLM 提供商的内置搜索（Doubao/Qwen 支持）
+      #   tavily/ ddg/ jina: 独立搜索 API 开关
+      search:
+        provider_search: true
+        tavily: true
+        ddg: true
+        jina: true
 
-  # ── Analyst Agent ──────────────────────────────────────────────────────
-  analyst:
-    model: "doubao-seed-2-0-lite-260215"
-    max_turns: 20
-    timeout_seconds: 300
-    tools:
-      - web_search
-      - web_fetch
-      - python
-      - write_file
-      - read_file
+      # ── 各 Agent 独立设置 ──────────────────────────────────────────────
+      # provider + model: 指定该 Agent 使用的 LLM（不填则用 default_xxx）
+      # timeout_seconds:  该 Agent 单次调用超时（秒）
+      # max_turns:        最大对话轮次（Collector/Analyst/Reviewer/Writer）
+      # temperature:      模型温度
 
-  # ── Reviewer Agent ─────────────────────────────────────────────────────
-  reviewer:
-    model: "doubao-seed-2-0-lite-260215"
-    max_turns: 15
-    timeout_seconds: 300
-    max_feedback_rounds: 2
-    tools:
-      - web_search
-      - web_fetch
-      - python
-      - write_file
-      - read_file
+      # 意图解析 — 单次调用，轻量模型即可
+      orchestrator:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 60
+        temperature: 0.0
+        max_tokens: 800
 
-  # ── Writer Agent ───────────────────────────────────────────────────────
-  writer:
-    model: "doubao-seed-2-0-lite-260215"
-    max_turns: 20
-    timeout_seconds: 180
-    executive_summary_max_chars: 500
-    default_persona: "pm"
-    tools:
-      - web_search
-      - web_fetch
-      - python
-      - write_file
-      - read_file
+      # 信息采集 — 多轮搜索，建议用强搜索模型
+      collector:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 600
+        max_turns: 30
 
-  # ── HITL Gate ──────────────────────────────────────────────────────────
-  hitl:
-    approval_timeout_minutes: 30
-    enable_feishu_approval: false
-    enable_frontend_approval: true
+      # 对比分析 — 多维度计算，建议用推理强模型
+      analyst:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 300
+        max_turns: 20
+
+      # 质量审查 — 包含 LLM 语义矛盾检测(G7)，token 消耗较高
+      reviewer:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 300
+        max_turns: 15
+        max_feedback_rounds: 2       # 最多打回重做轮次
+
+      # 报告撰写 — 长文生成，建议用长上下文模型
+      writer:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 180
+        max_turns: 20
+        executive_summary_max_chars: 500
+
+      # 人工审批 — 前端 HITL 按钮等待超时
+      hitl:
+        approval_timeout_minutes: 30
+
+      # 飞书集成 — 凭证在 .env，此处只控制功能开关
+      feishu:
+        notify_enabled: false        # 分析完成飞书私聊通知
+        doc_auto_export: false       # 分析完成自动导出飞书文档
+        doc_manual_export: false     # 报告卡片显示「导出飞书」按钮
+
+    # ── groupB: DeepSeek ────────────────────────────────────
+    groupB:
+      # 默认提供商与模型（用于未单独配置的 Agent）
+      default_provider: "deepseek"
+      default_model: "your-deepseek-model"
+      schema_validation_retries: 2
+
+      # DeepSeek 无内置搜索，只用 Tavily + DDG
+      search:
+        tavily: true
+        ddg: true
+        jina: false
+
+      orchestrator:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 60
+        temperature: 0.0
+        max_tokens: 800
+
+      collector:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 600
+        max_turns: 30
+
+      analyst:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 300
+        max_turns: 20
+
+      reviewer:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 300
+        max_turns: 15
+        max_feedback_rounds: 2
+
+      writer:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 180
+        max_turns: 20
+        executive_summary_max_chars: 500
+
+      hitl:
+        approval_timeout_minutes: 30
+
+      feishu:
+        notify_enabled: false
+        doc_auto_export: false
+        doc_manual_export: false

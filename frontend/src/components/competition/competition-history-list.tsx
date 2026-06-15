@@ -128,7 +128,8 @@ export function CompetitionHistoryList() {
             </div>
           ) : records.length === 0 ? (
             <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-              暂无历史记录
+              <p className="mb-2">📝 暂无历史记录</p>
+              <p className="text-[10px] leading-relaxed">输入 query 开始你的第一次竞品分析，分析完成后将自动出现在这里</p>
             </div>
           ) : (
             <SidebarMenu>

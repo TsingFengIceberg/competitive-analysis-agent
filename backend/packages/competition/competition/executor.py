@@ -17,9 +17,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# Competition agent model config — all values come from environment variables.
-# Set DOUBAO_MODEL, DOUBAO_API_BASE, and DOUBAO_API_KEY before starting the gateway.
-DOUBAO_MODEL = os.environ.get("DOUBAO_MODEL", "")
+# Competition agent model config — reads provider info from config.yaml + env.
 DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", "")
 DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 
@@ -145,10 +143,64 @@ def _sanitize_stream_chunk(text: str) -> str:
     return text
 
 
+def _resolve_model(agent_name: str) -> str:
+    """Resolve per-agent model from config.yaml."""
+    model, _, _ = _resolve_provider(agent_name)
+    return model
+
+
+def _resolve_provider(agent_name: str) -> tuple[str, str, str]:
+    """Resolve (model, api_base, api_key) for an agent from config.yaml + env.
+
+    Supports configuration groups: if competition.active_group is set,
+    reads from competition.groups.{active_group}; otherwise reads from
+    competition root (backward compatible).
+    """
+    import os as _os
+    default_base = _os.environ.get("DOUBAO_API_BASE", "")
+    default_key = _os.environ.get("DOUBAO_API_KEY", "")
+
+    if not agent_name:
+        return "", default_base, default_key
+
+    try:
+        import yaml
+        from pathlib import Path
+        for p in (Path("config.yaml"), Path("backend/config.yaml"),
+                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+            if not p.exists():
+                continue
+            cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            comp = cfg.get("competition") or {}
+
+            # Resolve active group
+            active = comp.get("active_group") or ""
+            groups = comp.get("groups") or {}
+            group_cfg = groups.get(active, {}) if active and groups else comp
+
+            agent_cfg = group_cfg.get(agent_name.lower()) or {}
+            provider_name = agent_cfg.get("provider") or group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+
+            providers = comp.get("providers") or {}
+            prov = providers.get(provider_name) or {}
+            key_env = prov.get("api_key_env", "DOUBAO_API_KEY")
+            api_base = prov.get("api_base", "") or default_base
+            model = agent_cfg.get("model") or group_cfg.get("default_model") or comp.get("default_model") or ""
+            api_key = _os.environ.get(key_env, "") or default_key
+
+            if api_key and api_base:
+                return str(model), str(api_base), str(api_key)
+    except Exception:
+        pass
+
+    return "", default_base, default_key
+
+
 def execute_agent(
     system_prompt: str,
     task: str,
-    model: str = DOUBAO_MODEL,
+    model: str = "",
     api_base: str = DOUBAO_API_BASE,
     api_key: str = DOUBAO_API_KEY,
     temperature: float = 0.3,
@@ -180,6 +232,14 @@ def execute_agent(
 
     try:
         from langchain_openai import ChatOpenAI
+
+        # ── Per-agent provider resolution (config.yaml + env) ──
+        if agent_name:
+            cfg_model, cfg_base, cfg_key = _resolve_provider(agent_name)
+            if cfg_key:
+                model = cfg_model
+                api_base = cfg_base
+                api_key = cfg_key
 
         llm_kwargs: dict = {
             "model": model,

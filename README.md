@@ -27,6 +27,7 @@ AI 驱动的竞品分析 Agent 协作系统
 - [目录结构](#目录结构)
 - [API 接口](#api-接口)
 - [竞赛要求覆盖](#竞赛要求覆盖)
+- [未来展望](#未来展望)
 - [License](#license)
 
 ## 定位
@@ -47,7 +48,7 @@ Competitive-Analysis-Agent 是一个"数字竞争情报小组"——6 个专门�
 | **Collector** | 多源搜索采集 + 去重 + 自评覆盖率 + VoC 问卷生成 | `CollectedDataPoint[]` |
 | **Analyst** | 对比矩阵 + SWOT + 趋势预测 + 动态维度 | `AnalysisResult` |
 | **Reviewer** | 8 项质量审查 + gap 判定 + 打回重做 | `ReviewVerdict` |
-| **Writer** | 结构化报告生成 + 双视角 + `[n]` 溯源标注 | `ReportData` |
+| **Writer** | 结构化报告生成 + `[n]` 溯源标注 | `ReportData` |
 | **HITL Gate** | 人工审批：批准 / 重写 / 重分析 / 重采集 | `HitlDecision` |
 
 Agent 间通过 **结构化 Pydantic Schema** 通信（非纯自然语言），每个环节的 Prompt、输入、输出均可在前端流程追踪面板中查看。
@@ -190,75 +191,112 @@ cp .env.example .env && source .env
 
 ### .env
 
-所有 API 密钥和 LLM 连接信息通过环境变量注入。从模板复制并填写：
+所有 API 密钥通过环境变量注入。从模板复制并填写：
 
 ```bash
 cp .env.example .env
 ```
 
-**核心变量：**
+`.env.example` 完整内容：
 
-| 变量 | 必填 | 说明 |
-|------|:---:|------|
-| `DOUBAO_API_KEY` | ● | 豆包方舟 API 密钥 |
-| `DOUBAO_API_BASE` | ● | API 地址，默认 `https://ark.cn-beijing.volces.com/api/v3` |
-| `DOUBAO_MODEL` | ● | 所有 Agent 共用的默认模型 |
-| `TAVILY_API_KEY` | | 搜索 API 密钥（Tavily） |
-| `JINA_API_KEY` | | 网页抓取 API 密钥（Jina AI） |
+```bash
+# ── LLM Providers (OpenAI-compatible, keys only — model/config in config.yaml)
+# Doubao / Volcengine Ark
+DOUBAO_API_KEY=your-doubao-api-key
 
-支持接入其他 OpenAI 兼容的 LLM 提供商（DeepSeek、Qwen、Gemini 等），只需修改 `DOUBAO_API_KEY`、`DOUBAO_API_BASE`、`DOUBAO_MODEL` 三个变量指向对应服务的地址和密钥即可。
+# DeepSeek (optional — enable in config.yaml per-agent)
+DEEPSEEK_API_KEY=your-deepseek-api-key
 
-搜索类密钥（`TAVILY_API_KEY`、`JINA_API_KEY`）未填写时，系统自动退化为 DuckDuckGo 免费搜索。
+# Qwen / DashScope (optional)
+QWEN_API_KEY=your-qwen-api-key
+
+# ── Search API Keys ────────────────────────────────────────────────────────
+TAVILY_API_KEY=your-tavily-api-key
+JINA_API_KEY=your-jina-api-key
+
+# ── Feishu (optional, switches in config.yaml) ─────────────────────────────
+FEISHU_APP_ID=your-feishu-app-id
+FEISHU_APP_SECRET=your-feishu-app-secret
+FEISHU_NOTIFY_OPEN_ID=your-feishu-open-id
+FEISHU_TENANT=your-feishu-tenant
+```
+
+LLM 密钥按需填写（使用哪个 provider 就填哪个），搜索类密钥未填写时自动退化为 DuckDuckGo 免费搜索（可在 `config.yaml` 中关闭 DDG）。
 
 ### config.yaml
 
-所有字段均有内置默认值，无需创建即可运行。如需为不同 Agent 分配不同模型或调整超时/工具集，从模板复制：
+所有字段均有内置默认值，无需创建即可运行。如需切换 LLM 提供商或为不同 Agent 分配不同模型，从模板复制：
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml` 中 `competition` 段可为每个 Agent 单独配置模型、超时、工具集等参数：
+`config.yaml` 采用 **提供商 + 配置组** 双层结构。提供商定义 API 连接信息，配置组聚合完整的独立预设，通过 `active_group` 一键切换：
 
 ```yaml
+config_version: 12
+
 competition:
-  default_model: "doubao-seed-2-0-lite-260215"
+  active_group: "groupA"        # 切换预设：groupA / groupB
 
-  orchestrator:
-    model: "doubao-seed-2-0-lite-260215"   # 意图解析（单次调用，轻量模型即可）
-    timeout_seconds: 60
+  providers:                    # LLM 提供商定义
+    doubao:
+      api_key_env: "DOUBAO_API_KEY"
+      api_base: "https://ark.cn-beijing.volces.com/api/v3"
+    deepseek:
+      api_key_env: "DEEPSEEK_API_KEY"
+      api_base: "https://api.deepseek.com/v1"
+    qwen:
+      api_key_env: "QWEN_API_KEY"
+      api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-  collector:
-    model: "doubao-seed-2-0-lite-260215"   # 多源搜索采集（建议用强搜索模型）
-    max_turns: 30
-    timeout_seconds: 600
+  groups:
+    # ── Doubao 预设 ──
+    groupA:
+      default_provider: "doubao"
+      # 模型ID
+      default_model: "your-doubao-model-or-endpoint-id"
 
-  analyst:
-    model: "doubao-seed-2-0-lite-260215"   # 对比分析 + SWOT（建议用推理强模型）
-    max_turns: 20
+      search:                   # 搜索后端开关
+        provider_search: true   # LLM 内置搜索（Doubao/Qwen）
+        tavily: true
+        ddg: false
+        jina: true
 
-  reviewer:
-    model: "doubao-seed-2-0-lite-260215"   # 质量审查（轻量模型即可）
-    max_feedback_rounds: 2                 # 最多打回重做轮数
+      orchestrator:             # 意图解析（轻量模型即可）
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 60
+      # ... collector / analyst / reviewer / writer 同理
 
-  writer:
-    model: "doubao-seed-2-0-lite-260215"   # 报告生成（建议用长文模型）
-    executive_summary_max_chars: 500
+    # ── DeepSeek 预设 ──
+    groupB:
+      default_provider: "deepseek"
+      default_model: "your-deepseek-model"
 
-  hitl:
-    approval_timeout_minutes: 30
+      search:                   # DeepSeek 无内置搜索
+        tavily: true
+        ddg: true
+        jina: false
+
+      orchestrator:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 60
+      # ... collector / analyst / reviewer / writer 同理
 ```
 
-**当前状态说明：** `config.yaml` 中每个 Agent 的 `model` 字段已定义但尚未接入路由层。目前所有 Agent **统一使用 `.env` 中 `DOUBAO_MODEL` 指定的模型**。如需为不同 Agent 分配不同模型（例如 Collector 用搜索强模型、Writer 用长文模型），可先在 `config.yaml` 中预配置，后续路由层接入后即时生效。
+每个 Agent 可独立指定 `provider` + `model`，不填则自动继承 `default_provider` + `default_model`。
 
 ### 飞书接入（可选）
 
-分析完成自动通知、自动导出飞书文档、手动导出飞书文档三项能力，通过三个开关独立控制：
+分析完成自动通知、自动导出飞书文档、手动导出飞书文档三项能力，开关在 `config.yaml` 各配置组的 `feishu` 段：
 
-```bash
-FEISHU_NOTIFY_ENABLED=true       # 分析完成飞书私聊通知
-FEISHU_DOC_AUTO_EXPORT=true      # 分析完成自动导出为飞书文档
-FEISHU_DOC_MANUAL_EXPORT=true    # 报告卡片显示「导出飞书」按钮
+```yaml
+feishu:
+  notify_enabled: true
+  doc_auto_export: true
+  doc_manual_export: true
 ```
 
 **前提准备**（全部功能共用）：
@@ -534,6 +572,26 @@ competitive-analysis-agent/
 | GET | `/api/competition/history` | 获取历史分析列表 |
 
 后端 FastAPI 自动生成 Swagger 文档：`http://localhost:8001/docs`
+
+---
+
+## 未来展望
+
+当前系统基于实时搜索 + SQLite 持久化，满足竞赛阶段端到端分析需求。以下方向为产品化迭代预留的架构设计：
+
+### RAG + 向量数据库
+
+- **跨分析知识复用**：将 `product_baseline` 表扩展为向量库，按产品名 + 属性做 embedding 检索。重复命中时直接复用历史采集结果，减少搜索 API 调用和 Token 消耗
+- **Reviewer 证据语义检索**：G10 数字校验目前做字面匹配。引入向量检索后，Reviewer 可以判断 claim 在所有来源中是否有**语义相近**的证据支撑，覆盖同义改写、跨语言等场景
+- **趋势对比分析**：多次分析积累后，跨时间向量检索历史报告中同类产品的变化趋势，生成"过去半年 AI 代码助手赛道定价变化"等长周期洞察
+
+### 高并发与生产化
+
+- **状态外置**：当前分析状态存储在内存 `_store` 字典中（单进程有效）。迁移至 Redis 或 PostgreSQL 后，Gateway 可水平扩展为多实例，任意实例接手任意请求
+- **异步任务队列**：当前分析在 `threading.Thread` 中执行。引入 Celery / Redis Queue 后，分析任务可分布到独立 Worker 节点，Gateway 只负责接收请求和推送 SSE，解耦计算与 IO
+- **数据库升级**：SQLite WAL 模式支持有限并发写入（串行化锁）。迁移到 PostgreSQL 后，支持真正并发读写、连接池管理、读写分离
+- **LLM 配额管理**：引入 per-user / per-tenant 的 Token 预算和速率限制，防止单用户耗尽全局配额；搜索 API 同理需要按租户限流
+- **多用户项目隔离**：当前 demo 使用自动登录，后续可基于 DeerFlow 已有的 auth 模块实现多用户隔离、项目空间和权限控制
 
 ---
 

@@ -172,9 +172,29 @@ def export_report_to_doc(title: str, markdown: str) -> str | None:
     return f"https://{tenant}.feishu.cn/docx/{doc_id}"
 
 
+def _get_feishu_config() -> dict:
+    """Read feishu section from config.yaml active group, returning defaults if missing."""
+    try:
+        import yaml
+        from pathlib import Path
+        for p in (Path("config.yaml"), Path("backend/config.yaml"),
+                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+            if p.exists():
+                cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                comp = cfg.get("competition") or {}
+                active = comp.get("active_group") or ""
+                groups = comp.get("groups") or {}
+                group_cfg = groups.get(active, {}) if active and groups else comp
+                return group_cfg.get("feishu") or comp.get("feishu") or {}
+    except Exception:
+        pass
+    return {}
+
+
 def is_doc_export_enabled() -> bool:
-    return os.environ.get("FEISHU_DOC_AUTO_EXPORT", "").strip().lower() == "true"
+    return _get_feishu_config().get("doc_auto_export", False) is True
 
 
 def is_manual_export_enabled() -> bool:
-    return os.environ.get("FEISHU_DOC_MANUAL_EXPORT", "").strip().lower() == "true"
+    return _get_feishu_config().get("doc_manual_export", False) is True

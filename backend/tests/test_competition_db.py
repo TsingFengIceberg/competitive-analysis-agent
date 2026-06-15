@@ -61,7 +61,9 @@ def conn():
             report_path TEXT,
             metrics TEXT,
             report_data TEXT,
-            token_usage TEXT
+            token_usage TEXT,
+            title TEXT,
+            pinned INTEGER DEFAULT 0
         );
     """)
     c.commit()

@@ -89,7 +89,6 @@ class TestWriterConfig:
         assert cfg.max_turns == 20
         assert cfg.timeout_seconds == 180
         assert cfg.executive_summary_max_chars == 500
-        assert cfg.default_persona == "pm"
         assert "consulting-analysis" in cfg.skills
         assert "ppt-generation" in cfg.skills
 
@@ -128,7 +127,6 @@ class TestCompetitionConfig:
     def test_default_root(self):
         cfg = CompetitionConfig()
         assert cfg.default_model == "doubao-seed-2-0-lite-260215"
-        assert cfg.default_persona == "both"
         assert cfg.schema_validation_retries == 2
         assert isinstance(cfg.collector, CollectorConfig)
         assert isinstance(cfg.analyst, AnalystConfig)
@@ -140,11 +138,9 @@ class TestCompetitionConfig:
 
     def test_nested_override(self):
         cfg = CompetitionConfig.model_validate({
-            "default_persona": "entrepreneur",
             "collector": {"soft_stop_min_points": 10},
             "reviewer": {"max_feedback_rounds": 3},
         })
-        assert cfg.default_persona == "entrepreneur"
         assert cfg.collector.soft_stop_min_points == 10
         assert cfg.reviewer.max_feedback_rounds == 3
         # Unspecified sub-configs should still have defaults
@@ -158,18 +154,16 @@ class TestLoadConfigFromDict:
 
     def test_empty_returns_default(self):
         cfg = load_competition_config_from_dict({})
-        assert cfg.default_persona == "both"
+        assert cfg.schema_validation_retries == 2
 
     def test_partial_merge(self):
         cfg = load_competition_config_from_dict({
-            "default_persona": "pm",
             "hitl": {"approval_timeout_minutes": 15},
         })
-        assert cfg.default_persona == "pm"
         assert cfg.hitl.approval_timeout_minutes == 15
         assert cfg.collector.max_turns == 30  # default preserved
 
     def test_unknown_field_ignored(self):
         """Pydantic v2 silently ignores extra fields (forward-compatible config)."""
         cfg = load_competition_config_from_dict({"nonexistent_field": 42})
-        assert cfg.default_persona == "both"  # unknown key doesn't break loading
+        assert cfg.schema_validation_retries == 2  # unknown key doesn't break loading

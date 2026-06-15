@@ -19,7 +19,6 @@ class TestLoadPrompt:
         assert "分析师 Agent" in prompt
         assert "comparison_matrix" in prompt
         assert "source_data_point_ids" in prompt
-        assert "{persona_profile}" in prompt
 
     def test_reviewer_prompt(self):
         prompt = load_prompt("reviewer")
@@ -32,7 +31,6 @@ class TestLoadPrompt:
         assert "报告撰写 Agent" in prompt
         assert "ReportData" in prompt
         assert "竞品分析报告" in prompt
-        assert "{persona_profile}" in prompt
 
     def test_caching(self):
         """load_prompt() caches results."""

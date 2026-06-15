@@ -250,14 +250,13 @@ class TestBuildAnalystTask:
         assert "定价" in task
         assert "用户" in task
 
-    def test_includes_persona(self):
+    def test_includes_target_products(self):
         task = _build_analyst_task({
             "user_request": "test",
             "target_products": ["X"],
             "collected_data": [],
-            "persona": "entrepreneur",
         })
-        assert "entrepreneur" in task
+        assert "X" in task
 
 
 class TestBuildAnalysisResult:
@@ -572,7 +571,6 @@ class TestGenerateNotes:
 # ═══════════════════════════════════════════════════════════════
 
 from competition.nodes.writer import (  # noqa: E402
-    PERSONA_PROFILES,
     _build_review_package,
     _build_sections,
     _build_title,
@@ -585,16 +583,12 @@ from competition.nodes.writer import (  # noqa: E402
 
 class TestBuildTitle:
     def test_single_product(self):
-        assert "Cursor" in _build_title(["Cursor"], "pm")
+        assert "Cursor" in _build_title(["Cursor"])
 
     def test_multi_product(self):
-        title = _build_title(["Cursor", "Copilot"], "pm")
+        title = _build_title(["Cursor", "Copilot"])
         assert "Cursor" in title
         assert "Copilot" in title
-        assert "产品经理" in title
-
-    def test_entrepreneur_persona(self):
-        assert "创业者" in _build_title(["X"], "entrepreneur")
 
 
 class TestBuildSections:
@@ -602,7 +596,7 @@ class TestBuildSections:
         sections = _build_sections(
             {"comparison_matrix": {"products": ["A"], "dimensions": ["Price"], "cells": [], "summary": "test"}},
             {"quality_summary": {"total_data_points": 0}},
-            "pm", ["A"], None, [], {"total_data_points": 0},
+            ["A"], None, None, "", [], {"total_data_points": 0},
         )
         ids = {s["id"] for s in sections}
         assert "sec-executive-summary" in ids
@@ -618,27 +612,19 @@ class TestBuildSections:
                 "comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"},
                 "forecast": {"summary": "will grow", "items": [], "disclaimer": "test"},
             },
-            {"quality_summary": {}}, "pm", ["A"], None, [], {"total_data_points": 0},
+            {"quality_summary": {}}, ["A"], None, None, "", [], {"total_data_points": 0},
         )
         ids = {s["id"] for s in sections}
         assert "sec-forecast" in ids
         assert "sec-whatif" in ids
 
-    def test_pm_persona_opening(self):
+    def test_executive_summary_mentions_products(self):
         sections = _build_sections(
             {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "test"}},
-            {"quality_summary": {}}, "pm", ["A"], None, [], {"total_data_points": 0},
+            {"quality_summary": {}}, ["A"], None, None, "", [], {"total_data_points": 0},
         )
         exec_section = next(s for s in sections if s["id"] == "sec-executive-summary")
-        assert "产品功能" in exec_section["content"]
-
-    def test_entrepreneur_persona_opening(self):
-        sections = _build_sections(
-            {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "test"}},
-            {"quality_summary": {}}, "entrepreneur", ["A"], None, [], {"total_data_points": 0},
-        )
-        exec_section = next(s for s in sections if s["id"] == "sec-executive-summary")
-        assert "市场机会" in exec_section["content"]
+        assert len(exec_section["content"]) > 0
 
     def test_swot_content(self):
         sections = _build_sections(
@@ -646,7 +632,7 @@ class TestBuildSections:
                 "comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"},
                 "swot": {"A": {"items": [{"category": "strength", "statement": "Fast", "evidence": "tests", "source_data_point_ids": ["dp-1"]}]}},
             },
-            {"quality_summary": {}}, "pm", ["A"], None, [], {"total_data_points": 0},
+            {"quality_summary": {}}, ["A"], None, None, "", [], {"total_data_points": 0},
         )
         swot = next(s for s in sections if s["id"] == "sec-swot")
         assert "Fast" in swot["content"]
@@ -691,15 +677,13 @@ class TestExtractKeyFindings:
 class TestWriterSelfCheck:
     def test_all_ok(self):
         issues = writer_self_check({
-            "persona": "pm",
-            "sections": [{"id": "sec-executive-summary", "content": "从产品功能角度看，about Cursor and Copilot", "content_type": "text"}],
+            "sections": [{"id": "sec-executive-summary", "content": "about Cursor and Copilot", "content_type": "text"}],
             "traceability_map": {"1": {"url": "a.com"}},
         }, ["Cursor", "Copilot"])
         assert len(issues) == 0
 
     def test_missing_product(self):
         issues = writer_self_check({
-            "persona": "pm",
             "sections": [{"id": "sec-executive-summary", "content": "about Cursor", "content_type": "text"}],
             "traceability_map": {},
         }, ["Cursor", "MissingProduct"])
@@ -707,31 +691,10 @@ class TestWriterSelfCheck:
 
     def test_empty_traceability(self):
         issues = writer_self_check({
-            "persona": "pm",
-            "sections": [{"id": "sec-executive-summary", "content": "产品功能角度: test", "content_type": "text"}],
+            "sections": [{"id": "sec-executive-summary", "content": "test", "content_type": "text"}],
             "traceability_map": {},
         }, ["Cursor"])
         assert any("W3" in i for i in issues)
-
-    def test_wrong_persona_focus(self):
-        issues = writer_self_check({
-            "persona": "entrepreneur",
-            "sections": [{"id": "sec-executive-summary", "content": "just data", "content_type": "text"}],
-            "traceability_map": {"1": {"url": "a.com"}},
-        }, ["Cursor"])
-        assert any("W5" in i for i in issues)
-
-
-class TestPersonaProfiles:
-    def test_both_profiles_defined(self):
-        assert "pm" in PERSONA_PROFILES
-        assert "entrepreneur" in PERSONA_PROFILES
-
-    def test_pm_focus_functionality(self):
-        assert "功能" in PERSONA_PROFILES["pm"]["focus"]
-
-    def test_entrepreneur_focus_market(self):
-        assert "定价" in PERSONA_PROFILES["entrepreneur"]["focus"]
 
 
 class TestComputeMetrics:

@@ -1,4 +1,4 @@
-"""Writer node — ReportData generation with dual-persona support and source traceability.
+"""Writer node — ReportData generation with source traceability.
 
 Per COMPETITION_PLAN.md §3.7: interactive ReportData replacing legacy .md strings.
 """
@@ -41,23 +41,7 @@ def _get_schema_mode(state: dict) -> str:
     orch = state.get("orchestration_result") or {}
     return orch.get("schema_profile", "baseline")
 
-# Persona profiles (§3.7.4)
-PERSONA_PROFILES = {
-    "pm": {
-        "opening": "从产品功能角度看",
-        "focus": "功能维度 > 定价维度",
-        "recommendations": "功能优先级排序、差异化方向",
-        "swot_level": "产品级（功能/UX/定价/用户）",
-        "what_if": "如果竞品加了 X 功能，我们要跟进吗？",
-    },
-    "entrepreneur": {
-        "opening": "从市场机会角度看",
-        "focus": "定价维度 > 功能维度",
-        "recommendations": "细分市场选择、商业模式建议、进入时机",
-        "swot_level": "战略级（市场/团队/资本/壁垒）",
-        "what_if": "如果我选 Y 细分市场，竞争压力多大？",
-    },
-}
+
 
 
 def writer_node(state: dict) -> dict:
@@ -68,7 +52,6 @@ def writer_node(state: dict) -> dict:
     analysis = state.get("analysis_result") or {}
     verdict = state.get("review_verdict") or {}
     collected = state.get("collected_data") or []
-    persona = state.get("persona", "pm")
     target_products = state.get("target_products", [])
     hitl_focus, whatif_comment_raw, hitl_action = _get_hitl_focus(state)
     # Only use comment as what-if scenario when action is explicitly "rewrite"
@@ -77,7 +60,7 @@ def writer_node(state: dict) -> dict:
     # Build report sections — v4: schema_profile controls deep sections
     quality = verdict.get("quality_summary", {})
     schema_mode = _get_schema_mode(state)
-    sections = _build_sections(analysis, verdict, persona, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
+    sections = _build_sections(analysis, verdict, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
 
     # Industry fixed sections (Layer 2 of §3.20)
     industry_sections = _build_industry_sections(state, analysis)
@@ -87,7 +70,7 @@ def writer_node(state: dict) -> dict:
 
     # Generate executive summary via LLM for all actions (not just rewrite)
     try:
-        _llm_generate_section(sections, "sec-executive-summary", analysis, target_products, persona)
+        _llm_generate_section(sections, "sec-executive-summary", analysis, target_products, "pm")
     except Exception:
         logger.exception("Writer LLM generation failed for executive summary")
 
@@ -98,8 +81,8 @@ def writer_node(state: dict) -> dict:
     metrics = _compute_report_metrics(collected, verdict, traceability)
 
     report_data = {
-        "persona": persona,
-        "title": _build_title(target_products, persona),
+        "persona": "pm",
+        "title": _build_title(target_products),
         "generated_at": datetime.now(UTC).isoformat(),
         "products": target_products,
         "sections": sections,
@@ -130,7 +113,7 @@ def writer_node(state: dict) -> dict:
     }
 
 
-def _build_title(products: list[str], persona: str) -> str:
+def _build_title(products: list[str]) -> str:
     products_str = " vs ".join(products) if products else "竞品分析"
     return f"{products_str} 竞品分析报告"
 
@@ -140,9 +123,8 @@ def _get_hitl_focus(state: dict) -> list[str] | None:
     return decision.get("target_focus"), decision.get("comment", ""), decision.get("action", "")
 
 
-def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict, schema_profile: str = "baseline") -> list[dict]:
-    """Build all report sections, respecting persona and optional conditions."""
-    profile = PERSONA_PROFILES.get(persona, PERSONA_PROFILES["pm"])
+def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict, schema_profile: str = "baseline") -> list[dict]:
+    """Build all report sections."""
     sections: list[dict] = []
     source_id = [0]  # mutable counter for [n] numbering
 
@@ -158,9 +140,9 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
     summary_text = matrix.get("summary", f"{' vs '.join(products)} 竞品分析")
     exec_content: str
     if hitl_action == "rewrite":
-        exec_content = _llm_rewrite_section("executive_summary", analysis, products, persona)
+        exec_content = _llm_rewrite_section("executive_summary", analysis, products)
     else:
-        exec_content = f"{profile['opening']}，{summary_text}"
+        exec_content = f"基于公开数据和多维度分析，{summary_text}"
     sections.append({
         "id": "sec-executive-summary", "title": "执行摘要",
         "content": exec_content, "content_type": "text",
@@ -236,7 +218,7 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
         })
 
     # What-if section — always present, LLM-generated when user submitted a what-if via rewrite
-    whatif_content = _generate_whatif(whatif_comment, analysis, products, persona) if whatif_comment else ""
+    whatif_content = _generate_whatif(whatif_comment, analysis, products) if whatif_comment else ""
     if whatif_content:
         sections.append({
             "id": "sec-whatif", "title": "What-if 推演",
@@ -253,9 +235,9 @@ def _build_sections(analysis: dict, verdict: dict, persona: str, products: list[
     # 6. Recommendations (required)
     rec_content: str
     if hitl_action == "rewrite":
-        rec_content = _llm_rewrite_section("recommendations", analysis, products, persona)
+        rec_content = _llm_rewrite_section("recommendations", analysis, products)
     else:
-        rec_content = f"**{profile['recommendations']}**\n\n基于以上分析，建议关注产品功能差异化和定价策略优化。"
+        rec_content = "**建议方向**\n\n基于以上分析，建议根据竞品差异和自身优势制定针对性策略。"
     sections.append({
         "id": "sec-recommendations", "title": "建议",
         "content": rec_content,
@@ -626,11 +608,6 @@ def writer_self_check(report_data: dict, target_products: list[str]) -> list[str
         issues.append("W3: traceability_map is empty")
 
     # W4: Source table references consistent
-    # W5: Persona focus correct
-    persona = report_data.get("persona", "pm")
-    profile = PERSONA_PROFILES.get(persona, {})
-    if profile and profile.get("opening", "") not in all_content:
-        issues.append(f"W5: Persona '{persona}' focus not reflected in report")
 
     return issues
 

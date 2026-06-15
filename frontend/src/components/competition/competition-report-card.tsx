@@ -177,7 +177,7 @@ export default function CompetitionReportCard({
       {metrics && (
         <div className="px-4 py-3 space-y-2">
           {metrics.coverage != null && (
-            <div className="w-1/2">
+            <div className="w-full sm:w-1/2">
               <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[10px] text-muted-foreground">覆盖率</span>
                 <span className="text-[11px] font-bold text-blue-600">
@@ -257,7 +257,7 @@ export default function CompetitionReportCard({
             </span>
             {expanded ? <ChevronUp className="size-3 text-muted-foreground" /> : <ChevronDown className="size-3 text-muted-foreground" />}
           </button>
-          {expanded && (
+          <div className={`overflow-hidden transition-all duration-200 ${expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}>
             <div className="px-4 pb-2 space-y-1">
               {sectionPreviews.map((s, i) => (
                 <div key={i} className="flex items-start gap-2 text-[11px]">
@@ -276,7 +276,7 @@ export default function CompetitionReportCard({
                 </div>
               )}
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -325,9 +325,10 @@ export default function CompetitionReportCard({
             </button>
           )}
           <div className="flex-1" />
-          <button onClick={onExportMD} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
-          <button onClick={onExportJSON} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
+          <button onClick={onExportMD} title="导出 Markdown 报告" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
+          <button onClick={onExportJSON} title="导出 JSON 原始数据" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
           <button
+            title="导出到飞书文档"
             onClick={() => {
               fetch(`/api/competition/report/${threadId}/export-feishu`)
                 .then(r => r.json())
@@ -345,6 +346,7 @@ export default function CompetitionReportCard({
               const w = window.open("", "_blank");
               if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 500); }
             }}
+            title="打印为 PDF"
             className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
           >📋 PDF</button>
         </div>

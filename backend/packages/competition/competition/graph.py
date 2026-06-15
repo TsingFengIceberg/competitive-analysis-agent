@@ -15,7 +15,6 @@ Usage::
         messages=[],
         user_request="分析 Cursor vs Copilot",
         target_products=["Cursor", "Copilot"],
-        persona="pm",
     ))
 """
 

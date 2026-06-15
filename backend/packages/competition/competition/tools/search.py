@@ -24,8 +24,26 @@ logger = logging.getLogger(__name__)
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
-DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
-DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", "")
+# Primary search backend credentials (from config.yaml providers section, env fallback)
+def _get_default_provider() -> tuple[str, str, str]:
+    """Get (api_key, api_base, model) from the active group's default provider."""
+    cfg = _read_config_yaml()
+    comp = cfg.get("competition") or {}
+    group_cfg = _get_active_group_config()
+    providers = comp.get("providers") or {}
+    default_prov = group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+    prov = providers.get(default_prov) or {}
+    key_env = prov.get("api_key_env", "DOUBAO_API_KEY")
+    base = prov.get("api_base", "https://ark.cn-beijing.volces.com/api/v3")
+    model = group_cfg.get("default_model") or comp.get("default_model") or ""
+    key = os.environ.get(key_env, "")
+    if key:
+        return key, base, model
+    return (
+        os.environ.get("DOUBAO_API_KEY", ""),
+        os.environ.get("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"),
+        os.environ.get("DOUBAO_MODEL", ""),
+    )
 
 # ── Model context registry ──
 
@@ -121,18 +139,17 @@ def _parse_model_name_for_context(model_name: str) -> int | None:
     return None
 
 
-def _query_doubao_models() -> dict[str, int] | None:
-    """Query Doubao /v1/models endpoint, parse context from model names.
-
-    Doubao doesn't expose max_context_length as a field, but model names encode it
-    (e.g. 'doubao-pro-128k-240515'). Seed-series models are matched against built-in.
+def _query_provider_models() -> dict[str, int] | None:
+    """Query the default provider's /models endpoint to detect context limits.
+    Falls back to built-in capacity lookup if models API is unreachable.
     """
-    if not DOUBAO_API_BASE or not DOUBAO_API_KEY:
+    key, base, _model = _get_default_provider()
+    if not base or not key:
         return None
     try:
         import urllib.request
-        url = f"{DOUBAO_API_BASE.rstrip('/')}/models"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {DOUBAO_API_KEY}"})
+        url = f"{base.rstrip('/')}/models"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
     except Exception:
@@ -194,17 +211,14 @@ def _query_deepseek_models(api_key: str, api_base: str | None = None) -> dict[st
 
 
 def _resolve_model_name() -> str:
-    """Resolve the real model name from the endpoint via a minimal API call.
-
-    When DOUBAO_MODEL is an endpoint ID (ep-xxx) rather than a model name,
-    the chat completions response includes the real model name we can match
-    against the registry. This call uses 1 token and is cached per process.
+    """Resolve the real model name from an endpoint ID (ep-xxx) via a minimal API call.
+    Uses the default provider's config.
     """
-    model = os.environ.get("DOUBAO_MODEL", "")
+    key, base, model = _get_default_provider()
     if not model or not model.startswith("ep-"):
         return model  # not an endpoint ID, no resolution needed
 
-    if not DOUBAO_API_BASE or not DOUBAO_API_KEY:
+    if not base or not key:
         return model
 
     try:
@@ -215,11 +229,11 @@ def _resolve_model_name() -> str:
             "max_tokens": 2,
         }).encode()
         req = urllib.request.Request(
-            f"{DOUBAO_API_BASE.rstrip('/')}/chat/completions",
+            f"{base.rstrip('/')}/chat/completions",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {DOUBAO_API_KEY}",
+                "Authorization": f"Bearer {key}",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -259,7 +273,7 @@ def get_model_context_limit(model_name: str = "") -> int:
     Discovered values are persisted to model_context_registry.json.
     """
     if not model_name:
-        model_name = os.environ.get("DOUBAO_MODEL", "")
+        _key, _base, model_name = _get_default_provider()
 
     env_override = os.environ.get("DOUBAO_CONTEXT_WINDOW")
     if env_override:
@@ -301,7 +315,7 @@ def get_model_context_limit(model_name: str = "") -> int:
         return name_limit
 
     # 4. API query: Doubao model list (enrich registry for future)
-    doubao_models = _query_doubao_models()
+    doubao_models = _query_provider_models()
     if doubao_models:
         for mid, limit in doubao_models.items():
             _save_registry_entry(mid, limit)
@@ -395,24 +409,79 @@ _search_stats: dict = {"total_queries": 0, "total_results": 0, "backend": "", "q
 
 
 def _get_search_config() -> dict:
-    """Load search backend config from search_config.json.
+    """Load search backend config from config.yaml active group or search_config.json."""
 
-    Returns full config dict including strategy section.
-    """
+    # Defaults
+    cfg = {"tavily": True, "ddg": True, "jina": True,
+           "fetch_top_n": 3, "fetch_timeout": 15,
+           "strategy": {"mode": "auto"}}
+
+    # Try config.yaml active group first
+    group_cfg = _get_active_group_config()
+    search_cfg = group_cfg.get("search") or {}
+    if search_cfg:
+        cfg.update(search_cfg)
+        return cfg
+
+    # Fallback: search_config.json
     config_path = Path(__file__).parent.parent.parent.parent.parent / "search_config.json"
     if config_path.exists():
         try:
-            return json.loads(config_path.read_text())
+            cfg.update(json.loads(config_path.read_text()))
         except Exception:
             logger.debug("Failed to parse search_config.json", exc_info=True)
 
-    # Defaults
-    return {
-        "tavily": True, "ddg": True, "jina": False,
-        "fetch_top_n": 3, "fetch_timeout": 15,
-        "strategy": {"mode": "auto"},
-    }
+    return cfg
 
+
+def _get_provider_search_config() -> tuple[str | None, str, str]:
+    """Check active group's search.provider_search and resolve provider credentials.
+    Returns (provider_name, api_key, api_base) or (None, "", "").
+    """
+    cfg = _read_config_yaml()
+    comp = cfg.get("competition") or {}
+    group_cfg = _get_active_group_config()
+
+    # Check if provider search is enabled in the group's search section
+    search_cfg = group_cfg.get("search") or {}
+    if not search_cfg.get("provider_search", False):
+        return None, "", ""
+
+    providers = comp.get("providers") or {}
+    default_prov = group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+    prov = providers.get(default_prov) or {}
+    key_env = prov.get("api_key_env", "")
+    key = os.environ.get(key_env, "") if key_env else ""
+    base = prov.get("api_base", "")
+    if key and base:
+        return default_prov, key, base
+    return None, "", ""
+
+
+def _read_config_yaml() -> dict:
+    """Read entire config.yaml once for multiple lookups."""
+    try:
+        import yaml
+        from pathlib import Path
+        for p in (Path("config.yaml"), Path("backend/config.yaml"),
+                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+            if p.exists():
+                return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _get_active_group_config() -> dict:
+    """Return the active competition config group, or top-level if no groups."""
+    cfg = _read_config_yaml()
+    comp = cfg.get("competition") or {}
+    active = comp.get("active_group") or ""
+    groups = comp.get("groups") or {}
+    if active and groups and active in groups:
+        return groups[active]
+    return comp  # backward compatible: no groups → use top-level
 
 def get_search_stats() -> dict:
     """Return the current search session stats (for UI observability)."""
@@ -443,24 +512,31 @@ class SearchResponse:
 
 
 def search(query: str, max_results: int = 5) -> SearchResponse:
-    """Multi-backend web search. Backend priority is configurable via search_config.json.
+    """Multi-backend web search.
 
-    Backends: volcengine (字节搜索) > tavily > ddg
+    Priority: Provider built-in search → Tavily → DDG.
+    Provider search is auto-detected from config.yaml providers.{name}.search:true.
     """
     cfg = _get_search_config()
     _search_stats["total_queries"] += 1
     _search_stats["queries"].append(query)
 
-    # 1. Volcengine (ByteDance native search — uses same API key as LLM)
-    if cfg.get("volcengine", True) and DOUBAO_API_KEY:
-        response = _volcengine_search(query, max_results)
+    # 1. Provider built-in search (auto-detected from config)
+    prov_name, prov_key, prov_base = _get_provider_search_config()
+    if prov_name:
+        if prov_name == "doubao" or prov_name == "":
+            response = _doubao_search(query, max_results, prov_key, prov_base)
+        elif prov_name == "qwen":
+            response = _qwen_search(query, max_results, prov_key, prov_base)
+        else:
+            response = SearchResponse(query=query, backend="none")
         if response.results:
             _search_stats["total_results"] += len(response.results)
             _search_stats["backend"] = response.backend
             return response
 
     # 2. Tavily
-    if cfg.get("tavily", False) and TAVILY_API_KEY and TAVILY_API_KEY not in ("your-tavily-api-key", ""):
+    if cfg.get("tavily", True) and TAVILY_API_KEY and TAVILY_API_KEY not in ("your-tavily-api-key", ""):
         response = _tavily_search(query, max_results)
         if response.results:
             _search_stats["total_results"] += len(response.results)
@@ -602,20 +678,13 @@ def _ddg_search(query: str, max_results: int = 5) -> SearchResponse:
 # ── Volcengine web search (ByteDance native) ──
 
 
-def _volcengine_search(query: str, max_results: int = 5) -> SearchResponse:
-    """Use Volcengine Responses API with web_search tool for ByteDance-native search.
-
-    The Responses API returns AI-synthesized answers backed by real web search.
-    We ask the model to return raw results as JSON for structured extraction.
-    Uses the same DOUBAO_API_KEY and DOUBAO_API_BASE as the LLM calls.
-    """
-    if not DOUBAO_API_BASE or not DOUBAO_API_KEY:
-        return SearchResponse(query=query, backend="volcengine")
+def _doubao_search(query: str, max_results: int, api_key: str, api_base: str) -> SearchResponse:
+    """Use Doubao/Volcengine Responses API with web_search tool."""
 
     try:
         import urllib.request
         payload = json.dumps({
-            "model": os.environ.get("DOUBAO_MODEL", ""),
+            "model": _get_default_provider()[2] or "doubao-seed-2-0-lite-260215",
             "tools": [{"type": "web_search"}],
             "input": [{"role": "user", "content": (
                 f"Search for: {query}. "
@@ -625,19 +694,20 @@ def _volcengine_search(query: str, max_results: int = 5) -> SearchResponse:
             "max_output_tokens": max_results * 400,
         }).encode()
         req = urllib.request.Request(
-            f"{DOUBAO_API_BASE.rstrip('/')}/responses",
+            f"{api_base.rstrip('/')}/responses",
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {DOUBAO_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {api_key}",
             },
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
 
         if "error" in data:
-            logger.warning("Volcengine search error: %s", data["error"].get("message", "")[:200])
-            return SearchResponse(query=query, backend="volcengine")
+            logger.warning("Doubao search error: %s", data["error"].get("message", "")[:200])
+            return SearchResponse(query=query, backend="doubao")
 
         # Extract text from response
         text = ""
@@ -678,12 +748,54 @@ def _volcengine_search(query: str, max_results: int = 5) -> SearchResponse:
                 except json.JSONDecodeError:
                     pass
 
-        logger.info("Volcengine search '%s': %d results (字节搜索)", query, len(results))
-        return SearchResponse(query=query, results=results, backend="volcengine 🔥")
+        logger.info("Doubao search '%s': %d results", query, len(results))
+        return SearchResponse(query=query, results=results, backend="doubao")
 
     except Exception as e:
-        logger.warning("Volcengine search failed: %s", e)
-        return SearchResponse(query=query, backend="volcengine")
+        logger.warning("Doubao search failed: %s", e)
+        return SearchResponse(query=query, backend="doubao")
+
+
+def _qwen_search(query: str, max_results: int, api_key: str, api_base: str) -> SearchResponse:
+    """Use Qwen/DashScope built-in web search via enable_search flag."""
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": _get_default_provider()[2] or "doubao-seed-2-0-lite-260215",  # Qwen model from env
+            "messages": [{"role": "user", "content": query}],
+            "enable_search": True,
+            "search_strategy": "turbo",
+            "max_tokens": max_results * 400,
+        }).encode()
+        req = urllib.request.Request(
+            f"{api_base.rstrip('/')}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+
+        if "error" in data:
+            logger.warning("Qwen search error: %s", str(data.get("error", ""))[:200])
+            return SearchResponse(query=query, backend="qwen")
+
+        text = ""
+        choices = data.get("choices", [])
+        if choices:
+            text = choices[0].get("message", {}).get("content", "")
+
+        logger.info("Qwen search '%s': %d chars response", query, len(text))
+        return SearchResponse(
+            query=query,
+            results=[SearchResult(title="Qwen Search", snippet=text[:2000], url="")],
+            backend="qwen",
+        )
+    except Exception as e:
+        logger.warning("Qwen search failed: %s", e)
+        return SearchResponse(query=query, backend="qwen")
 
 
 # ── Search query expansion ──

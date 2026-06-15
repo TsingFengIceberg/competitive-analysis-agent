@@ -69,7 +69,6 @@ class WriterConfig(AgentConfig):
     max_turns: int = 20
     timeout_seconds: int = 180
     executive_summary_max_chars: int = Field(default=500, description="§3.7.3 exec summary cap")
-    default_persona: str = Field(default="pm", description="Default persona if not specified")
     skills: list[str] = Field(
         default_factory=lambda: [
             "consulting-analysis", "swot-generator", "chart-visualization",
@@ -201,7 +200,6 @@ class CompetitionConfig(BaseModel):
 
     # Top-level defaults
     default_model: str = Field(default="doubao-seed-2-0-lite-260215")
-    default_persona: str = Field(default="both", description="pm / entrepreneur / both")
     schema_validation_retries: int = Field(default=2, description="Max retries for validate_agent_output()")
     log_level: str = Field(default="INFO")
 

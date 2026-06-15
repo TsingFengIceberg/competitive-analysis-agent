@@ -84,7 +84,7 @@ export default function CompetitionQueryInput({
     <PromptInput onSubmit={handleSubmit} disabled={disabled}>
       <PromptInputBody>
         <PromptInputTextarea
-          placeholder="输入竞品分析请求，例如：分析 Cursor vs Copilot vs Windsurf 的竞争力"
+          placeholder="输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面"
         />
       </PromptInputBody>
       <PromptInputFooter>

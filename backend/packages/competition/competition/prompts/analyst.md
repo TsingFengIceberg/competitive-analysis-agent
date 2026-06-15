@@ -72,6 +72,3 @@
 }
 ```
 
-## 当前视角
-
-{persona_profile}
