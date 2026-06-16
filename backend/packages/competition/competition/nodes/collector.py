@@ -550,20 +550,77 @@ def _run_searches(state: dict) -> str:
         return ""
 
     if not results:
-        logger.warning("🦆 DDG search returned ZERO results")
+        logger.warning("DDG search returned ZERO results")
         return ""
 
-    # ── Content persistence: save full fetched page text for evidence verification ──
+    # Content persistence
     _persist_search_results(results)
 
     # Log what we found
     with_content = sum(1 for r in results if r.raw_content)
-    logger.warning("═══ 🦆 DDG DONE: %d unique URLs (%d fetched) ═══",
-                   len(results), with_content)
-    for r in results[:10]:
-        logger.warning("  📄 %s | %s", r.title[:80], r.url)
+    logger.warning("DDG DONE: %d unique URLs (%d fetched)", len(results), with_content)
+
+    # Per-product fair budget allocation: when analyzing multiple products,
+    # global context trimming by content length can crowd out all but the
+    # first product. Allocate budget fairly per product.
+    if len(target_products) > 1:
+        return _format_per_product_context(results, target_products, budget=budget)
 
     return format_search_context(results, budget=budget)
+
+
+def _format_per_product_context(results: list, target_products: list[str], budget) -> str:
+    """Format search context with fair per-product budget allocation.
+
+    Without this, global top-N by content length lets the first product's
+    long pages crowd out all other products, causing None-filled matrix cells.
+    """
+    from competition.tools.search import format_search_context
+
+    # Score each result for each product: check if title/URL/snippet mentions it
+    def _product_score(result, product: str) -> float:
+        text = f"{result.title} {result.snippet or ''} {result.url}".lower()
+        prod_lower = product.lower()
+        if prod_lower in text:
+            return 1.0
+        words = prod_lower.split()
+        if len(words) > 1:
+            matches = sum(1 for w in words if w in text)
+            return matches / len(words) * 0.5
+        return 0.0
+
+    # Assign each result to the product with highest score
+    assigned: dict[str, list] = {p: [] for p in target_products}
+    unassigned: list = []
+    for r in results:
+        best_product = None
+        best_score = 0.0
+        for p in target_products:
+            s = _product_score(r, p)
+            if s > best_score:
+                best_score = s
+                best_product = p
+        if best_score > 0:
+            assigned[best_product].append(r)
+        else:
+            unassigned.append(r)
+
+    # Distribute unassigned results round-robin
+    for i, r in enumerate(unassigned):
+        assigned[target_products[i % len(target_products)]].append(r)
+
+    # Format each product's results independently — each gets its own top-N
+    parts: list[str] = []
+    for product in target_products:
+        prod_results = assigned.get(product, [])
+        if not prod_results:
+            parts.append(f"## {product}\n(No search results found for this product)\n")
+            continue
+        ctx = format_search_context(prod_results, budget=budget)
+        if ctx.strip():
+            parts.append(f"## Search results for: {product}\n{ctx}")
+
+    return "\n\n".join(parts)
 
 
 def _get_search_info() -> dict:

@@ -73,6 +73,7 @@ scripts/*
 !scripts/cleanup-all.sh
 !scripts/restart-light.sh
 !scripts/dev-instance.sh
+!scripts/sync-user-config.py
 
 /#DEMO
 # DeerFlow upstream directories (kept for reference, not tracked)

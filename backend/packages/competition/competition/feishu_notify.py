@@ -37,23 +37,50 @@ def _get_token(app_id: str, app_secret: str) -> str | None:
 
 
 def _get_feishu_config() -> dict:
-    """Read feishu section from config.yaml active group, returning defaults if missing."""
+    """Read feishu toggles from DB config_group only."""
     try:
-        import yaml
-        from pathlib import Path
-        for p in (Path("config.yaml"), Path("backend/config.yaml"),
-                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
-                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
-            if p.exists():
-                cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                comp = cfg.get("competition") or {}
-                active = comp.get("active_group") or ""
-                groups = comp.get("groups") or {}
-                group_cfg = groups.get(active, {}) if active and groups else comp
-                return group_cfg.get("feishu") or comp.get("feishu") or {}
+        from competition.executor import _get_active_config_group
+        cg = _get_active_config_group()
+        toggles = cg.get("feishu_toggles", {}) or {}
+        if isinstance(toggles, dict):
+            return toggles
     except Exception:
         pass
     return {}
+
+
+def _get_feishu_credentials() -> dict:
+    """Get feishu credentials from DB. Supports multi-provider format."""
+    try:
+        from competition.executor import _get_user_settings, _get_active_config_group
+        us = _get_user_settings() or {}
+    except Exception:
+        us = {}
+    fc = us.get("feishu_config", {}) or {}
+    if not isinstance(fc, dict):
+        return {"app_id": "", "app_secret": "", "notify_open_id": "", "tenant": ""}
+
+    # Check if new multi-provider format (nested dicts) vs old flat format
+    first_val = next(iter(fc.values()), None) if fc else None
+    if isinstance(first_val, dict):
+        # Multi-provider: {"name": {app_id, ...}}
+        try:
+            cg = _get_active_config_group()
+            provider_name = cg.get("feishu_provider") or ""
+            if provider_name and provider_name in fc:
+                p = fc[provider_name]
+                return {"app_id": p.get("app_id", "") or "", "app_secret": p.get("app_secret", "") or "",
+                        "notify_open_id": p.get("notify_open_id", "") or "", "tenant": p.get("tenant", "") or ""}
+        except Exception:
+            pass
+        # Fallback: return first provider
+        p = first_val
+        return {"app_id": p.get("app_id", "") or "", "app_secret": p.get("app_secret", "") or "",
+                "notify_open_id": p.get("notify_open_id", "") or "", "tenant": p.get("tenant", "") or ""}
+
+    # Old flat format
+    return {"app_id": fc.get("app_id", "") or "", "app_secret": fc.get("app_secret", "") or "",
+            "notify_open_id": fc.get("notify_open_id", "") or "", "tenant": fc.get("tenant", "") or ""}
 
 
 def is_notify_enabled() -> bool:
@@ -65,9 +92,10 @@ def notify_analysis_complete(thread_id: str, title: str, products: str, doc_url:
     if not is_notify_enabled():
         return False
 
-    app_id = os.environ.get("FEISHU_APP_ID", "").strip()
-    app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
-    open_id = os.environ.get("FEISHU_NOTIFY_OPEN_ID", "").strip()
+    creds = _get_feishu_credentials()
+    app_id = creds["app_id"].strip()
+    app_secret = creds["app_secret"].strip()
+    open_id = creds["notify_open_id"].strip()
 
     if not (app_id and app_secret and open_id):
         return False

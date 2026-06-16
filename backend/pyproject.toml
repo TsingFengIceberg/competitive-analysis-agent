@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "tavily-python",
     "ddgs",
+    "pyjwt>=2.13.0",
 ]
 
 [project.optional-dependencies]

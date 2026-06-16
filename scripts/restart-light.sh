@@ -84,7 +84,7 @@ if $DO_BACKEND; then
     fi
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPYCACHEPREFIX=/dev/shm/pycache \
-    PYTHONPATH=packages/competition \
+    PYTHONPATH=packages/harness \
     nohup uv run uvicorn app.main:app \
         --host 0.0.0.0 --port 8001 \
         --log-level warning \

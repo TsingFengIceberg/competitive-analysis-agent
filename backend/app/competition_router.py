@@ -217,9 +217,20 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
 # ── User helpers (§User System) ──
 
 
-async def _get_user_id(request: Request | None = None) -> str:
-    """Get the current user ID — always returns 'default' (no-auth mode)."""
-    return "default"
+def _get_user_id(request: Request | None = None) -> str:
+    """Get the current user ID from JWT cookie, falling back to 'default'."""
+    if request is None:
+        return "default"
+    token = request.cookies.get("access_token", "")
+    if not token:
+        return "default"
+    try:
+        import jwt as _jwt
+        payload = _jwt.decode(token, options={"verify_signature": False})
+        user_id = payload.get("sub", "")
+        return user_id if user_id else "default"
+    except Exception:
+        return "default"
 
 
 async def _ensure_demo_user() -> None:
@@ -757,7 +768,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     from datetime import UTC, datetime
 
     thread_id = f"comp-{uuid.uuid4().hex[:12]}"
-    user_id = await _get_user_id(fastapi_request)
+    user_id = _get_user_id(fastapi_request)
     _associate_thread(thread_id, user_id)
 
     # Persist to DB on creation (§18)
@@ -797,7 +808,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     # Resolve products + run graph entirely in background thread
     # (sync LLM + search calls take ~2min and would block the event loop)
     asyncio.get_event_loop().run_in_executor(
-        None, _resolve_and_run_graph, thread_id, request.query, request.target_products,
+        None, _resolve_and_run_graph, thread_id, request.query, request.target_products, user_id,
     )
 
     return AnalyzeResponse(thread_id=thread_id, status="running")
@@ -1582,7 +1593,7 @@ async def stream(thread_id: str, fastapi_request: Request):
 @router.get("/history")
 async def list_history(limit: int = Query(default=10, le=50), fastapi_request: Request = None):
     """List recent analysis history, filtered by current user if authenticated."""
-    user_id = await _get_user_id(fastapi_request) if fastapi_request else "default"
+    user_id = _get_user_id(fastapi_request) if fastapi_request else "default"
     history = []
     for tid, entry in list(_store.items()):
         # Filter by user if authenticated
@@ -1607,24 +1618,76 @@ async def list_history(limit: int = Query(default=10, le=50), fastapi_request: R
 @router.get("/me")
 async def current_user(fastapi_request: Request):
     """Return current user info for the frontend auth state."""
-    user_id = await _get_user_id(fastapi_request)
+    user_id = _get_user_id(fastapi_request)
     thread_count = len(_get_user_threads(user_id))
+
+    email = None
+    if user_id != "default":
+        try:
+            import os as _os, sqlite3 as _sqlite
+            auth_db = _os.path.join(_os.path.dirname(__file__), "..", "..", ".ci-agent", "auth.db")
+            if _os.path.exists(auth_db):
+                ac = _sqlite3.connect(auth_db)
+                row = ac.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+                ac.close()
+                if row:
+                    email = row[0]
+        except Exception:
+            pass
+
     return {
         "user_id": user_id,
-        "authenticated": True,
+        "authenticated": user_id != "default",
         "thread_count": thread_count,
+        "email": email or "",
     }
 
 
+# ── User Settings (§User System) ──
+
+
+@router.get("/settings")
+async def get_settings(fastapi_request: Request):
+    """Get current user's settings."""
+    from competition.db import get_user_settings
+    user_id = _get_user_id(fastapi_request)
+    settings = get_user_settings(user_id)
+    return {"user_id": user_id, "settings": settings}
+
+
+@router.put("/settings")
+async def save_settings(body: dict, fastapi_request: Request):
+    """Save current user's settings."""
+    from competition.db import save_user_settings
+    user_id = _get_user_id(fastapi_request)
+    if user_id == "default":
+        raise HTTPException(status_code=401, detail="Login required to save settings")
+    settings = body.get("settings", body)
+    success = save_user_settings(user_id, settings)
+    return {"ok": success, "user_id": user_id}
+
+
+@router.post("/settings/migrate")
+async def migrate_data(fastapi_request: Request):
+    """Assign all 'default' user data to the current user."""
+    from competition.db import migrate_default_data
+    user_id = _get_user_id(fastapi_request)
+    if user_id == "default":
+        raise HTTPException(status_code=401, detail="Login required to migrate data")
+    count = migrate_default_data(user_id)
+    return {"ok": True, "migrated_rows": count, "user_id": user_id}
+
+
 @router.get("/db-history")
-async def list_db_history(limit: int = Query(default=20, le=100)):
+async def list_db_history(limit: int = Query(default=20, le=100), fastapi_request: Request = None):
     """List analysis records saved to SQLite (approved reports)."""
     try:
         from competition.db import init_db
         from competition.db import list_history as db_list_history
 
+        user_id = _get_user_id(fastapi_request)
         conn = init_db()
-        records = db_list_history(conn, limit=limit)
+        records = db_list_history(conn, limit=limit, user_id=user_id)
         conn.close()
         return {"history": records, "total": len(records)}
     except Exception as e:
@@ -1811,7 +1874,7 @@ def _finalize_cancelled(thread_id: str) -> None:
     _emit_event(thread_id, "end", {"status": "interrupted", "message": "分析已终止"})
 
 
-def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str]) -> None:
+def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str], user_id: str = "default") -> None:
     """ProductResolver (pre-graph) → Orchestrator (graph entry) `[v4 Plan D]`.
 
     Phase 1 (pre-graph): ProductResolver — LLM extract + search verify + LLM correct
@@ -1828,6 +1891,10 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
 
     def _cancelled() -> bool:
         return _cancel_flags.pop(thread_id, False)
+
+    # Set per-user context for settings override in executor
+    from competition.executor import set_user_context
+    set_user_context(user_id)
 
     # Set cancel checker so LLM calls during product resolution can be interrupted
     from competition.executor import set_cancel_checker, clear_cancel_checker
@@ -1943,6 +2010,9 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
+    finally:
+        from competition.executor import clear_user_context
+        clear_user_context()
 
 
 def _run_graph_sync(thread_id: str) -> None:

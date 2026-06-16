@@ -414,54 +414,23 @@ export default function CompetitionPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // Check auth state on mount; auto-login with demo account if not authenticated
+  // Check auth state on mount; redirect to /login if not authenticated
   useEffect(() => {
     let cancelled = false;
     fetch("/api/competition/me")
       .then((r) => r.json())
-      .then(async (d) => {
+      .then((d) => {
         if (cancelled) return;
         if (d.authenticated) {
           setUserId(d.user_id);
           setIsAuthenticated(true);
-          setAuthLoading(false);
         } else {
-          // Auto-login with demo account: register first (auto-sets cookie),
-          // fall back to login if account already exists.
-          try {
-            let loginOk = false;
-            // Try register first (auto-logs in on success)
-            const regRes = await fetch("/api/v1/auth/register", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ email: "demo@ci-agent.demo", password: "demo1234" }),
-              credentials: "include",
-            });
-            if (regRes.ok) {
-              loginOk = true;
-            } else {
-              // Account already exists, try login
-              const loginRes = await fetch("/api/v1/auth/login/local", {
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: "username=demo%40ci-agent.demo&password=demo1234",
-                credentials: "include",
-              });
-              loginOk = loginRes.ok;
-            }
-            if (loginOk && !cancelled) {
-              const meRes = await fetch("/api/competition/me");
-              const meData = await meRes.json();
-              if (!cancelled) {
-                setUserId(meData.user_id || "demo@ci-agent.demo");
-                setIsAuthenticated(true);
-              }
-            }
-          } catch {
-            // Auto-login failed; user can still use the page unauthenticated
-          }
-          if (!cancelled) setAuthLoading(false);
+          // Not authenticated — redirect to login page
+          const redirect = encodeURIComponent(window.location.pathname);
+          window.location.href = `/auth/login?redirect=${redirect}`;
+          return;
         }
+        setAuthLoading(false);
       })
       .catch(() => {
         if (!cancelled) setAuthLoading(false);

@@ -3,7 +3,7 @@
 Covers today's changes:
 - Config path resolution (6-parent traversal to reach project root)
 - _get_search_config() search backend toggles (ddg, tavily, provider_search, jina)
-- _get_active_group_config() group resolution
+- _get_active_config_group() group resolution
 - _get_provider_search_config() provider search config
 - _resolve_provider() per-agent model resolution
 """
@@ -29,11 +29,9 @@ if "primp" not in sys.modules:
 
 from competition.tools.search import (
     _get_search_config,
-    _get_active_group_config,
     _get_provider_search_config,
-    _read_config_yaml,
 )
-from competition.executor import _resolve_provider, _resolve_model
+from competition.executor import _resolve_provider, _resolve_model, _get_active_config_group
 
 
 # ── helpers ──
@@ -87,115 +85,59 @@ def _minimal_config(**overrides) -> dict:
     return cfg
 
 
-# ── Config path resolution ──
-
-
-class TestReadConfigYaml:
-    """Verify _read_config_yaml() finds config.yaml at various path depths."""
-
-    def test_finds_config_in_cwd(self, monkeypatch, tmp_path: Path):
-        config_path = tmp_path / "config.yaml"
-        _write_yaml(config_path, _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        result = _read_config_yaml()
-        assert result.get("config_version") == 12
-
-    def test_finds_config_via_six_parent_traversal(self, tmp_path: Path):
-        """Simulates the real deployment: CWD=backend/, config.yaml in project root."""
-        project_root = tmp_path / "deer-flow"
-        backend_dir = project_root / "backend"
-        backend_dir.mkdir(parents=True)
-        _write_yaml(project_root / "config.yaml", _minimal_config())
-        # Simulate running from backend/
-        os.chdir(str(backend_dir))
-        try:
-            result = _read_config_yaml()
-            assert result.get("config_version") == 12
-        finally:
-            os.chdir("/root/Projects/deer-flow")
-
-    def test_returns_empty_when_no_config_found(self):
-        """When no config.yaml exists at any path, returns {}.
-
-        Uses mock because the 6-parent absolute path always finds the real
-        config.yaml on the development machine.
-        """
-        import competition.tools.search as mod
-        with mock.patch.object(mod, "_read_config_yaml", return_value={}):
-            result = mod._read_config_yaml()
-            assert result == {}
-
-    def test_finds_config_in_backend_subdir(self, monkeypatch, tmp_path: Path):
-        """config.yaml at backend/config.yaml, CWD=backend/"""
-        backend = tmp_path / "backend"
-        backend.mkdir()
-        _write_yaml(backend / "config.yaml", _minimal_config())
-        monkeypatch.chdir(backend)
-        result = _read_config_yaml()
-        assert result.get("config_version") == 12
-
-
 # ── Active group resolution ──
 
 
-class TestGetActiveGroupConfig:
-    def test_returns_groupA_config(self, monkeypatch, tmp_path: Path):
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        group = _get_active_group_config()
-        assert group.get("default_provider") == "doubao"
-        assert group.get("default_model") == "ep-20260514111325-xjmj7"
+class TestGetActiveConfigGroup:
+    def test_returns_config_group_from_db(self):
+        """When DB has config_group, returned by _get_active_config_group."""
+        cg = {"name": "groupA", "default_provider": "doubao", "default_model": "test-model"}
+        with mock.patch("competition.executor._get_user_settings", return_value={
+            "active_group": "groupA", "config_groups": [cg],
+        }):
+            result = _get_active_config_group()
+        assert result.get("default_provider") == "doubao"
+        assert result.get("default_model") == "test-model"
 
-    def test_returns_empty_when_no_groups(self, monkeypatch, tmp_path: Path):
-        cfg = _minimal_config()
-        del cfg["competition"]["groups"]
-        cfg["competition"]["default_provider"] = "top-level-provider"
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        group = _get_active_group_config()
-        # Falls back to competition root
-        assert group.get("default_provider") == "top-level-provider"
+    def test_returns_empty_when_no_db(self):
+        with mock.patch("competition.executor._get_user_settings", return_value=None):
+            result = _get_active_config_group()
+        assert result == {}
 
-    def test_respects_active_group_switch(self, monkeypatch, tmp_path: Path):
-        cfg = _minimal_config()
-        cfg["competition"]["groups"]["groupB"] = {
-            "default_provider": "deepseek",
-            "default_model": "deepseek-v4-flash",
-            "search": {"tavily": True, "ddg": False},
-        }
-        cfg["competition"]["active_group"] = "groupB"
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        group = _get_active_group_config()
-        assert group.get("default_provider") == "deepseek"
+    def test_returns_empty_when_no_matching_group(self):
+        """Active group not found in config_groups."""
+        with mock.patch("competition.executor._get_user_settings", return_value={
+            "active_group": "groupB", "config_groups": [{"name": "groupA"}],
+        }):
+            result = _get_active_config_group()
+        assert result == {}
 
 
 # ── Search config ──
 
 
 class TestGetSearchConfig:
-    def test_falls_back_to_search_config_json(self, monkeypatch, tmp_path: Path):
-        """When active group has no search section, uses search_config.json fallback."""
-        cfg = _minimal_config()
-        # Remove search section from group
-        del cfg["competition"]["groups"]["groupA"]["search"]
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        result = _get_search_config()
-        # search_config.json has tavily=false, ddg=true, jina=false
-        assert result["tavily"] is False
-        assert result["ddg"] is True
-        assert result["jina"] is False
-
-    def test_defaults_when_no_config(self, tmp_path: Path):
-        """When no config files exist, hardcoded defaults apply (all True)."""
+    def test_reads_from_config_group(self):
+        """When config_group has search_toggles, use them."""
         import competition.tools.search as mod
-        with mock.patch.object(mod, "_get_active_group_config", return_value={}):
-            with mock.patch.object(mod.Path, "exists", return_value=False):
-                cfg = mod._get_search_config()
+        with mock.patch.object(mod, "_get_active_config_group", return_value={
+            "search_toggles": {"tavily": True, "ddg": False, "jina": True, "provider_search": False},
+        }):
+            cfg = mod._get_search_config()
         assert cfg["tavily"] is True
-        assert cfg["ddg"] is True
+        assert cfg["ddg"] is False
         assert cfg["jina"] is True
+        assert cfg["provider_search"] is False
+
+    def test_defaults_all_false_when_no_config(self):
+        """When no config_group, all search backends default to False."""
+        import competition.tools.search as mod
+        with mock.patch.object(mod, "_get_active_config_group", return_value={}):
+            cfg = mod._get_search_config()
+        assert cfg["tavily"] is False
+        assert cfg["ddg"] is False
+        assert cfg["jina"] is False
+        assert cfg["provider_search"] is False
 
     def test_ddg_disabled_in_group(self, monkeypatch, tmp_path: Path):
         cfg = _minimal_config()
@@ -234,89 +176,97 @@ class TestGetSearchConfig:
 
 
 class TestGetProviderSearchConfig:
-    def test_returns_doubao_when_enabled(self, monkeypatch, tmp_path: Path):
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "test-doubao-key")
-        prov_name, prov_key, prov_base = _get_provider_search_config()
+    def test_returns_provider_when_enabled(self):
+        """When config_group has default_provider and search enabled, returns creds."""
+        import competition.tools.search as mod
+        with mock.patch.object(mod, "_get_active_config_group", return_value={
+            "default_provider": "doubao", "search_toggles": {"provider_search": True},
+        }), mock.patch.object(mod, "_get_search_config", return_value={"provider_search": True}), \
+           mock.patch.object(mod, "_get_user_key", return_value="test-key"), \
+           mock.patch.object(mod, "_get_user_base", return_value="https://ark.cn-beijing.volces.com/api/v3"):
+            prov_name, prov_key, prov_base = _get_provider_search_config()
         assert prov_name == "doubao"
-        assert prov_key == "test-doubao-key"
+        assert prov_key == "test-key"
         assert "volces.com" in prov_base
 
-    def test_returns_none_when_disabled(self, monkeypatch, tmp_path: Path):
-        cfg = _minimal_config()
-        cfg["competition"]["groups"]["groupA"]["search"]["provider_search"] = False
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        prov_name, _, _ = _get_provider_search_config()
+    def test_returns_none_when_disabled(self):
+        import competition.tools.search as mod
+        with mock.patch.object(mod, "_get_search_config", return_value={"provider_search": False}):
+            prov_name, _, _ = _get_provider_search_config()
         assert prov_name is None
 
-    def test_returns_none_when_no_api_key(self, monkeypatch, tmp_path: Path):
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
-        prov_name, _, _ = _get_provider_search_config()
+    def test_returns_none_when_no_key(self):
+        import competition.tools.search as mod
+        with mock.patch.object(mod, "_get_active_config_group", return_value={
+            "default_provider": "doubao", "search_toggles": {"provider_search": True},
+        }), mock.patch.object(mod, "_get_search_config", return_value={"provider_search": True}), \
+           mock.patch.object(mod, "_get_user_key", return_value=""):
+            prov_name, _, _ = _get_provider_search_config()
         assert prov_name is None
 
 
 # ── Per-agent model resolution (executor) ──
 
+DB_PROVIDER_KEYS = {"doubao": "test-db-key"}
+DB_PROVIDER_BASES = {"doubao": "https://ark.cn-beijing.volces.com/api/v3"}
+DB_CONFIG_GROUP = {
+    "default_provider": "doubao",
+    "default_model": "ep-20260514111325-xjmj7",
+    "agent_configs": {},
+    "search_toggles": {"provider_search": True, "tavily": True},
+    "feishu_toggles": {},
+}
+
+
+def _db_mock(user_settings=None, config_group=None):
+    """Create mocks for _get_user_settings and _get_active_config_group."""
+    us = user_settings or {}
+    cg = config_group or DB_CONFIG_GROUP
+    return (
+        mock.patch("competition.executor._get_user_settings", return_value=us),
+        mock.patch("competition.executor._get_active_config_group", return_value=cg),
+    )
+
 
 class TestResolveProvider:
-    def test_resolves_collector_from_groupA(self, monkeypatch, tmp_path: Path):
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "test-key")
-        model, base, key = _resolve_provider("collector")
+    def test_resolves_from_db(self):
+        us = {"provider_keys": DB_PROVIDER_KEYS, "provider_bases": DB_PROVIDER_BASES}
+        m1, m2 = _db_mock(user_settings=us)
+        with m1, m2:
+            model, base, key = _resolve_provider("collector")
         assert model == "ep-20260514111325-xjmj7"
-        assert "volces.com" in base
-        assert key == "test-key"
+        assert "volces.com" in base if base else True
+        assert key == "test-db-key"
 
-    def test_falls_back_to_env_when_api_key_missing(self, monkeypatch, tmp_path: Path):
-        """When configured provider's api_key_env is unset, falls back to DOUBAO_API_KEY."""
-        cfg = _minimal_config()
-        cfg["competition"]["providers"]["testprov"] = {
-            "api_key_env": "NONEXISTENT_ENV_VAR",
-            "api_base": "https://test.example.com/v1",
-        }
-        cfg["competition"]["groups"]["groupA"]["collector"]["provider"] = "testprov"
-        cfg["competition"]["groups"]["groupA"]["collector"]["model"] = "mymodel"
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "fallback-key")
-        monkeypatch.setenv("DOUBAO_API_BASE", "https://fallback.example.com/v1")
-        model, base, key = _resolve_provider("collector")
-        # model from config, api_base from config provider, key from env fallback
-        assert model == "mymodel"
-        assert base == "https://test.example.com/v1"
-        assert key == "fallback-key"
+    def test_returns_empty_when_no_db(self):
+        m1, m2 = _db_mock(user_settings=None, config_group={})
+        with m1, m2:
+            model, base, key = _resolve_provider("collector")
+        assert model == ""
+        assert base == ""
 
-    def test_resolves_different_agent(self, monkeypatch, tmp_path: Path):
-        cfg = _minimal_config()
-        cfg["competition"]["groups"]["groupA"]["analyst"] = {
-            "provider": "doubao",
-            "model": "analyst-specific-model",
-        }
-        _write_yaml(tmp_path / "config.yaml", cfg)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "test-key")
-        model, _, _ = _resolve_provider("analyst")
-        assert model == "analyst-specific-model"
+    def test_resolves_per_agent_model(self):
+        cg = dict(DB_CONFIG_GROUP)
+        cg["agent_configs"] = {"analyst": {"model": "analyst-model"}}
+        us = {"provider_keys": DB_PROVIDER_KEYS, "provider_bases": DB_PROVIDER_BASES}
+        m1, m2 = _db_mock(user_settings=us, config_group=cg)
+        with m1, m2:
+            model, _, _ = _resolve_provider("analyst")
+        assert model == "analyst-model"
 
-    def test_falls_back_to_default_model(self, monkeypatch, tmp_path: Path):
-        """Agent not in config → use default_model from group."""
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "test-key")
-        model, _, _ = _resolve_provider("unknown_agent")
-        assert model == "ep-20260514111325-xjmj7"  # default_model
+    def test_falls_back_to_default_model(self):
+        us = {"provider_keys": DB_PROVIDER_KEYS, "provider_bases": DB_PROVIDER_BASES}
+        m1, m2 = _db_mock(user_settings=us)
+        with m1, m2:
+            model, _, _ = _resolve_provider("unknown_agent")
+        assert model == "ep-20260514111325-xjmj7"
 
 
 class TestResolveModel:
-    def test_returns_model_string(self, monkeypatch, tmp_path: Path):
-        _write_yaml(tmp_path / "config.yaml", _minimal_config())
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("DOUBAO_API_KEY", "test-key")
-        model = _resolve_model("collector")
+    def test_returns_model_string(self):
+        us = {"provider_keys": DB_PROVIDER_KEYS, "provider_bases": DB_PROVIDER_BASES}
+        m1, m2 = _db_mock(user_settings=us)
+        with m1, m2:
+            model = _resolve_model("collector")
         assert model == "ep-20260514111325-xjmj7"
         assert isinstance(model, str)

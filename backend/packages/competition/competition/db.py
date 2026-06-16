@@ -109,6 +109,28 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             fetched_at TEXT NOT NULL
         );
     """)
+
+    # User settings: per-user config overrides (API keys, model, search toggles, etc.)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id TEXT PRIMARY KEY,
+            active_group TEXT DEFAULT 'groupA',
+            default_model TEXT DEFAULT '',
+            provider_keys TEXT DEFAULT '{}',
+            provider_bases TEXT DEFAULT '{}',
+            agent_configs TEXT DEFAULT '{}',
+            search_toggles TEXT DEFAULT '{}',
+            feishu_config TEXT DEFAULT '{}',
+            config_groups TEXT DEFAULT '[]',
+            updated_at TEXT
+        );
+    """)
+    # Migrations
+    for col, default in [("provider_bases", "'{}'"), ("config_groups", "'[]'")]:
+        try:
+            conn.execute(f"ALTER TABLE user_settings ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     return conn
 
@@ -496,14 +518,27 @@ def delete_phase_history(thread_id: str, conn: sqlite3.Connection | None = None)
         conn.close()
 
 
-def list_history(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """List recent analysis history entries (§18: +status +industry +pinned +title)."""
-    rows = conn.execute(
-        "SELECT thread_id, user_id, query, products, industry, persona, status, "
-        "current_node, progress, created_at, key_findings, metrics, pinned, title "
-        "FROM analysis_history ORDER BY pinned DESC, created_at DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+def list_history(conn: sqlite3.Connection, limit: int = 10, user_id: str | None = None) -> list[dict]:
+    """List recent analysis history entries.
+
+    When user_id is provided and not 'default', filters to that user only.
+    The 'default' user sees all entries (backward compatible).
+    """
+    if user_id and user_id != "default":
+        rows = conn.execute(
+            "SELECT thread_id, user_id, query, products, industry, persona, status, "
+            "current_node, progress, created_at, key_findings, metrics, pinned, title "
+            "FROM analysis_history WHERE user_id IN (?, 'default') "
+            "ORDER BY pinned DESC, created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT thread_id, user_id, query, products, industry, persona, status, "
+            "current_node, progress, created_at, key_findings, metrics, pinned, title "
+            "FROM analysis_history ORDER BY pinned DESC, created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     return [
         {
             "thread_id": row[0], "user_id": row[1], "query": row[2],
@@ -556,3 +591,93 @@ def get_content(content_ref: str, conn: sqlite3.Connection | None = None) -> dic
         "content_ref": row[0], "url": row[1], "full_text": row[2],
         "char_count": row[3], "fetched_at": row[4],
     }
+
+
+# ── User Settings (per-user config overrides) ──
+
+
+def get_user_settings(user_id: str, conn: sqlite3.Connection | None = None) -> dict:
+    """Get per-user settings. Returns defaults if no settings saved yet."""
+    import json as _json
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    row = conn.execute(
+        "SELECT active_group, default_model, provider_keys, provider_bases, agent_configs, search_toggles, feishu_config, config_groups, updated_at "
+        "FROM user_settings WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if close_conn:
+        conn.close()
+    if row is None:
+        return {
+            "active_group": "groupA", "default_model": "",
+            "provider_keys": {}, "provider_bases": {},
+            "agent_configs": {},
+            "search_toggles": {}, "feishu_config": {},
+            "config_groups": [],
+        }
+    return {
+        "active_group": row[0] or "groupA",
+        "default_model": row[1] or "",
+        "provider_keys": _json.loads(row[2]) if row[2] else {},
+        "provider_bases": _json.loads(row[3]) if row[3] else {},
+        "agent_configs": _json.loads(row[4]) if row[4] else {},
+        "search_toggles": _json.loads(row[5]) if row[5] else {},
+        "feishu_config": _json.loads(row[6]) if row[6] else {},
+        "config_groups": _json.loads(row[7]) if row[7] else [],
+        "updated_at": row[8] or "",
+    }
+
+
+def save_user_settings(user_id: str, settings: dict, conn: sqlite3.Connection | None = None) -> bool:
+    """Save per-user settings (upsert)."""
+    import json as _json
+    from datetime import UTC, datetime
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        """INSERT INTO user_settings (user_id, active_group, default_model, provider_keys, provider_bases, agent_configs, search_toggles, feishu_config, config_groups, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             active_group=excluded.active_group, default_model=excluded.default_model,
+             provider_keys=excluded.provider_keys, provider_bases=excluded.provider_bases,
+             agent_configs=excluded.agent_configs,
+             search_toggles=excluded.search_toggles, feishu_config=excluded.feishu_config,
+             config_groups=excluded.config_groups,
+             updated_at=excluded.updated_at""",
+        (
+            user_id,
+            settings.get("active_group", "groupA"),
+            settings.get("default_model", ""),
+            _json.dumps(settings.get("provider_keys", {}), ensure_ascii=False),
+            _json.dumps(settings.get("provider_bases", {}), ensure_ascii=False),
+            _json.dumps(settings.get("agent_configs", {}), ensure_ascii=False),
+            _json.dumps(settings.get("search_toggles", {}), ensure_ascii=False),
+            _json.dumps(settings.get("feishu_config", {}), ensure_ascii=False),
+            _json.dumps(settings.get("config_groups", []), ensure_ascii=False),
+            now,
+        ),
+    )
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return True
+
+
+def migrate_default_data(target_user_id: str, conn: sqlite3.Connection | None = None) -> int:
+    """Assign all 'default' user data to target_user_id. Returns number of rows updated."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    cursor = conn.execute(
+        "UPDATE analysis_history SET user_id = ? WHERE user_id = 'default'",
+        (target_user_id,),
+    )
+    count = cursor.rowcount
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return count

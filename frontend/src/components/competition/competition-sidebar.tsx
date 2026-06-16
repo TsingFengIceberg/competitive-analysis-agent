@@ -1,8 +1,8 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { Plus, LogOut, Settings } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 
 import {
@@ -23,6 +23,7 @@ import { CompetitionHeader } from "./competition-header";
 function SidebarUserFooter() {
   const [userId, setUserId] = useState<string | null>(null);
   const { open: isSidebarOpen } = useSidebar();
+  const router = useRouter();
 
   useEffect(() => {
     fetch("/api/competition/me")
@@ -31,9 +32,14 @@ function SidebarUserFooter() {
       .catch(() => undefined);
   }, []);
 
+  const handleLogout = async () => {
+    await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
+    router.push("/login");
+  };
+
   if (!isSidebarOpen) {
     return (
-      <div className="flex justify-center py-2">
+      <div className="flex flex-col items-center gap-1 py-2">
         <div className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
           {userId ? userId.slice(0, 2).toUpperCase() : "?"}
         </div>
@@ -42,9 +48,17 @@ function SidebarUserFooter() {
   }
 
   return (
-    <div className="px-3 py-2 text-[10px] text-muted-foreground/50 space-y-0.5">
-      {userId && <div>👤 {userId}</div>}
-      <div className="font-mono">
+    <div className="px-3 py-2 text-xs space-y-1">
+      {userId && <div className="text-muted-foreground">👤 {userId}</div>}
+      <Link href="/competition/settings" className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
+        <Settings size={12} />
+        <span>设置</span>
+      </Link>
+      <button onClick={handleLogout} className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
+        <LogOut size={12} />
+        <span>退出</span>
+      </button>
+      <div className="font-mono text-[10px] text-muted-foreground/50">
         build {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") ?? "dev"}
       </div>
     </div>

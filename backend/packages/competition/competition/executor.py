@@ -43,6 +43,49 @@ def clear_thread_context() -> None:
     _tl.thread_id = None
 
 
+def set_user_context(user_id: str, user_settings: dict | None = None) -> None:
+    """Set current user context for per-user settings override."""
+    _tl.current_user_id = user_id
+    _tl.current_user_settings = user_settings
+
+
+def clear_user_context() -> None:
+    """Clear user context."""
+    _tl.current_user_id = None
+    _tl.current_user_settings = None
+
+
+def _get_user_settings() -> dict | None:
+    """Get current user's settings (lazily loaded from DB if needed)."""
+    settings = getattr(_tl, "current_user_settings", None)
+    if settings is not None:
+        return settings
+    user_id = getattr(_tl, "current_user_id", None)
+    if not user_id or user_id == "default":
+        return None
+    try:
+        from competition.db import get_user_settings as db_get_user_settings
+        settings = db_get_user_settings(user_id)
+        _tl.current_user_settings = settings
+        return settings
+    except Exception:
+        return None
+
+
+def _get_active_config_group() -> dict:
+    """Get the active config_group from user_settings, or empty dict."""
+    us = _get_user_settings()
+    if not us:
+        return {}
+    active = us.get("active_group", "groupA")
+    groups = us.get("config_groups")
+    if isinstance(groups, list):
+        for g in groups:
+            if isinstance(g, dict) and g.get("name") == active:
+                return g
+    return {}
+
+
 def _thread_prefix() -> str:
     """Return a log prefix like '[comp-abc123] ' if context is set."""
     tid = getattr(_tl, "thread_id", None)
@@ -150,51 +193,42 @@ def _resolve_model(agent_name: str) -> str:
 
 
 def _resolve_provider(agent_name: str) -> tuple[str, str, str]:
-    """Resolve (model, api_base, api_key) for an agent from config.yaml + env.
-
-    Supports configuration groups: if competition.active_group is set,
-    reads from competition.groups.{active_group}; otherwise reads from
-    competition root (backward compatible).
-    """
-    import os as _os
-    default_base = _os.environ.get("DOUBAO_API_BASE", "")
-    default_key = _os.environ.get("DOUBAO_API_KEY", "")
+    """Resolve (model, api_base, api_key) for an agent from DB config_group only."""
 
     if not agent_name:
-        return "", default_base, default_key
+        return "", "", ""
 
     try:
-        import yaml
-        from pathlib import Path
-        for p in (Path("config.yaml"), Path("backend/config.yaml"),
-                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
-                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
-            if not p.exists():
-                continue
-            cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-            comp = cfg.get("competition") or {}
+        user_settings = _get_user_settings()
+        config_group = _get_active_config_group()
 
-            # Resolve active group
-            active = comp.get("active_group") or ""
-            groups = comp.get("groups") or {}
-            group_cfg = groups.get(active, {}) if active and groups else comp
+        if user_settings and config_group:
+            ag = agent_name.lower()
+            provider_name = str(
+                (config_group.get("agent_configs", {}) or {}).get(ag, {}).get("provider")
+                or config_group.get("default_provider") or ""
+            )
+            if not provider_name:
+                return "", "", ""
 
-            agent_cfg = group_cfg.get(agent_name.lower()) or {}
-            provider_name = agent_cfg.get("provider") or group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+            user_keys = user_settings.get("provider_keys", {}) or {}
+            api_key = (user_keys.get(provider_name) if isinstance(user_keys, dict) else "") or ""
+            if not api_key:
+                return "", "", ""
 
-            providers = comp.get("providers") or {}
-            prov = providers.get(provider_name) or {}
-            key_env = prov.get("api_key_env", "DOUBAO_API_KEY")
-            api_base = prov.get("api_base", "") or default_base
-            model = agent_cfg.get("model") or group_cfg.get("default_model") or comp.get("default_model") or ""
-            api_key = _os.environ.get(key_env, "") or default_key
+            bases = user_settings.get("provider_bases", {}) or {}
+            api_base = (bases.get(provider_name) if isinstance(bases, dict) else "") or ""
 
-            if api_key and api_base:
-                return str(model), str(api_base), str(api_key)
+            model = str(
+                (config_group.get("agent_configs", {}) or {}).get(ag, {}).get("model")
+                or config_group.get("default_model") or ""
+            )
+
+            return model, api_base, api_key
     except Exception:
         pass
 
-    return "", default_base, default_key
+    return "", "", ""
 
 
 def execute_agent(

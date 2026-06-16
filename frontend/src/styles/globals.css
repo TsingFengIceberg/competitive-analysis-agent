@@ -9,9 +9,10 @@
 @source inline("leading-{none,tight,snug,normal,relaxed,loose}");
 
 /* Spacing */
-@source inline("m{t,b,l,r,x,y}-{0,1,2,3,4,5,6,8,10,12,16,20,24}");
-@source inline("p{t,b,l,r,x,y}-{0,1,2,3,4,5,6,8,10,12,16,20,24}");
-@source inline("space-{x,y}-{1,2,3,4,5,6,8}");
+@source inline("m{t,b,l,r,x,y}-{0,0.5,1,1.5,2,2.5,3,3.5,4,5,6,8,10,12,16,20,24}");
+@source inline("p{t,b,l,r,x,y}-{0,0.5,1,1.5,2,2.5,3,3.5,4,5,6,8,10,12,16,20,24}");
+@source inline("space-{x,y}-{0.5,1,1.5,2,2.5,3,3.5,4,5,6,8}");
+@source inline("gap-{0,0.5,1,1.5,2,2.5,3,3.5,4,5,6,8}");
 
 /* List */
 @source inline("list-{disc,decimal,none,inside,outside}");
