@@ -55,7 +55,7 @@ def writer_node(state: dict) -> dict:
     target_products = state.get("target_products", [])
     hitl_focus, whatif_comment_raw, hitl_action = _get_hitl_focus(state)
     # Only use comment as what-if scenario when action is explicitly "rewrite"
-    whatif_comment = whatif_comment_raw if hitl_action == "rewrite" else ""
+    whatif_comment = ""  # what-if temporarily disabled
 
     # Build report sections — v4: schema_profile controls deep sections
     quality = verdict.get("quality_summary", {})
@@ -217,20 +217,7 @@ def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: l
             "source_ids": [], "chart_path": None, "subsections": None,
         })
 
-    # What-if section — always present, LLM-generated when user submitted a what-if via rewrite
-    whatif_content = _generate_whatif(whatif_comment, analysis, products) if whatif_comment else ""
-    if whatif_content:
-        sections.append({
-            "id": "sec-whatif", "title": "What-if 推演",
-            "content": whatif_content, "content_type": "text",
-            "source_ids": [], "chart_path": None, "subsections": None,
-        })
-    else:
-        sections.append({
-            "id": "sec-whatif", "title": "What-if 推演",
-            "content": "输入假设条件，系统将在现有数据上做推演（不走 Collector，30 秒出结论）",
-            "content_type": "what-if-form", "source_ids": [], "chart_path": None, "subsections": None,
-        })
+    # What-if section — temporarily disabled
 
     # 6. Recommendations (required)
     rec_content: str

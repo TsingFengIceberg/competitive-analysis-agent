@@ -471,6 +471,14 @@ def _measure_improvement(prev_gaps: list[dict], current_gaps: list[dict]) -> flo
 def _build_quality_summary(points: list[dict], gaps: list[dict], improvement: float) -> dict:
     from urllib.parse import urlparse
 
+    def _parse_domain(url: str) -> str:
+        """Extract domain from a URL, normalizing missing schemes."""
+        if not url:
+            return "unknown"
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return urlparse(url).netloc or "unknown"
+
     sources = set()
     for dp in points:
         url = dp.get("source_url", "")
@@ -482,18 +490,25 @@ def _build_quality_summary(points: list[dict], gaps: list[dict], improvement: fl
     domain_map: dict[tuple, set[str]] = {}  # (product, category) -> {domains}
     for dp in points:
         key = (dp.get("product", ""), dp.get("category", ""))
-        url = dp.get("source_url", "")
-        domain = urlparse(url).netloc if url else "unknown"
+        domain = _parse_domain(dp.get("source_url", ""))
         domain_map.setdefault(key, set()).add(domain)
 
     multi = 0
     for dp in points:
         key = (dp.get("product", ""), dp.get("category", ""))
-        url = dp.get("source_url", "")
-        domain = urlparse(url).netloc if url else "unknown"
+        domain = _parse_domain(dp.get("source_url", ""))
         all_domains = domain_map.get(key, set())
         if len(all_domains - {domain}) >= 1:
             multi += 1
+
+    logger.info("Cross-validation: %d data points, %d unique (product,category) keys, %d multi-source",
+                 len(points), len(domain_map), multi)
+    domain_breakdown = {f"{k[0]}|{k[1]}": list(v) for k, v in domain_map.items()}
+    logger.info("Cross-validation domain map: %s", domain_breakdown)
+    if len(points) > 0 and multi == 0:
+        sample_urls = [dp.get("source_url", "")[:80] for dp in points[:5]]
+        sample_keys = [(dp.get("product", ""), dp.get("category", "")) for dp in points[:5]]
+        logger.warning("Cross-validation is 0 — sample URLs: %s, sample keys: %s", sample_urls, sample_keys)
 
     single = len(points) - multi
     verified = len(points) - len([g for g in gaps if g.get("type") == "fact_error"])

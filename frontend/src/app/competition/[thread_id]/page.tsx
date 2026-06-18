@@ -50,11 +50,11 @@ const _IR_LABELS: Record<string, string> = {
 };
 
 function resolvePhaseInfo(phaseKey: string): { label: string; icon: string } {
-  const irMatch = phaseKey.match(/^(.+?)_ir\d+$/);
-  if (irMatch) {
-    const base = irMatch[1]!;
+  const reworkMatch = phaseKey.match(/^(.+?)_(?:ir|r)\d+$/);
+  if (reworkMatch) {
+    const base = reworkMatch[1]!;
     const baseInfo = PHASE_INFO[base] ?? { label: base, icon: "⚙️" };
-    return { label: _IR_LABELS[base] ?? baseInfo.label, icon: baseInfo.icon };
+    return { label: phaseKey.includes("_ir") ? (_IR_LABELS[base] ?? baseInfo.label) : baseInfo.label, icon: baseInfo.icon };
   }
   return PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "⚙️" };
 }
@@ -880,20 +880,21 @@ export default function CompetitionPage() {
         // Restore phase bubbles from persisted DB data (fixes content loss on history switching)
         if (report.phases && report.phases.length > 0) {
           setPhaseMap((prev) => {
-            if (prev.size > 0) return prev; // already populated by SSE or cache
-            const restored = new Map<string, PhaseState>();
+            const restored = new Map<string, PhaseState>(prev);
             for (const p of report.phases) {
               const info = resolvePhaseInfo(p.phase_key);
+              const existing = restored.get(p.phase_key);
+              if (existing?.status === "running" && p.status !== "completed") continue;
               restored.set(p.phase_key, {
                 key: p.phase_key,
-                label: p.label || info.label,
+                label: info.label,
                 icon: p.icon || info.icon,
                 status: (p.status === "completed" ? "completed" : "running") as "running" | "completed",
-                startTime: p.start_time ? new Date(p.start_time).getTime() : Date.now(),
-                endTime: p.end_time ? new Date(p.end_time).getTime() : null,
+                startTime: p.start_time ? new Date(p.start_time).getTime() : (existing?.startTime ?? Date.now()),
+                endTime: p.end_time ? new Date(p.end_time).getTime() : (existing?.endTime ?? null),
                 tokens: p.tokens,
-                content: p.content || {},
-                details: p.details || [],
+                content: p.content || existing?.content || {},
+                details: p.details || existing?.details || [],
               });
             }
             return restored;

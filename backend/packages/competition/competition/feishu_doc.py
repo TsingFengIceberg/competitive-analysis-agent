@@ -174,7 +174,10 @@ def export_report_to_doc(title: str, markdown: str) -> str | None:
 
 
 def _get_feishu_config() -> dict:
-    """Read feishu toggles from DB config_group only."""
+    """Read feishu toggles from DB or config.yaml."""
+    from competition.config_mode import is_file_mode
+    if is_file_mode():
+        return _get_feishu_config_from_file()
     try:
         from competition.executor import _get_active_config_group
         cg = _get_active_config_group()
@@ -187,7 +190,13 @@ def _get_feishu_config() -> dict:
 
 
 def _get_feishu_credentials() -> dict:
-    """Get feishu credentials from DB only."""
+    """Get feishu credentials from DB or env."""
+    from competition.config_mode import is_file_mode
+    if is_file_mode():
+        return {"app_id": os.environ.get("FEISHU_APP_ID", ""),
+                "app_secret": os.environ.get("FEISHU_APP_SECRET", ""),
+                "notify_open_id": os.environ.get("FEISHU_NOTIFY_OPEN_ID", ""),
+                "tenant": os.environ.get("FEISHU_TENANT", "")}
     try:
         from competition.executor import _get_user_settings, _get_active_config_group
         us = _get_user_settings() or {}
@@ -212,6 +221,26 @@ def _get_feishu_credentials() -> dict:
                 "notify_open_id": p.get("notify_open_id", "") or "", "tenant": p.get("tenant", "") or ""}
     return {"app_id": fc.get("app_id", "") or "", "app_secret": fc.get("app_secret", "") or "",
             "notify_open_id": fc.get("notify_open_id", "") or "", "tenant": fc.get("tenant", "") or ""}
+
+
+def _get_feishu_config_from_file() -> dict:
+    """Read feishu from config.yaml (file mode)."""
+    try:
+        import yaml
+        from pathlib import Path
+        for p in (Path("config.yaml"), Path("backend/config.yaml"),
+                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+            if p.exists():
+                cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                comp = cfg.get("competition") or {}
+                active = comp.get("active_group") or ""
+                groups = comp.get("groups") or {}
+                group_cfg = groups.get(active, {}) if active and groups else comp
+                return group_cfg.get("feishu") or comp.get("feishu") or {}
+    except Exception:
+        pass
+    return {}
 
 
 def is_doc_export_enabled() -> bool:

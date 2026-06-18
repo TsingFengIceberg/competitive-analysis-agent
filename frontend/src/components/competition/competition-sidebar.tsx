@@ -21,27 +21,31 @@ import { CompetitionHistoryList } from "./competition-history-list";
 import { CompetitionHeader } from "./competition-header";
 
 function SidebarUserFooter() {
-  const [userId, setUserId] = useState<string | null>(null);
+  const [userLabel, setUserLabel] = useState<string | null>(null);
   const { open: isSidebarOpen } = useSidebar();
   const router = useRouter();
 
   useEffect(() => {
     fetch("/api/competition/me")
       .then((r) => r.json())
-      .then((d) => { if (d.authenticated) setUserId(d.user_id ?? null); })
+      .then((d) => {
+        if (d.authenticated) setUserLabel(d.email || d.username || d.user_id || null);
+      })
       .catch(() => undefined);
   }, []);
 
   const handleLogout = async () => {
     await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
-    router.push("/login");
+    router.push("/auth/login?redirect=/competition/new");
   };
+
+  const initials = userLabel ? userLabel.slice(0, 2).toUpperCase() : "?";
 
   if (!isSidebarOpen) {
     return (
       <div className="flex flex-col items-center gap-1 py-2">
         <div className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
-          {userId ? userId.slice(0, 2).toUpperCase() : "?"}
+          {initials}
         </div>
       </div>
     );
@@ -49,7 +53,7 @@ function SidebarUserFooter() {
 
   return (
     <div className="px-3 py-2 text-xs space-y-1">
-      {userId && <div className="text-muted-foreground">👤 {userId}</div>}
+      {userLabel && <div className="truncate text-muted-foreground" title={userLabel}>👤 {userLabel}</div>}
       <Link href="/competition/settings" className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
         <Settings size={12} />
         <span>设置</span>

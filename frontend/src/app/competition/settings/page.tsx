@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Save, Database, Eye, EyeOff, Copy, Check, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Database, Eye, EyeOff, Copy, Check, Plus, Trash2, ChevronDown, ChevronRight, Circle, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface LlmProvider { name: string; key: string; base: string; }
 interface SearchProvider { name: string; key: string; }
@@ -23,7 +24,7 @@ interface ConfigGroup {
   agent_configs: Record<string, Record<string, string | number>>;
 }
 
-const AGENTS = ["orchestrator", "collector", "analyst", "reviewer", "writer"];
+const AGENTS = ["orchestrator", "collector", "analyst", "reviewer", "writer", "hitl"];
 
 const FEISHU_TOGGLES = [
   { key: "notify_enabled", label: "分析完成通知" },
@@ -82,6 +83,9 @@ export default function SettingsPage() {
   const [feishuProviders, setFeishuProviders] = useState<FeishuProvider[]>([]);
   const [activeGroup, setActiveGroup] = useState("");
   const [configGroups, setConfigGroups] = useState<ConfigGroup[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["llm","tavily","jina","feishu"]));
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch("/api/competition/me").then((r) => r.json()).then((d) => {
@@ -185,6 +189,17 @@ export default function SettingsPage() {
     setMigrating(false);
   };
 
+  const toggleExpand = (name: string) => {
+    const next = new Set(expandedGroups);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    setExpandedGroups(next);
+  };
+  const toggleSection = (name: string) => {
+    const next = new Set(expandedSections);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    setExpandedSections(next);
+  };
+
   if (loading) return <div className="flex items-center justify-center h-full"><div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>;
 
   const llmNames = llmProviders.map((p) => p.name).filter(Boolean);
@@ -202,14 +217,17 @@ export default function SettingsPage() {
       <p className="text-sm text-muted-foreground">此处设置会覆盖 config.yaml 和 .env 中的默认值。仅当前账号可见。</p>
 
       {/* API 凭证 */}
+      <h2 className="font-semibold">API 凭证</h2>
       <section className="rounded-lg border p-4 space-y-6">
-        <h2 className="font-semibold">API 凭证</h2>
         <div className="divide-y divide-border">
 
           {/* LLM */}
           <div className="space-y-3 pb-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">LLM Provider <span className="text-xs font-normal text-muted-foreground">(OpenAI 格式)</span></h3>
+              <button type="button" onClick={() => toggleSection("llm")} className="flex items-center gap-1 text-muted-foreground hover:text-foreground">
+                {expandedSections.has("llm") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <h3 className="text-sm font-medium">LLM Provider <span className="text-xs font-normal text-muted-foreground">(OpenAI 格式)</span></h3>
+              </button>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setLlmProviders([...llmProviders, { name: "", key: "", base: "" }])}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Plus size={14} />添加</button>
@@ -217,15 +235,23 @@ export default function SettingsPage() {
                   className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"><Save size={12} />保存</button>
               </div>
             </div>
-            {llmProviders.map((prov, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-md border bg-muted/30 p-3">
-                <div className="flex-1 space-y-2">
-                  <label className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
-                    <TextInput value={prov.name} onChange={(v) => { const n = [...llmProviders]; n[i] = { name: v, key: prov.key, base: prov.base }; setLlmProviders(n); }} placeholder="Provider 名称" />
-                    <button type="button" onClick={() => setLlmProviders(llmProviders.filter((_, j) => j !== i))}
-                      className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
-                  </label>
+            {expandedSections.has("llm") && llmProviders.map((prov, i) => {
+              const cardKey = `llm-${i}`;
+              const cardExpanded = expandedProviders.has(cardKey);
+              return (
+              <div key={i} className="rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { const next = new Set(expandedProviders); if (cardExpanded) next.delete(cardKey); else next.add(cardKey); setExpandedProviders(next); }}
+                    className="text-muted-foreground hover:text-foreground">
+                    {cardExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
+                  <TextInput value={prov.name} onChange={(v) => { const n = [...llmProviders]; n[i] = { name: v, key: prov.key, base: prov.base }; setLlmProviders(n); }} placeholder="Provider 名称" />
+                  <button type="button" onClick={() => setLlmProviders(llmProviders.filter((_, j) => j !== i))}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
+                </div>
+                {cardExpanded && (
+                <div className="mt-2 space-y-2 pl-8">
                   <label className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground w-10 shrink-0">Key</span>
                     <SecretInput value={prov.key} onChange={(v) => { const n = [...llmProviders]; n[i] = { name: prov.name, key: v, base: prov.base }; setLlmProviders(n); }} placeholder="API Key" />
@@ -235,14 +261,19 @@ export default function SettingsPage() {
                     <TextInput value={prov.base} onChange={(v) => { const n = [...llmProviders]; n[i] = { name: prov.name, key: prov.key, base: v }; setLlmProviders(n); }} placeholder="Base URL" />
                   </label>
                 </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Tavily */}
           <div className="space-y-3 py-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">Tavily</h3>
+              <button type="button" onClick={() => toggleSection("tavily")} className="flex items-center gap-1 text-muted-foreground hover:text-foreground">
+                {expandedSections.has("tavily") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <h3 className="text-sm font-medium">Tavily</h3>
+              </button>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setTavilyProviders([...tavilyProviders, { name: "", key: "" }])}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Plus size={14} />添加</button>
@@ -250,28 +281,41 @@ export default function SettingsPage() {
                   className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"><Save size={12} />保存</button>
               </div>
             </div>
-            {tavilyProviders.map((prov, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-md border bg-muted/30 p-3">
-                <div className="flex-1 space-y-2">
-                  <label className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
-                    <TextInput value={prov.name} onChange={(v) => { const n = [...tavilyProviders]; n[i] = { name: v, key: prov.key }; setTavilyProviders(n); }} placeholder="名称" />
-                    <button type="button" onClick={() => setTavilyProviders(tavilyProviders.filter((_, j) => j !== i))}
-                      className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
-                  </label>
+            {expandedSections.has("tavily") && tavilyProviders.map((prov, i) => {
+              const cardKey = `tavily-${i}`;
+              const cardExpanded = expandedProviders.has(cardKey);
+              return (
+              <div key={i} className="rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { const next = new Set(expandedProviders); if (cardExpanded) next.delete(cardKey); else next.add(cardKey); setExpandedProviders(next); }}
+                    className="text-muted-foreground hover:text-foreground">
+                    {cardExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
+                  <TextInput value={prov.name} onChange={(v) => { const n = [...tavilyProviders]; n[i] = { name: v, key: prov.key }; setTavilyProviders(n); }} placeholder="名称" />
+                  <button type="button" onClick={() => setTavilyProviders(tavilyProviders.filter((_, j) => j !== i))}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
+                </div>
+                {cardExpanded && (
+                <div className="mt-2 pl-8">
                   <label className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground w-10 shrink-0">Key</span>
                     <SecretInput value={prov.key} onChange={(v) => { const n = [...tavilyProviders]; n[i] = { name: prov.name, key: v }; setTavilyProviders(n); }} placeholder="API Key" />
                   </label>
                 </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Jina */}
           <div className="space-y-3 py-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">Jina AI</h3>
+              <button type="button" onClick={() => toggleSection("jina")} className="flex items-center gap-1 text-muted-foreground hover:text-foreground">
+                {expandedSections.has("jina") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <h3 className="text-sm font-medium">Jina AI</h3>
+              </button>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setJinaProviders([...jinaProviders, { name: "", key: "" }])}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Plus size={14} />添加</button>
@@ -279,28 +323,41 @@ export default function SettingsPage() {
                   className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"><Save size={12} />保存</button>
               </div>
             </div>
-            {jinaProviders.map((prov, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-md border bg-muted/30 p-3">
-                <div className="flex-1 space-y-2">
-                  <label className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
-                    <TextInput value={prov.name} onChange={(v) => { const n = [...jinaProviders]; n[i] = { name: v, key: prov.key }; setJinaProviders(n); }} placeholder="名称" />
-                    <button type="button" onClick={() => setJinaProviders(jinaProviders.filter((_, j) => j !== i))}
-                      className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
-                  </label>
+            {expandedSections.has("jina") && jinaProviders.map((prov, i) => {
+              const cardKey = `jina-${i}`;
+              const cardExpanded = expandedProviders.has(cardKey);
+              return (
+              <div key={i} className="rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { const next = new Set(expandedProviders); if (cardExpanded) next.delete(cardKey); else next.add(cardKey); setExpandedProviders(next); }}
+                    className="text-muted-foreground hover:text-foreground">
+                    {cardExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
+                  <TextInput value={prov.name} onChange={(v) => { const n = [...jinaProviders]; n[i] = { name: v, key: prov.key }; setJinaProviders(n); }} placeholder="名称" />
+                  <button type="button" onClick={() => setJinaProviders(jinaProviders.filter((_, j) => j !== i))}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
+                </div>
+                {cardExpanded && (
+                <div className="mt-2 pl-8">
                   <label className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground w-10 shrink-0">Key</span>
                     <SecretInput value={prov.key} onChange={(v) => { const n = [...jinaProviders]; n[i] = { name: prov.name, key: v }; setJinaProviders(n); }} placeholder="API Key" />
                   </label>
                 </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* 飞书 */}
           <div className="space-y-3 pt-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">飞书凭证</h3>
+              <button type="button" onClick={() => toggleSection("feishu")} className="flex items-center gap-1 text-muted-foreground hover:text-foreground">
+                {expandedSections.has("feishu") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <h3 className="text-sm font-medium">飞书凭证</h3>
+              </button>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setFeishuProviders([...feishuProviders, { name: "", app_id: "", app_secret: "", notify_open_id: "", tenant: "" }])}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Plus size={14} />添加</button>
@@ -308,17 +365,25 @@ export default function SettingsPage() {
                   className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"><Save size={12} />保存</button>
               </div>
             </div>
-            {feishuProviders.map((prov, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-md border bg-muted/30 p-3">
-                <div className="flex-1 space-y-2">
-                  <label className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
-                    <TextInput value={prov.name} onChange={(v) => { const n = [...feishuProviders]; n[i] = { name: v, app_id: prov.app_id, app_secret: prov.app_secret, notify_open_id: prov.notify_open_id, tenant: prov.tenant }; setFeishuProviders(n); }} placeholder="名称" />
-                    {feishuProviders.length > 1 && (
-                      <button type="button" onClick={() => setFeishuProviders(feishuProviders.filter((_, j) => j !== i))}
-                        className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
-                    )}
-                  </label>
+            {expandedSections.has("feishu") && feishuProviders.map((prov, i) => {
+              const cardKey = `feishu-${i}`;
+              const cardExpanded = expandedProviders.has(cardKey);
+              return (
+              <div key={i} className="rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => { const next = new Set(expandedProviders); if (cardExpanded) next.delete(cardKey); else next.add(cardKey); setExpandedProviders(next); }}
+                    className="text-muted-foreground hover:text-foreground">
+                    {cardExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <span className="text-xs text-muted-foreground w-10 shrink-0">名称</span>
+                  <TextInput value={prov.name} onChange={(v) => { const n = [...feishuProviders]; n[i] = { name: v, app_id: prov.app_id, app_secret: prov.app_secret, notify_open_id: prov.notify_open_id, tenant: prov.tenant }; setFeishuProviders(n); }} placeholder="名称" />
+                  {feishuProviders.length > 1 && (
+                    <button type="button" onClick={() => setFeishuProviders(feishuProviders.filter((_, j) => j !== i))}
+                      className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"><Trash2 size={14} /></button>
+                  )}
+                </div>
+                {cardExpanded && (
+                <div className="mt-2 space-y-2 pl-8">
                   <label className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground w-10 shrink-0">App ID</span>
                     <SecretInput value={prov.app_id} onChange={(v) => { const n = [...feishuProviders]; n[i] = { name: prov.name, app_id: v, app_secret: prov.app_secret, notify_open_id: prov.notify_open_id, tenant: prov.tenant }; setFeishuProviders(n); }} placeholder="FEISHU_APP_ID" />
@@ -336,171 +401,234 @@ export default function SettingsPage() {
                     <SecretInput value={prov.tenant} onChange={(v) => { const n = [...feishuProviders]; n[i] = { name: prov.name, app_id: prov.app_id, app_secret: prov.app_secret, notify_open_id: prov.notify_open_id, tenant: v }; setFeishuProviders(n); }} placeholder="FEISHU_TENANT" />
                   </label>
                 </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
 
       {/* 配置组 */}
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h2 className="font-semibold">配置组</h2>
-            <select className="rounded-md border bg-background px-2 py-1 text-sm" value={activeGroup}
-              onChange={(e) => setActiveGroup(e.target.value)}>
-              {configGroups.map((g) => <option key={g.name} value={g.name}>{g.name}</option>)}
-            </select>
-          </div>
-          <button type="button" onClick={() => { const name = prompt("配置组名称：")?.trim(); if (name) { setConfigGroups([...configGroups, defaultGroup(name)]); setActiveGroup(name); } }}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Plus size={14} />新增配置组</button>
+        <h2 className="font-semibold">配置组</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-muted-foreground">当前激活</span>
+          <Select value={activeGroup || undefined} onValueChange={(v) => setActiveGroup(v)}>
+            <SelectTrigger className="w-40"><SelectValue placeholder="未激活" /></SelectTrigger>
+            <SelectContent>
+              {configGroups.map((g) => <SelectItem key={g.name} value={g.name}>{g.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <button type="button" onClick={() => { saveSettings({ active_group: activeGroup, config_groups: configGroups }); toast("配置组已保存"); }}
+            className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted">
+            <Save size={12} />保存切换
+          </button>
         </div>
 
-        {configGroups.filter((g) => g.name === activeGroup).map((group) => {
-          const gi = configGroups.findIndex((g) => g.name === activeGroup);
+        {configGroups.map((group, gi) => {
+          const isExpanded = expandedGroups.has(group.name);
+          const isActive = activeGroup === group.name;
           function updateGroup(patch: Partial<ConfigGroup>) {
             const next = [...configGroups];
-            const cur = next[gi] || defaultGroup(activeGroup);
+            const cur = next[gi] || defaultGroup(group.name);
             next[gi] = { name: patch.name ?? cur.name, llm_provider: patch.llm_provider ?? cur.llm_provider, tavily_provider: patch.tavily_provider ?? cur.tavily_provider, jina_provider: patch.jina_provider ?? cur.jina_provider, search_toggles: patch.search_toggles ?? cur.search_toggles, feishu_provider: patch.feishu_provider ?? cur.feishu_provider, feishu_toggles: patch.feishu_toggles ?? cur.feishu_toggles, default_model: patch.default_model ?? cur.default_model, default_provider: patch.default_provider ?? cur.default_provider, agent_configs: patch.agent_configs ?? cur.agent_configs };
             setConfigGroups(next);
           }
 
           return (
-            <div key={group.name} className="rounded-lg border p-4 space-y-6">
-              {configGroups.length > 1 && (
-                <div className="flex items-center gap-2">
-                  <input className="rounded border bg-background px-2 py-1 text-sm font-bold" value={group.name} onChange={(e) => { const newName = e.target.value; updateGroup({ name: newName }); setActiveGroup(newName); }} />
-                  <button type="button" onClick={() => { setConfigGroups(configGroups.filter((g) => g.name !== activeGroup)); if (activeGroup === group.name) setActiveGroup(configGroups[0]?.name || "groupA"); }}
-                    className="text-xs text-muted-foreground hover:text-destructive"><Trash2 size={12} /> 删除组</button>
-                </div>
-              )}
-
-              {/* 搜索 */}
-              <div className="space-y-3 border-b pb-4">
-                <h3 className="text-sm font-semibold">搜索</h3>
-                <div className="flex items-center gap-3">
-                  <Toggle checked={group.search_toggles["provider_search"] ?? false}
-                    onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, provider_search: v } })} />
-                  <span className="text-sm">LLM 内置搜索</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Toggle checked={group.search_toggles["tavily"] ?? false}
-                    onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, tavily: v } })} />
-                  <span className="text-sm">Tavily</span>
-                  <select className="rounded border bg-background px-2 py-1 text-sm" value={group.tavily_provider}
-                    onChange={(e) => updateGroup({ tavily_provider: e.target.value })}>
-                    <option value="">默认</option>
-                    {tavilyNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Toggle checked={group.search_toggles["ddg"] ?? false}
-                    onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, ddg: v } })} />
-                  <span className="text-sm">DuckDuckGo</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Toggle checked={group.search_toggles["jina"] ?? false}
-                    onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, jina: v } })} />
-                  <span className="text-sm">Jina AI</span>
-                  <select className="rounded border bg-background px-2 py-1 text-sm" value={group.jina_provider}
-                    onChange={(e) => updateGroup({ jina_provider: e.target.value })}>
-                    <option value="">默认</option>
-                    {jinaNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
+            <div key={group.name} className={`rounded-lg border ${isActive ? "border-primary/40 bg-primary/5" : ""}`}>
+              {/* Header */}
+              <div className="flex items-center gap-2 p-3">
+                <button type="button" onClick={() => toggleExpand(group.name)} className="text-muted-foreground hover:text-foreground">
+                  {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                </button>
+                <input className="rounded border bg-background px-2 py-1 text-sm font-bold flex-1" value={group.name}
+                  onChange={(e) => { const newName = e.target.value; updateGroup({ name: newName }); if (isActive) setActiveGroup(newName); }} />
+                <button type="button" onClick={() => setActiveGroup(group.name)}
+                  className="text-muted-foreground hover:text-primary" title="激活">
+                  {isActive ? <CheckCircle size={16} className="text-primary" /> : <Circle size={16} />}
+                </button>
+                <button type="button" onClick={() => { const pk: Record<string, string> = {}; const pb: Record<string, string> = {}; for (const p of llmProviders) { if (p.name.trim()) { pk[p.name.trim()] = p.key; if (p.base.trim()) pb[p.name.trim()] = p.base.trim(); } } for (const p of tavilyProviders) { if (p.name.trim() && p.key) pk["search:tavily:" + p.name.trim()] = p.key; } for (const p of jinaProviders) { if (p.name.trim() && p.key) pk["search:jina:" + p.name.trim()] = p.key; } const fc: Record<string, Record<string, string>> = {}; for (const p of feishuProviders) { if (p.name.trim()) fc[p.name.trim()] = { app_id: p.app_id, app_secret: p.app_secret, notify_open_id: p.notify_open_id, tenant: p.tenant }; } saveSettings({ active_group: activeGroup, provider_keys: pk, provider_bases: pb, feishu_config: fc, search_toggles: { ...(group.search_toggles || {}), ...(group.feishu_toggles || {}) }, default_model: group.default_model, agent_configs: group.agent_configs, config_groups: configGroups }); }}
+                  className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted" title="保存此组"><Save size={12} /></button>
+                <button type="button" onClick={() => { const next = configGroups.filter((_, j) => j !== gi); setConfigGroups(next); if (activeGroup === group.name) setActiveGroup(next[0]?.name || ""); }}
+                  className="text-muted-foreground hover:text-destructive" title="删除"><Trash2 size={14} /></button>
               </div>
 
-              {/* 飞书 */}
-              <div className="space-y-2 border-b pb-4">
-                <h3 className="text-sm font-semibold">飞书</h3>
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-xs text-muted-foreground w-24 shrink-0">飞书凭证</span>
-                  <select className="flex-1 rounded border bg-background px-2 py-1.5 text-sm" value={group.feishu_provider}
-                    onChange={(e) => updateGroup({ feishu_provider: e.target.value })}>
-                    <option value="">默认</option>
-                    {feishuNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
-                {FEISHU_TOGGLES.map((ft) => (
-                  <div key={ft.key} className="flex items-center gap-3">
-                    <Toggle checked={group.feishu_toggles[ft.key] ?? false}
-                      onChange={(v) => updateGroup({ feishu_toggles: { ...group.feishu_toggles, [ft.key]: v } })} />
-                    <span className="text-sm">{ft.label}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Per-Agent */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold">Per-Agent 覆盖</h3>
-                <div className="grid grid-cols-2 gap-3 mb-2">
-                  <label className="space-y-1">
-                    <span className="text-xs text-muted-foreground">默认 Provider</span>
-                    <select className="w-full rounded border bg-background px-2 py-1.5 text-sm" value={group.default_provider}
-                      onChange={(e) => updateGroup({ default_provider: e.target.value })}>
-                      <option value="">默认</option>
-                      {llmNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs text-muted-foreground">默认模型</span>
-                    <input className="w-full rounded border bg-background px-3 py-1.5 text-sm font-mono" value={group.default_model}
-                      onChange={(e) => updateGroup({ default_model: e.target.value })} placeholder="所有 Agent 的默认模型" />
-                  </label>
-                </div>
-                {AGENTS.map((agent) => (
-                  <div key={agent} className="rounded border bg-muted/30 p-2.5 space-y-1.5">
-                    <h4 className="text-xs font-medium capitalize">{agent}</h4>
-                    <div className="grid grid-cols-4 gap-2">
-                      <label className="space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground">Provider</span>
-                        <select className="w-full rounded border bg-background px-1 py-1 text-xs"
-                          value={(group.agent_configs[agent]?.provider as string) || ""}
-                          onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], provider: e.target.value }; updateGroup({ agent_configs: ac }); }}>
-                          <option value="">默认</option>
-                          {llmNames.map((pn) => <option key={pn} value={pn}>{pn}</option>)}
-                        </select>
-                      </label>
-                      <label className="space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground">Model</span>
-                        <input className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
-                          value={(group.agent_configs[agent]?.model as string) || ""}
-                          onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], model: e.target.value }; updateGroup({ agent_configs: ac }); }}
-                          placeholder="默认" />
-                      </label>
-                      <label className="space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground">Timeout</span>
-                        <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
-                          value={(group.agent_configs[agent]?.timeout_seconds as number) || ""}
-                          onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], timeout_seconds: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
-                          placeholder="默认" />
-                      </label>
-                      {agent === "collector" && (
-                        <label className="space-y-0.5">
-                          <span className="text-[10px] text-muted-foreground">Max Turns</span>
-                          <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
-                            value={(group.agent_configs[agent]?.max_turns as number) || ""}
-                            onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], max_turns: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
-                            placeholder="默认" />
-                        </label>
-                      )}
+              {/* Expanded body */}
+              {isExpanded && (
+                <div className="border-t p-4 space-y-6">
+                  {/* 搜索 */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold">搜索</h3>
+                    <div className="flex items-center gap-3">
+                      <Toggle checked={group.search_toggles["provider_search"] ?? false}
+                        onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, provider_search: v } })} />
+                      <span className="text-sm">LLM 内置搜索</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Toggle checked={group.search_toggles["tavily"] ?? false}
+                        onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, tavily: v } })} />
+                      <span className="text-sm">Tavily</span>
+                      <Select value={group.tavily_provider || undefined} onValueChange={(v) => updateGroup({ tavily_provider: v })}>
+                        <SelectTrigger className="w-28"><SelectValue placeholder="默认" /></SelectTrigger>
+                        <SelectContent>
+                          {tavilyNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Toggle checked={group.search_toggles["ddg"] ?? false}
+                        onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, ddg: v } })} />
+                      <span className="text-sm">DuckDuckGo</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Toggle checked={group.search_toggles["jina"] ?? false}
+                        onChange={(v) => updateGroup({ search_toggles: { ...group.search_toggles, jina: v } })} />
+                      <span className="text-sm">Jina AI</span>
+                      <Select value={group.jina_provider || undefined} onValueChange={(v) => updateGroup({ jina_provider: v })}>
+                        <SelectTrigger className="w-28"><SelectValue placeholder="默认" /></SelectTrigger>
+                        <SelectContent>
+                          {jinaNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
-                ))}
-              </div>
+
+                  {/* 飞书 */}
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-semibold">飞书</h3>
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="text-xs text-muted-foreground w-24 shrink-0">飞书凭证</span>
+                      <Select value={group.feishu_provider || undefined} onValueChange={(v) => updateGroup({ feishu_provider: v })}>
+                        <SelectTrigger className="flex-1"><SelectValue placeholder="默认" /></SelectTrigger>
+                        <SelectContent>
+                          {feishuNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {FEISHU_TOGGLES.map((ft) => (
+                      <div key={ft.key} className="flex items-center gap-3">
+                        <Toggle checked={group.feishu_toggles[ft.key] ?? false}
+                          onChange={(v) => updateGroup({ feishu_toggles: { ...group.feishu_toggles, [ft.key]: v } })} />
+                        <span className="text-sm">{ft.label}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Per-Agent */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold">Per-Agent 覆盖</h3>
+                    <div className="grid grid-cols-2 gap-3 mb-2">
+                      <label className="space-y-1">
+                        <span className="text-xs text-muted-foreground">默认 Provider</span>
+                        <Select value={group.default_provider || undefined} onValueChange={(v) => updateGroup({ default_provider: v })}>
+                          <SelectTrigger><SelectValue placeholder="默认" /></SelectTrigger>
+                          <SelectContent>
+                            {llmNames.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs text-muted-foreground">默认模型</span>
+                        <input className="w-full rounded border bg-background px-3 py-1.5 text-sm font-mono" value={group.default_model}
+                          onChange={(e) => updateGroup({ default_model: e.target.value })} placeholder="所有 Agent 的默认模型" />
+                      </label>
+                    </div>
+                    {AGENTS.map((agent) => (
+                      <div key={agent} className="rounded border bg-muted/30 p-2.5 space-y-1.5">
+                        <h4 className="text-xs font-medium capitalize">{agent === "hitl" ? "HITL Gate" : agent}</h4>
+                    {agent === "hitl" ? (
+                    <div className="flex items-center gap-2">
+                      <label className="space-y-0.5">
+                        <span className="text-[10px] text-muted-foreground">Approval Timeout (min)</span>
+                        <input type="number" className="w-24 rounded border bg-background px-2 py-1 text-xs font-mono"
+                          value={(group.agent_configs[agent]?.approval_timeout_minutes as number) || ""}
+                          onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { approval_timeout_minutes: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                          placeholder="30" />
+                      </label>
+                    </div>
+                    ) : (
+                        <div className="grid grid-cols-6 gap-2">
+                          <label className="space-y-0.5">
+                            <span className="text-[10px] text-muted-foreground">Provider</span>
+                            <Select value={(group.agent_configs[agent]?.provider as string) || undefined}
+                              onValueChange={(v) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], provider: v }; updateGroup({ agent_configs: ac }); }}>
+                              <SelectTrigger className="w-full px-1 py-1 text-xs"><SelectValue placeholder="默认" /></SelectTrigger>
+                              <SelectContent>
+                                {llmNames.map((pn) => <SelectItem key={pn} value={pn}>{pn}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </label>
+                          <label className="space-y-0.5">
+                            <span className="text-[10px] text-muted-foreground">Model</span>
+                            <input className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                              value={(group.agent_configs[agent]?.model as string) || ""}
+                              onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], model: e.target.value }; updateGroup({ agent_configs: ac }); }}
+                              placeholder="默认" />
+                          </label>
+                          <label className="space-y-0.5">
+                            <span className="text-[10px] text-muted-foreground">Temperature</span>
+                            <input type="number" step="any" min="0" max="2" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                              value={(group.agent_configs[agent]?.temperature as number) ?? ""}
+                              onChange={(e) => { const ac = { ...group.agent_configs }; const v = e.target.value === "" ? undefined : Math.max(0, Math.min(2, parseFloat(e.target.value) || 0)); ac[agent] = { ...ac[agent], temperature: v as number }; updateGroup({ agent_configs: ac }); }}
+                              placeholder="默认" />
+                          </label>
+                          <label className="space-y-0.5">
+                            <span className="text-[10px] text-muted-foreground">Max Tokens</span>
+                            <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                              value={(group.agent_configs[agent]?.max_tokens as number) || ""}
+                              onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], max_tokens: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                              placeholder="默认" />
+                          </label>
+                          <label className="space-y-0.5">
+                            <span className="text-[10px] text-muted-foreground">Timeout</span>
+                            <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                              value={(group.agent_configs[agent]?.timeout_seconds as number) || ""}
+                              onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], timeout_seconds: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                              placeholder="默认" />
+                          </label>
+                          {["collector", "analyst", "reviewer", "writer"].includes(agent) && (
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] text-muted-foreground">Max Turns</span>
+                              <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                                value={(group.agent_configs[agent]?.max_turns as number) || ""}
+                                onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], max_turns: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                                placeholder="默认" />
+                            </label>
+                          )}
+                          {agent === "reviewer" && (
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] text-muted-foreground">Max Feedback Rounds</span>
+                              <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                                value={(group.agent_configs[agent]?.max_feedback_rounds as number) || ""}
+                                onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], max_feedback_rounds: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                                placeholder="默认" />
+                            </label>
+                          )}
+                          {agent === "writer" && (
+                            <label className="space-y-0.5">
+                              <span className="text-[10px] text-muted-foreground">Exec Summary Max Chars</span>
+                              <input type="number" className="w-full rounded border bg-background px-2 py-1 text-xs font-mono"
+                                value={(group.agent_configs[agent]?.executive_summary_max_chars as number) || ""}
+                                onChange={(e) => { const ac = { ...group.agent_configs }; ac[agent] = { ...ac[agent], executive_summary_max_chars: parseInt(e.target.value) || 0 }; updateGroup({ agent_configs: ac }); }}
+                                placeholder="默认" />
+                            </label>
+                          )}
+                        </div>
+                      )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
-      </section>
 
-      <div className="flex items-center gap-3">
-        <button onClick={handleSaveAll} disabled={saving}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-          <Save size={14} />{saving ? "保存中..." : "保存设置"}</button>
-        <button onClick={handleMigrate} disabled={migrating}
-          className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50">
-          <Database size={14} />{migrating ? "迁移中..." : "迁移历史数据"}</button>
-      </div>
+        <button type="button" onClick={() => { const name = prompt("配置组名称：")?.trim(); if (name && !configGroups.find(g => g.name === name)) { const ng = defaultGroup(name); setConfigGroups([...configGroups, ng]); setActiveGroup(name); setExpandedGroups(new Set([...expandedGroups, name])); } }}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground p-2"><Plus size={14} />新增配置组</button>
+      </section>
     </div>
   );
 }

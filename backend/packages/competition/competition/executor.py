@@ -10,6 +10,7 @@ chunk, enabling chat-like SSE streaming.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -30,6 +31,19 @@ _agent_tokens: dict[str, int] = {}
 # so thread-local storage correctly isolates concurrent analyses.
 _tl = threading.local()
 
+# ContextVars for user context — must cross thread boundaries because
+# search.py spawns its own ThreadPoolExecutor for parallel searches.
+# NOTE: ContextVars do NOT propagate through ThreadPoolExecutor on this
+# Python build (3.12.3), so we also use a module-level fallback dict.
+_cv_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_user_id", default=None)
+_cv_user_settings: contextvars.ContextVar[dict | None] = contextvars.ContextVar("current_user_settings", default=None)
+
+# Module-level fallback for cross-thread access (ContextVar doesn't propagate
+# through ThreadPoolExecutor on Python 3.12.3 / asyncio thread pools).
+_global_user_id: str | None = None
+_global_user_settings: dict | None = None
+_global_user_lock = threading.Lock()
+
 # ── Thread context (request tracing) ──
 
 
@@ -44,29 +58,59 @@ def clear_thread_context() -> None:
 
 
 def set_user_context(user_id: str, user_settings: dict | None = None) -> None:
-    """Set current user context for per-user settings override."""
-    _tl.current_user_id = user_id
-    _tl.current_user_settings = user_settings
+    """Set current user context for per-user settings override.
+
+    Stores in both ContextVar (for same-thread) and global (for cross-thread
+    access from search.py's ThreadPoolExecutor workers).
+    """
+    _cv_user_id.set(user_id)
+    _cv_user_settings.set(user_settings)
+    global _global_user_id, _global_user_settings
+    with _global_user_lock:
+        _global_user_id = user_id
+        _global_user_settings = user_settings
+    logger.debug("set_user_context: user_id=%s thread=%s", user_id, threading.current_thread().name)
 
 
 def clear_user_context() -> None:
     """Clear user context."""
-    _tl.current_user_id = None
-    _tl.current_user_settings = None
+    _cv_user_id.set(None)
+    _cv_user_settings.set(None)
+    global _global_user_id, _global_user_settings
+    with _global_user_lock:
+        _global_user_id = None
+        _global_user_settings = None
 
 
 def _get_user_settings() -> dict | None:
-    """Get current user's settings (lazily loaded from DB if needed)."""
-    settings = getattr(_tl, "current_user_settings", None)
+    """Get current user's settings (lazily loaded from DB if needed).
+
+    Tries ContextVar first (same-thread), then global fallback (cross-thread).
+    """
+    settings = _cv_user_settings.get()
+    user_id = _cv_user_id.get()
+
+    # Fallback to global if ContextVar is empty (cross-thread case)
+    if not user_id or user_id == "default":
+        global _global_user_id, _global_user_settings
+        with _global_user_lock:
+            user_id = _global_user_id
+            if settings is None:
+                settings = _global_user_settings
+
     if settings is not None:
         return settings
-    user_id = getattr(_tl, "current_user_id", None)
+
+    logger.debug("_get_user_settings: current_user_id=%s thread=%s", user_id, threading.current_thread().name)
     if not user_id or user_id == "default":
         return None
     try:
         from competition.db import get_user_settings as db_get_user_settings
         settings = db_get_user_settings(user_id)
-        _tl.current_user_settings = settings
+        # Cache in both ContextVar and global
+        _cv_user_settings.set(settings)
+        with _global_user_lock:
+            _global_user_settings = settings
         return settings
     except Exception:
         return None
@@ -193,11 +237,21 @@ def _resolve_model(agent_name: str) -> str:
 
 
 def _resolve_provider(agent_name: str) -> tuple[str, str, str]:
-    """Resolve (model, api_base, api_key) for an agent from DB config_group only."""
+    """Resolve (model, api_base, api_key) for an agent.
+
+    In DB mode (default): reads from user_settings.config_groups + provider_keys/bases.
+    In file mode (CI_AGENT_CONFIG_MODE=file): reads from config.yaml + .env.
+    """
+    from competition.config_mode import is_file_mode
 
     if not agent_name:
         return "", "", ""
 
+    # ── File mode: config.yaml + .env ──
+    if is_file_mode():
+        return _resolve_provider_from_file(agent_name)
+
+    # ── DB mode: user_settings only ──
     try:
         user_settings = _get_user_settings()
         config_group = _get_active_config_group()
@@ -229,6 +283,40 @@ def _resolve_provider(agent_name: str) -> tuple[str, str, str]:
         pass
 
     return "", "", ""
+
+
+def _resolve_provider_from_file(agent_name: str) -> tuple[str, str, str]:
+    """Resolve (model, api_base, api_key) from config.yaml + .env (legacy mode)."""
+    import os as _os
+    default_base = _os.environ.get("DOUBAO_API_BASE", "")
+    default_key = _os.environ.get("DOUBAO_API_KEY", "")
+
+    try:
+        import yaml
+        from pathlib import Path
+        for p in (Path("config.yaml"), Path("backend/config.yaml"),
+                  Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+                  Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+            if not p.exists():
+                continue
+            cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            comp = cfg.get("competition") or {}
+            active = comp.get("active_group") or ""
+            groups = comp.get("groups") or {}
+            group_cfg = groups.get(active, {}) if active and groups else comp
+            agent_cfg = group_cfg.get(agent_name.lower()) or {}
+            provider_name = agent_cfg.get("provider") or group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+            providers = comp.get("providers") or {}
+            prov = providers.get(provider_name) or {}
+            key_env = prov.get("api_key_env", "")
+            api_key = _os.environ.get(key_env, "") or default_key
+            api_base = prov.get("api_base", "") or default_base
+            model = agent_cfg.get("model") or group_cfg.get("default_model") or comp.get("default_model") or ""
+            if api_key and api_base:
+                return str(model), str(api_base), str(api_key)
+    except Exception:
+        pass
+    return "", default_base, default_key
 
 
 def execute_agent(
@@ -274,6 +362,15 @@ def execute_agent(
                 model = cfg_model
                 api_base = cfg_base
                 api_key = cfg_key
+
+            # Per-agent parameter overrides from DB config_group.agent_configs
+            cg = _get_active_config_group()
+            agent_params = (cg.get("agent_configs", {}) or {}).get(agent_name.lower(), {})
+            if isinstance(agent_params, dict):
+                if "temperature" in agent_params:
+                    temperature = float(agent_params["temperature"])
+                if "max_tokens" in agent_params:
+                    max_tokens = int(agent_params["max_tokens"])
 
         llm_kwargs: dict = {
             "model": model,

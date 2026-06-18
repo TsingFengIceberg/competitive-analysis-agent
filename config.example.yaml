@@ -1,5 +1,22 @@
 # Competitive-Analysis-Agent Configuration
 # ============================================================================
+#
+# 两种配置模式 (Configuration Modes):
+#
+#   DB 模式（默认）: 通过前端 /competition/settings 面板管理，配置存于
+#                    .ci-agent/competition.db 的 user_settings 表。
+#                    启动时不设 CI_AGENT_CONFIG_MODE 即为 DB 模式。
+#
+#   File 模式:      使用本文件 (config.yaml) + .env 提供配置。
+#                    CI_AGENT_CONFIG_MODE=file 时启用。
+#                    适用调试、演示、无账号场景。
+#
+# 模式切换:         使用 scripts/sync-user-config.py 在两种模式间迁移配置。
+#
+#   # File → DB:   PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <email>
+#   # DB → File:   PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <email>
+#
+# ============================================================================
 # 使用方法:
 #   1. 复制此文件为 `config.yaml`
 #   2. API 密钥放在 `.env` 文件（保密），其余配置放在本文件（可提交 Git）
@@ -82,6 +99,8 @@ competition:
         provider: "doubao"
         model: "your-doubao-model-or-endpoint-id"
         timeout_seconds: 600
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 30
 
       # 对比分析 — 多维度计算，建议用推理强模型
@@ -89,6 +108,8 @@ competition:
         provider: "doubao"
         model: "your-doubao-model-or-endpoint-id"
         timeout_seconds: 300
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 20
 
       # 质量审查 — 包含 LLM 语义矛盾检测(G7)，token 消耗较高
@@ -96,6 +117,8 @@ competition:
         provider: "doubao"
         model: "your-doubao-model-or-endpoint-id"
         timeout_seconds: 300
+        temperature: 0.0
+        max_tokens: 2048
         max_turns: 15
         max_feedback_rounds: 2       # 最多打回重做轮次
 
@@ -104,6 +127,8 @@ competition:
         provider: "doubao"
         model: "your-doubao-model-or-endpoint-id"
         timeout_seconds: 180
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 20
         executive_summary_max_chars: 500
 
@@ -141,18 +166,24 @@ competition:
         provider: "deepseek"
         model: "your-deepseek-model"
         timeout_seconds: 600
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 30
 
       analyst:
         provider: "deepseek"
         model: "your-deepseek-model"
         timeout_seconds: 300
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 20
 
       reviewer:
         provider: "deepseek"
         model: "your-deepseek-model"
         timeout_seconds: 300
+        temperature: 0.0
+        max_tokens: 2048
         max_turns: 15
         max_feedback_rounds: 2
 
@@ -160,6 +191,8 @@ competition:
         provider: "deepseek"
         model: "your-deepseek-model"
         timeout_seconds: 180
+        temperature: 0.3
+        max_tokens: 8192
         max_turns: 20
         executive_summary_max_chars: 500
 

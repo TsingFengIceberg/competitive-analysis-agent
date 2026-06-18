@@ -32,6 +32,7 @@ def _get_user_settings() -> dict | None:
         from competition.executor import _get_user_settings as exec_get_user_settings
         return exec_get_user_settings()
     except Exception:
+        logger.exception("Failed to get user settings from executor")
         return None
 
 
@@ -56,7 +57,15 @@ def _get_user_base(provider_name: str) -> str:
 
 
 def _get_search_provider_key(backend: str) -> str:
-    """Get the API key for a search backend (tavily/jina) from config_group's provider selection."""
+    """Get the API key for a search backend (tavily/jina).
+
+    Checks in order: config_group provider → provider_keys → search_toggles.{backend}_key.
+    """
+    from competition.config_mode import is_file_mode
+
+    if is_file_mode():
+        return os.environ.get(f"{backend.upper()}_API_KEY", "")
+
     cg = _get_active_config_group()
     provider_field = f"{backend}_provider"
     provider_name = cg.get(provider_field) or ""
@@ -64,8 +73,26 @@ def _get_search_provider_key(backend: str) -> str:
         key = _get_user_key(provider_name) or _get_user_key(f"search:{backend}:{provider_name}") or _get_user_key(f"search:{provider_name}")
         if key:
             return key
-    # Fallback
-    return _get_user_key(backend) or _get_user_key(f"search:{backend}") or _get_user_key(f"search:{backend}:{backend}")
+
+    # Check provider_keys first
+    key = _get_user_key(backend) or _get_user_key(f"search:{backend}") or _get_user_key(f"search:{backend}:{backend}")
+    if key:
+        return key
+
+    # Fallback: search_toggles may store {backend}_key directly
+    try:
+        from competition.executor import _get_user_settings as get_us
+        us = get_us()
+        if us:
+            st = us.get("search_toggles", {}) or {}
+            if isinstance(st, dict):
+                key = st.get(f"{backend}_key") or ""
+                if key and key not in ("your-tavily-api-key", "your-jina-api-key"):
+                    return key
+    except Exception:
+        pass
+
+    return ""
 
 
 def _get_active_config_group() -> dict:
@@ -78,7 +105,12 @@ def _get_active_config_group() -> dict:
 
 
 def _get_default_provider() -> tuple[str, str, str]:
-    """Get (api_key, api_base, model) from DB config_group."""
+    """Get (api_key, api_base, model) from DB or config.yaml."""
+    from competition.config_mode import is_file_mode
+
+    if is_file_mode():
+        return _get_default_provider_from_file()
+
     cg = _get_active_config_group()
     provider_name = cg.get("default_provider") or ""
     if not provider_name:
@@ -87,6 +119,28 @@ def _get_default_provider() -> tuple[str, str, str]:
     base = _get_user_base(provider_name)
     model = cg.get("default_model") or ""
     return key, base or "https://ark.cn-beijing.volces.com/api/v3", model
+
+
+def _get_default_provider_from_file() -> tuple[str, str, str]:
+    """Get (api_key, api_base, model) from config.yaml + env (file mode)."""
+    import os as _os
+    cfg = _read_config_yaml_file()
+    comp = cfg.get("competition") or {}
+    group_cfg = _get_active_group_config_file()
+    providers = comp.get("providers") or {}
+    default_prov = group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+    prov = providers.get(default_prov) or {}
+    key_env = prov.get("api_key_env", "DOUBAO_API_KEY")
+    base = prov.get("api_base", "https://ark.cn-beijing.volces.com/api/v3")
+    model = group_cfg.get("default_model") or comp.get("default_model") or ""
+    key = _os.environ.get(key_env, "")
+    if key:
+        return key, base, model
+    return (
+        _os.environ.get("DOUBAO_API_KEY", ""),
+        _os.environ.get("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"),
+        _os.environ.get("DOUBAO_MODEL", ""),
+    )
 
 # ── Model context registry ──
 
@@ -445,24 +499,92 @@ _search_stats: dict = {"total_queries": 0, "total_results": 0, "backend": "", "q
 
 
 def _get_search_config() -> dict:
-    """Load search backend config from DB config_group only."""
+    """Load search backend config from DB or config.yaml.
+
+    Merges config_group-level search_toggles with user-level search_toggles,
+    since the settings page stores main toggles (tavily/ddg/jina) at the
+    user level while provider_search is in the config group.
+    """
+    from competition.config_mode import is_file_mode
+
+    if is_file_mode():
+        return _get_search_config_from_file()
+
+    # Merge: config_group toggles + user-level toggles (user wins)
     cg = _get_active_config_group()
-    toggles = cg.get("search_toggles", {}) or {}
-    if isinstance(toggles, dict):
-        return {"tavily": toggles.get("tavily", False),
-                "ddg": toggles.get("ddg", False),
-                "jina": toggles.get("jina", False),
-                "provider_search": toggles.get("provider_search", False),
+    group_toggles = cg.get("search_toggles", {}) or {}
+    user_toggles = {}
+    try:
+        from competition.executor import _get_user_settings as get_us
+        us = get_us()
+        if us:
+            user_toggles = us.get("search_toggles", {}) or {}
+    except Exception:
+        pass
+    merged = {**(group_toggles if isinstance(group_toggles, dict) else {}),
+              **(user_toggles if isinstance(user_toggles, dict) else {})}
+    if isinstance(merged, dict) and merged:
+        return {"tavily": merged.get("tavily", True),
+                "ddg": merged.get("ddg", True),
+                "jina": merged.get("jina", False),
+                "provider_search": merged.get("provider_search", True),
                 "fetch_top_n": 3, "fetch_timeout": 15,
                 "strategy": {"mode": "auto"}}
-    return {"tavily": False, "ddg": False, "jina": False, "provider_search": False,
+    return {"tavily": True, "ddg": True, "jina": False, "provider_search": True,
             "fetch_top_n": 3, "fetch_timeout": 15, "strategy": {"mode": "auto"}}
 
 
+def _get_search_config_from_file() -> dict:
+    """Load search backend config from config.yaml (legacy file mode)."""
+    import json
+    cfg = {"tavily": True, "ddg": True, "jina": True,
+           "fetch_top_n": 3, "fetch_timeout": 15,
+           "strategy": {"mode": "auto"}}
+    group_cfg = _get_active_group_config_file()
+    search_cfg = group_cfg.get("search") or {}
+    if search_cfg:
+        cfg.update(search_cfg)
+    else:
+        config_path = Path(__file__).parent.parent.parent.parent.parent / "search_config.json"
+        if config_path.exists():
+            try:
+                cfg.update(json.loads(config_path.read_text()))
+            except Exception:
+                pass
+    return cfg
+
+
+def _get_active_group_config_file() -> dict:
+    """Get active group from config.yaml only (file mode)."""
+    cfg = _read_config_yaml_file()
+    comp = cfg.get("competition") or {}
+    active = comp.get("active_group") or ""
+    groups = comp.get("groups") or {}
+    if active and groups and active in groups:
+        return groups[active]
+    return comp
+
+
+def _read_config_yaml_file() -> dict:
+    """Read config.yaml from disk (file mode)."""
+    import yaml
+    for p in (Path("config.yaml"), Path("backend/config.yaml"),
+              Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+              Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
+        if p.exists():
+            return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return {}
+
+
 def _get_provider_search_config() -> tuple[str | None, str, str]:
-    """Get provider built-in search credentials from DB only.
+    """Get provider built-in search credentials.
     Returns (provider_name, api_key, api_base) or (None, "", "").
     """
+    from competition.config_mode import is_file_mode
+
+    if is_file_mode():
+        return _get_provider_search_config_from_file()
+
     cfg = _get_search_config()
     if not cfg.get("provider_search", False):
         return None, "", ""
@@ -474,6 +596,26 @@ def _get_provider_search_config() -> tuple[str | None, str, str]:
     base = _get_user_base(provider_name)
     if key and base:
         return provider_name, key, base
+    return None, "", ""
+
+
+def _get_provider_search_config_from_file() -> tuple[str | None, str, str]:
+    """Get provider search creds from config.yaml + env (file mode)."""
+    import os as _os
+    cfg = _read_config_yaml_file()
+    comp = cfg.get("competition") or {}
+    group_cfg = _get_active_group_config_file()
+    search_cfg = group_cfg.get("search") or {}
+    if not search_cfg.get("provider_search", False):
+        return None, "", ""
+    providers = comp.get("providers") or {}
+    default_prov = group_cfg.get("default_provider") or comp.get("default_provider") or "doubao"
+    prov = providers.get(default_prov) or {}
+    key_env = prov.get("api_key_env", "")
+    key = _os.environ.get(key_env, "") if key_env else ""
+    base = prov.get("api_base", "")
+    if key and base:
+        return default_prov, key, base
     return None, "", ""
 
 
@@ -512,11 +654,15 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
     Provider search is auto-detected from config.yaml providers.{name}.search:true.
     """
     cfg = _get_search_config()
+    logger.debug("Search config: tavily=%s ddg=%s provider_search=%s",
+                cfg.get("tavily"), cfg.get("ddg"), cfg.get("provider_search"))
     _search_stats["total_queries"] += 1
     _search_stats["queries"].append(query)
 
     # 1. Provider built-in search (auto-detected from config)
     prov_name, prov_key, prov_base = _get_provider_search_config()
+    logger.debug("Provider search: name=%s key=%s base=%s",
+                prov_name, "SET" if prov_key else "EMPTY", prov_base[:50] if prov_base else "EMPTY")
     if prov_name:
         if prov_name == "doubao" or prov_name == "":
             response = _doubao_search(query, max_results, prov_key, prov_base)
@@ -531,6 +677,8 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
 
     # 2. Tavily
     tavily_key = _get_search_provider_key("tavily")
+    logger.debug("Tavily: enabled=%s key=%s",
+                cfg.get("tavily"), "SET" if tavily_key and tavily_key not in ("your-tavily-api-key", "") else "EMPTY")
     if cfg.get("tavily", True) and tavily_key and tavily_key not in ("your-tavily-api-key", ""):
         response = _tavily_search(query, max_results)
         if response.results:

@@ -32,6 +32,19 @@ const NODE_ICONS: Record<string, string> = {
   hitl_gate: "👤",
 };
 
+function resolveLabel(node: string): string {
+  for (const [key, label] of Object.entries(NODE_LABELS)) {
+    if (node === key || node.startsWith(key + "_")) return label;
+  }
+  return node;
+}
+function resolveIcon(node: string): string {
+  for (const [key, icon] of Object.entries(NODE_ICONS)) {
+    if (node === key || node.startsWith(key + "_")) return icon;
+  }
+  return "⚙️";
+}
+
 // Agent display names for the streaming labels
 const AGENT_DISPLAY: Record<string, string> = {
   Writer: "报告生成",
@@ -144,8 +157,8 @@ export default function AnalysisTimeline({ events, connected, streamingContent, 
           }
           if (event.type === "node_end") {
             const node = event.data.node as string;
-            const label = NODE_LABELS[node] || node;
-            const icon = NODE_ICONS[node] || "⚙️";
+            const label = resolveLabel(node);
+            const icon = resolveIcon(node);
             return (
               <div key={i} className="flex items-center gap-2 rounded bg-green-50 px-2 py-1 border border-green-200">
                 <span>{icon}</span>

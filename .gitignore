@@ -149,3 +149,6 @@ backend/model_context_registry.json
 
 backend/.ci-agent
 .ci-agent
+
+migration-to-codex.md
+project-handoff.md

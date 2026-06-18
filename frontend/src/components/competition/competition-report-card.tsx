@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from "lucide-react";
+import { useState } from "react";
+
 import type { ReportData, ReportHistoryItem } from "@/components/competition/api-client";
 
 const ACTION_LABELS: Record<string, string> = {
@@ -161,7 +162,7 @@ export default function CompetitionReportCard({
         <div className="flex items-center gap-1.5 shrink-0 ml-2">
           {SHOW_VERSION_DIFF && hasDiff && (
             <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 hidden sm:inline">
-              vs v{prevSibling!.version}
+              vs v{prevSibling.version}
             </span>
           )}
           <button
@@ -181,11 +182,11 @@ export default function CompetitionReportCard({
               <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[10px] text-muted-foreground">覆盖率</span>
                 <span className="text-[11px] font-bold text-blue-600">
-                  {((metrics.coverage as number) * 100).toFixed(0)}%
-                  {diffBadge(metrics.coverage as number, prevMetrics?.coverage as number | null)}
+                  {((metrics.coverage) * 100).toFixed(0)}%
+                  {diffBadge(metrics.coverage, prevMetrics?.coverage as number | null)}
                 </span>
               </div>
-              {metricBar(metrics.coverage as number, metricColor(metrics.coverage as number))}
+              {metricBar(metrics.coverage, metricColor(metrics.coverage))}
             </div>
           )}
           {metrics.cross_validation_rate != null && (
@@ -193,11 +194,11 @@ export default function CompetitionReportCard({
               <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[10px] text-muted-foreground">交叉验证率</span>
                 <span className="text-[11px] font-bold text-green-600">
-                  {((metrics.cross_validation_rate as number) * 100).toFixed(0)}%
-                  {diffBadge(metrics.cross_validation_rate as number, prevMetrics?.cross_validation_rate as number | null)}
+                  {((metrics.cross_validation_rate) * 100).toFixed(0)}%
+                  {diffBadge(metrics.cross_validation_rate, prevMetrics?.cross_validation_rate as number | null)}
                 </span>
               </div>
-              {metricBar(metrics.cross_validation_rate as number, metricColor(metrics.cross_validation_rate as number))}
+              {metricBar(metrics.cross_validation_rate, metricColor(metrics.cross_validation_rate))}
             </div>
           )}
           {metrics.trace_completeness != null && (
@@ -205,19 +206,19 @@ export default function CompetitionReportCard({
               <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[10px] text-muted-foreground">溯源率</span>
                 <span className="text-[11px] font-bold text-purple-600">
-                  {((metrics.trace_completeness as number) * 100).toFixed(0)}%
-                  {diffBadge(metrics.trace_completeness as number, prevMetrics?.trace_completeness as number | null)}
+                  {((metrics.trace_completeness) * 100).toFixed(0)}%
+                  {diffBadge(metrics.trace_completeness, prevMetrics?.trace_completeness as number | null)}
                 </span>
               </div>
-              {metricBar(metrics.trace_completeness as number, metricColor(metrics.trace_completeness as number))}
+              {metricBar(metrics.trace_completeness, metricColor(metrics.trace_completeness))}
             </div>
           )}
-          {metrics.repair_delta != null && (metrics.repair_delta as number) !== 0 && (
+          {metrics.repair_delta != null && (metrics.repair_delta) !== 0 && (
             <div className="w-1/2">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-muted-foreground">质量修复增量</span>
-                <span className={`text-[11px] font-bold ${(metrics.repair_delta as number) > 0 ? "text-green-600" : (metrics.repair_delta as number) < 0 ? "text-red-500" : "text-muted-foreground"}`}>
-                  {(metrics.repair_delta as number) > 0 ? "+" : ""}{((metrics.repair_delta as number) * 100).toFixed(0)}%
+                <span className={`text-[11px] font-bold ${(metrics.repair_delta) > 0 ? "text-green-600" : (metrics.repair_delta) < 0 ? "text-red-500" : "text-muted-foreground"}`}>
+                  {(metrics.repair_delta) > 0 ? "+" : ""}{((metrics.repair_delta) * 100).toFixed(0)}%
                 </span>
               </div>
             </div>
@@ -230,7 +231,7 @@ export default function CompetitionReportCard({
                 {rd.sections.length}
                 {SHOW_VERSION_DIFF && prevSibling?.report_data?.sections && (
                   (() => {
-                    const prevCount = prevSibling.report_data!.sections!.length;
+                    const prevCount = prevSibling.report_data.sections.length;
                     const delta = rd.sections.length - prevCount;
                     if (delta === 0) return <span className="text-[10px] text-muted-foreground ml-1">→0</span>;
                     const sign = delta > 0 ? "+" : "";
@@ -329,11 +330,18 @@ export default function CompetitionReportCard({
           <button onClick={onExportJSON} title="导出 JSON 原始数据" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
           <button
             title="导出到飞书文档"
-            onClick={() => {
-              fetch(`/api/competition/report/${threadId}/export-feishu`)
-                .then(r => r.json())
-                .then(d => { if (d.doc_url) window.open(d.doc_url, "_blank"); else alert("导出失败"); })
-                .catch(() => alert("请求失败"));
+            onClick={async () => {
+              try {
+                const response = await fetch(`/api/competition/report/${threadId}/export-feishu`);
+                const data = await response.json().catch(() => ({}));
+                if (response.ok && data.doc_url) {
+                  window.open(data.doc_url, "_blank");
+                } else {
+                  alert(data.detail ?? "导出失败");
+                }
+              } catch {
+                alert("请求失败");
+              }
             }}
             className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
           >📄 飞书</button>

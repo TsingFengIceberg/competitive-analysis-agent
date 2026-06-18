@@ -517,6 +517,10 @@ def _verify_products_via_search(candidates: list[str], strictness: int = 1, quer
 
     def _search_one(name: str) -> tuple[str, list[str]] | None:
         """Search for a single candidate. Returns (name, titles) or None if discarded."""
+        # Small jitter to avoid thundering herd on search API (especially DDG rate limits)
+        import random as _random
+        import time as _time
+        _time.sleep(_random.uniform(0, 0.5))
         all_titles: list[str] = []
         try:
             other_names = [c for c in candidates if c.lower() != name.lower()]
@@ -544,20 +548,23 @@ def _verify_products_via_search(candidates: list[str], strictness: int = 1, quer
 
             all_titles = all_titles[:8]
 
-            if not all_titles and strictness >= 2:
+            if not all_titles:
+                # Fallback: direct name search (works across all strictness levels)
                 resp3 = web_search(name, max_results=3)
                 if resp3 and resp3.results:
                     all_titles = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp3.results]
                     logger.info("Product '%s' — fallback search found %d results", name, len(all_titles))
-                else:
+                elif strictness >= 2:
                     logger.warning("Product '%s' — no search results, keeping as-is", name)
-            elif not all_titles:
-                logger.info("Product '%s' discarded (no search results)", name)
-                return None
+                else:
+                    logger.info("Product '%s' discarded (no search results)", name)
+                    return None
         except Exception:
-            if strictness < 2:
+            if strictness >= 2:
+                logger.warning("Search failed for '%s' — keeping", name)
+            else:
+                logger.info("Product '%s' discarded (search error)", name)
                 return None
-            logger.warning("Search failed for '%s' — keeping", name)
 
         return (name, all_titles)
 
@@ -1141,6 +1148,85 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest) -> Section
     )
 
 
+def _restore_state_from_db(thread_id: str) -> dict | None:
+    """Reconstruct in-memory entry from SQLite so reanalysis works after restart.
+
+    Loads report_data + phases (with json_output from each node) and rebuilds
+    a state dict containing the key fields needed by _reanalyze_sync.
+    """
+    import json as _json
+
+    try:
+        from competition.db import get_analysis, get_phases, init_db
+
+        conn = init_db()
+        db_record = get_analysis(thread_id, conn=conn)
+        if db_record is None:
+            conn.close()
+            return None
+
+        report_data = db_record.get("report_data") or {}
+        if isinstance(report_data, str):
+            report_data = _json.loads(report_data)
+
+        products_raw = db_record.get("products") or "[]"
+        target_products: list[str] = _json.loads(products_raw) if isinstance(products_raw, str) else list(products_raw or [])
+
+        # Reconstruct state from phase json_output fields
+        state: dict = {
+            "report_data": report_data,
+            "target_products": target_products,
+            "user_request": db_record.get("query", ""),
+            "orchestration_result": {},
+            "collected_data": [],
+            "analysis_result": {},
+            "review_verdict": {},
+        }
+
+        # Load per-phase structured outputs into the state
+        phases = get_phases(thread_id, conn=conn)
+        conn.close()
+
+        for p in phases:
+            jo = p.get("json_output")
+            if not jo:
+                continue
+            if isinstance(jo, str):
+                jo = _json.loads(jo)
+            phase_key = p.get("phase_key", "")
+            version = p.get("version") or 0
+            # Only restore version 0 (original) for base state
+            if version != 0:
+                continue
+            if phase_key == "orchestrator":
+                state["orchestration_result"] = jo
+            elif phase_key == "collector":
+                # collector json_output has summary + data_points_count, not full data
+                state["collection_summary"] = jo.get("summary", {})
+            elif phase_key == "analyst":
+                state["analysis_result"] = jo
+            elif phase_key == "reviewer":
+                state["review_verdict"] = jo
+            elif phase_key == "writer":
+                # ReportData stored as json_output; keep as backup if report_data missing
+                if not state.get("report_data"):
+                    state["report_data"] = jo
+
+        entry = {
+            "state": state,
+            "query": db_record.get("query", ""),
+            "products": target_products,
+            "status": db_record.get("status", "completed"),
+            "created_at": db_record.get("created_at", ""),
+            "token_usage": db_record.get("token_usage") if isinstance(db_record.get("token_usage"), list) else _json.loads(db_record.get("token_usage") or "[]"),
+        }
+        logger.info("Restored state for %s from DB (v=%d phases)", thread_id[:12], len(phases))
+        return entry
+    except Exception:
+        logger.exception("Failed to restore state for %s from DB", thread_id)
+        return None
+
+
 @router.put("/report/{thread_id}", response_model=ReportResponse)
 async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> ReportResponse:
     """Handle HITL decision or what-if rewrite request.
@@ -1151,6 +1237,11 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     import asyncio
 
     entry = _store.get(thread_id)
+    if entry is None:
+        # Try to restore state from DB (survives gateway restart)
+        entry = _restore_state_from_db(thread_id)
+        if entry is not None:
+            _store[thread_id] = entry
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
@@ -1281,8 +1372,16 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 "message": f"{display_label} 开始…",
             })
 
-            result = node_fn(st)
+            from competition.executor import get_total_tokens
+            tokens_before = get_total_tokens()
+            try:
+                result = node_fn(st)
+            except Exception:
+                logger.exception("%s node failed", node_key)
+                result = {}
             st.update(result)
+            tokens_after = get_total_tokens()
+            delta_tokens = max(tokens_after - tokens_before, 0)
             end_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
             _emit_event(thread_id, "node_end", {
@@ -1291,7 +1390,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 "icon": icon,
                 "status": "done",
                 "progress": f"{display_label} 完成",
-                "tokens": 0,
+                "tokens": delta_tokens,
             })
 
             # Extract structured JSON output from the node result
@@ -1311,7 +1410,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 thread_id=thread_id, phase_key=phase_key,
                 label=display_label, icon=icon, status="completed",
                 start_time=start_time, end_time=end_time,
-                tokens=0, content=dict(_re_content), details=[],
+                tokens=delta_tokens, content=dict(_re_content), details=[],
                 json_output=_json_output,
                 version=round_num,
             )
@@ -1327,6 +1426,11 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             from competition.nodes.analyst import analyst_node
             from competition.nodes.reviewer import reviewer_node
 
+            # Reset review state so G7/G8 re-validates the new analysis data
+            state["review_round"] = 0
+            state.pop("review_verdict", None)
+            state.pop("review_package", None)
+
             logger.info("Reanalysis starting for %s", thread_id[:12])
             _run_re_node("analyst", analyst_node, state)
             _run_re_node("reviewer", reviewer_node, state)
@@ -1336,6 +1440,11 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             from competition.nodes.analyst import analyst_node
             from competition.nodes.collector import collector_node
             from competition.nodes.reviewer import reviewer_node
+
+            # Reset review state so G7/G8 re-validates the new collected data
+            state["review_round"] = 0
+            state.pop("review_verdict", None)
+            state.pop("review_package", None)
 
             logger.info("Replan starting for %s", thread_id[:12])
             _run_re_node("collector", collector_node, state)
@@ -1533,36 +1642,43 @@ async def export_report(thread_id: str, format: str = "md"):
 
 
 @router.get("/report/{thread_id}/export-feishu")
-async def export_to_feishu(thread_id: str):
+async def export_to_feishu(thread_id: str, fastapi_request: Request):
     """Export a completed report to Feishu Docx. Returns the doc URL."""
+    from competition.db import get_user_settings
+    from competition.executor import clear_user_context, set_user_context
     from competition.feishu_doc import export_report_to_doc, is_manual_export_enabled
 
-    if not is_manual_export_enabled():
-        raise HTTPException(status_code=400, detail="Feishu manual export is not enabled")
+    user_id = _get_user_id(fastapi_request)
+    user_settings = get_user_settings(user_id) if user_id != "default" else None
+    set_user_context(user_id, user_settings)
+    try:
+        if not is_manual_export_enabled():
+            raise HTTPException(status_code=400, detail="飞书手动导出未开启，请在设置中启用 doc_manual_export")
 
-    entry = _store.get(thread_id)
-    if entry is None:
-        # Fallback: load from SQLite
-        from competition.db import get_analysis, init_db
-        conn = init_db()
-        db_record = get_analysis(thread_id, conn=conn)
-        conn.close()
-        if db_record is None:
-            raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
-        report = db_record.get("report_data") or {}
-        title = db_record.get("title", "")
-    else:
-        report = entry.get("state", {}).get("report_data") or {}
-        title = report.get("title", "") if isinstance(report, dict) else str(getattr(report, "title", ""))
+        entry = _store.get(thread_id)
+        if entry is None:
+            # Fallback: load from SQLite
+            from competition.db import get_analysis, init_db
+            conn = init_db()
+            db_record = get_analysis(thread_id, conn=conn)
+            conn.close()
+            if db_record is None:
+                raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+            report = db_record.get("report_data") or {}
+            title = db_record.get("title", "")
+        else:
+            report = entry.get("state", {}).get("report_data") or {}
+            title = report.get("title", "") if isinstance(report, dict) else str(getattr(report, "title", ""))
 
-    sections = report.get("sections", []) if isinstance(report, dict) else getattr(report, "sections", [])
-    products = report.get("products", []) if isinstance(report, dict) else getattr(report, "products", [])
+        products = report.get("products", []) if isinstance(report, dict) else getattr(report, "products", [])
 
-    md = _render_report_markdown({"state": {"report_data": report}, "title": title, "products": products})
-    doc_url = export_report_to_doc(str(title), md)
-    if doc_url:
-        return {"status": "ok", "doc_url": doc_url}
-    raise HTTPException(status_code=500, detail="Failed to create Feishu document")
+        md = _render_report_markdown({"state": {"report_data": report}, "title": title, "products": products})
+        doc_url = export_report_to_doc(str(title), md)
+        if doc_url:
+            return {"status": "ok", "doc_url": doc_url}
+        raise HTTPException(status_code=500, detail="飞书文档创建失败，请检查 app_id/app_secret/tenant/open_id 和应用权限")
+    finally:
+        clear_user_context()
 
 
 @router.get("/stream/{thread_id}")
@@ -1574,6 +1690,11 @@ async def stream(thread_id: str, fastapi_request: Request):
     the standard SSE wire format.
     """
     entry = _store.get(thread_id)
+    if entry is None:
+        # Try to restore from DB (survives gateway restart)
+        entry = _restore_state_from_db(thread_id)
+        if entry is not None:
+            _store[thread_id] = entry
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
@@ -1627,7 +1748,7 @@ async def current_user(fastapi_request: Request):
             import os as _os, sqlite3 as _sqlite
             auth_db = _os.path.join(_os.path.dirname(__file__), "..", "..", ".ci-agent", "auth.db")
             if _os.path.exists(auth_db):
-                ac = _sqlite3.connect(auth_db)
+                ac = _sqlite.connect(auth_db)
                 row = ac.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
                 ac.close()
                 if row:
@@ -1875,7 +1996,7 @@ def _finalize_cancelled(thread_id: str) -> None:
 
 
 def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str], user_id: str = "default") -> None:
-    """ProductResolver (pre-graph) → Orchestrator (graph entry) `[v4 Plan D]`.
+    """ProductResolver (pre-graph) → Orchestrator (graph entry).
 
     Phase 1 (pre-graph): ProductResolver — LLM extract + search verify + LLM correct
       → verified products → state["target_products"]
@@ -2174,6 +2295,7 @@ def _run_graph_sync(thread_id: str) -> None:
                     # Persist phase content for history reconstruction
                     from competition.db import save_phase as _sp
                     _now = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
+
                     _sp(
                         thread_id=thread_id, phase_key=current_node,
                         label=_NODE_LABELS.get(current_node, current_node),

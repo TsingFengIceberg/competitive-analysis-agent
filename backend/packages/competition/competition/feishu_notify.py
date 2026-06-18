@@ -38,6 +38,11 @@ def _get_token(app_id: str, app_secret: str) -> str | None:
 
 def _get_feishu_config() -> dict:
     """Read feishu toggles from DB config_group only."""
+    from competition.config_mode import is_file_mode
+
+    if is_file_mode():
+        return _get_feishu_config_from_file()
+
     try:
         from competition.executor import _get_active_config_group
         cg = _get_active_config_group()

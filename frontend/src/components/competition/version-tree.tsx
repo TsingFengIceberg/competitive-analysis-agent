@@ -276,7 +276,6 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
           {/* Section count */}
           <div className="text-muted-foreground">
             {rd.sections?.length ?? 0} 章节
-            {rd.sections?.filter((s) => s.content_type === "what-if-form").length ? " · 含 What-if" : ""}
           </div>
         </>
       ) : (

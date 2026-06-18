@@ -187,7 +187,61 @@ cp .env.example .env && source .env
 
 ## 配置
 
-项目配置分为两层：**`.env`** 提供 API 密钥（必须填写），**`config.yaml`** 提供 Agent 级别的模型和参数调优（所有字段均有内置默认值，不创建也能运行）。
+项目支持**两种配置模式**，通过环境变量 `CI_AGENT_CONFIG_MODE` 切换：
+
+| 模式 | 触发方式 | 配置来源 | 适用场景 |
+|------|---------|---------|---------|
+| **DB 模式**（默认） | 不设或 `CI_AGENT_CONFIG_MODE=db` | SQLite `user_settings` 表，通过设置界面管理 | 正式用户、多用户隔离 |
+| **File 模式** | `CI_AGENT_CONFIG_MODE=file` | `config.yaml` + `.env` | 调试、演示、无账号场景 |
+
+### DB 模式（默认）
+
+启动后访问 `/competition/settings`，在设置面板中配置 LLM 提供商、API Key、搜索后端、飞书凭证及 per-Agent 参数。所有配置按用户账号隔离存储在 `.ci-agent/competition.db` 的 `user_settings` 表中，登录即可跨设备同步；DB 模式下无需维护 `.env` 或 `config.yaml`。
+
+设置面板包含三个区域：
+- **API 凭证**：LLM Provider（名称 + Key + Base URL）、Tavily / Jina AI 独立保存、飞书凭证（多套动态增删）
+- **配置组**：多组预设（groupA / groupB ...），每组独立控制搜索开关、飞书功能开关、per-Agent 覆盖
+- **Per-Agent 覆盖**：每个 Agent 可独立指定 Provider / Model / Temperature / Timeout / Max Turns 等
+
+<table>
+<tr>
+<td width="50%"><img src="images/sample/user_config_sample_1.png" width="100%"></td>
+<td width="50%"><img src="images/sample/user_config_sample_2.png" width="100%"></td>
+</tr>
+<tr>
+<td align="center" width="50%"><b>用户配置：API 凭证</b> — LLM / 搜索 / 飞书凭证按账号隔离保存</td>
+<td align="center" width="50%"><b>用户配置：配置组</b> — 多预设切换 + per-Agent 参数覆盖</td>
+</tr>
+</table>
+
+### File 模式（调试/演示）
+
+不使用数据库，直接从 `config.yaml` 和 `.env` 读取配置。适合调试、演示或无账号场景；LLM / 搜索 / 飞书密钥放在 `.env`，模型路由、搜索开关、飞书功能开关和 per-Agent 参数放在 `config.yaml`。
+
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+# 编辑 .env 和 config.yaml 填写实际值
+CI_AGENT_CONFIG_MODE=file ./scripts/restart-light.sh
+```
+
+### 配置同步脚本
+
+`scripts/sync-user-config.py` 可在两种模式间迁移配置：
+
+```bash
+cd backend
+
+# File → DB：将 config.yaml + .env 写入指定用户的 DB 记录
+PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email>
+
+# DB → File：将用户 DB 记录写回 config.yaml + .env
+PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email>
+
+# 预览变更（不实际写入）
+PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email> --dry-run
+PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email> --dry-run
+```
 
 ### .env
 
@@ -221,11 +275,13 @@ FEISHU_NOTIFY_OPEN_ID=your-feishu-open-id
 FEISHU_TENANT=your-feishu-tenant
 ```
 
-LLM 密钥按需填写（使用哪个 provider 就填哪个），搜索类密钥未填写时自动退化为 DuckDuckGo 免费搜索（可在 `config.yaml` 中关闭 DDG）。
+LLM 密钥按需填写（使用哪个 provider 就填哪个），搜索类密钥未填写时自动退化为 DuckDuckGo 免费搜索。
+
+> **注意**：DB 模式下 `.env` 和 `config.yaml` **不是必需的** — 所有配置都在设置界面中管理。File 模式下才需要手动维护这两个文件。
 
 ### config.yaml
 
-所有字段均有内置默认值，无需创建即可运行。如需切换 LLM 提供商或为不同 Agent 分配不同模型，从模板复制：
+File 模式下所有字段均有内置默认值，无需创建即可运行。如需切换 LLM 提供商或为不同 Agent 分配不同模型，从模板复制：
 
 ```bash
 cp config.example.yaml config.yaml
@@ -260,7 +316,7 @@ competition:
       search:                   # 搜索后端开关
         provider_search: true   # LLM 内置搜索（Doubao/Qwen）
         tavily: true
-        ddg: false
+        ddg: true
         jina: true
 
       orchestrator:             # 意图解析（轻量模型即可）
@@ -268,6 +324,11 @@ competition:
         model: "your-doubao-model-or-endpoint-id"
         timeout_seconds: 60
       # ... collector / analyst / reviewer / writer 同理
+
+      feishu:                   # 飞书功能开关（凭证在 .env）
+        notify_enabled: false
+        doc_auto_export: false
+        doc_manual_export: false
 
     # ── DeepSeek 预设 ──
     groupB:
@@ -284,19 +345,24 @@ competition:
         model: "your-deepseek-model"
         timeout_seconds: 60
       # ... collector / analyst / reviewer / writer 同理
+
+      feishu:
+        notify_enabled: false
+        doc_auto_export: false
+        doc_manual_export: false
 ```
 
-每个 Agent 可独立指定 `provider` + `model`，不填则自动继承 `default_provider` + `default_model`。
+每个 Agent 可独立指定 `provider` + `model`，不填则自动继承 `default_provider` + `default_model`。`search.provider_search` 表示调用模型供应商内置搜索；Tavily / Jina 未配置密钥时会自动跳过对应后端。
 
 ### 飞书接入（可选）
 
-分析完成自动通知、自动导出飞书文档、手动导出飞书文档三项能力，开关在 `config.yaml` 各配置组的 `feishu` 段：
+分析完成自动通知、自动导出飞书文档、手动导出飞书文档三项能力都按配置模式读取：DB 模式在设置面板的配置组里开启；File 模式在 `config.yaml` 各配置组的 `feishu` 段开启。
 
 ```yaml
 feishu:
-  notify_enabled: true
-  doc_auto_export: true
-  doc_manual_export: true
+  notify_enabled: true        # 分析完成飞书私聊通知
+  doc_auto_export: true       # 分析完成自动导出飞书文档
+  doc_manual_export: true     # 报告卡片显示「导出飞书」按钮
 ```
 
 **前提准备**（全部功能共用）：
