@@ -28,6 +28,7 @@ interface Props {
   onSubmit: (message: PromptInputMessage) => void;
   onStop: () => void;
   analysisRunning: boolean;
+  placeholder?: string;
 }
 
 function SubmitButton({ isStreaming, analysisRunning }: { isStreaming: boolean; analysisRunning: boolean }) {
@@ -35,7 +36,7 @@ function SubmitButton({ isStreaming, analysisRunning }: { isStreaming: boolean; 
 
   useEffect(() => {
     const check = () => {
-      const ta = document.querySelector("form textarea") as HTMLTextAreaElement | null;
+      const ta = document.querySelector<HTMLTextAreaElement>("form textarea");
       setIsEmpty(!ta?.value.trim());
     };
     check();
@@ -66,6 +67,7 @@ export default function CompetitionQueryInput({
   onSubmit,
   onStop,
   analysisRunning,
+  placeholder = "输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面",
 }: Props) {
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -84,7 +86,7 @@ export default function CompetitionQueryInput({
     <PromptInput onSubmit={handleSubmit} disabled={disabled}>
       <PromptInputBody>
         <PromptInputTextarea
-          placeholder="输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面"
+          placeholder={placeholder}
         />
       </PromptInputBody>
       <PromptInputFooter>

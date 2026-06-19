@@ -1,9 +1,6 @@
 import { cookies } from "next/headers";
-import { Toaster } from "sonner";
 
-import { QueryClientProvider } from "@/components/query-client-provider";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { CompetitionSidebar } from "@/components/competition/competition-sidebar";
+import { CompetitionShell } from "./competition-shell";
 
 function parseSidebarOpenCookie(
   value: string | undefined,
@@ -21,13 +18,5 @@ export async function CompetitionContent({
     cookieStore.get("sidebar_state")?.value,
   );
 
-  return (
-    <QueryClientProvider>
-      <SidebarProvider className="h-screen" defaultOpen={initialSidebarOpen}>
-        <CompetitionSidebar />
-        <SidebarInset className="min-w-0">{children}</SidebarInset>
-      </SidebarProvider>
-      <Toaster position="top-center" />
-    </QueryClientProvider>
-  );
+  return <CompetitionShell defaultOpen={initialSidebarOpen}>{children}</CompetitionShell>;
 }

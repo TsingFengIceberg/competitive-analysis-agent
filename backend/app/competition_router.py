@@ -161,8 +161,28 @@ MAX_BUFFERED_EVENTS = 64
 def _get_or_create_queue(thread_id: str) -> _queue_mod.Queue:
     """Get or create a thread-safe queue for a thread's SSE stream."""
     if thread_id not in _stream_queues:
-        _stream_queues[thread_id] = _queue_mod.Queue(maxsize=256)
+        _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
     return _stream_queues[thread_id]
+
+
+def _reset_stream_queue(thread_id: str) -> None:
+    """Start a fresh live SSE queue while keeping replay buffer history."""
+    _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
+
+
+def _put_stream_frame(thread_id: str, frame: str, event_type: str) -> None:
+    q = _get_or_create_queue(thread_id)
+    try:
+        q.put_nowait(frame)
+    except _queue_mod.Full:
+        try:
+            q.get_nowait()
+        except _queue_mod.Empty:
+            pass
+        try:
+            q.put_nowait(frame)
+        except _queue_mod.Full:
+            logging.getLogger(__name__).warning("SSE live queue saturated for %s [%s]; dropped frame", thread_id[:12], event_type)
 
 
 def _format_sse(event: str, data, *, event_id: str | None = None) -> str:
@@ -207,9 +227,8 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
             buf.pop(0)
 
         # Push to live queue
-        q = _get_or_create_queue(thread_id)
-        q.put_nowait(frame)
-        _log.info("SSE emit #%d [%s] queue_depth=%d", seq, event_type, q.qsize())
+        _put_stream_frame(thread_id, frame, event_type)
+        _log.info("SSE emit #%d [%s]", seq, event_type)
     except Exception:
         _log.exception("SSE emit failed for %s [%s]", thread_id, event_type)
 
@@ -1065,7 +1084,7 @@ async def get_execution_trace(thread_id: str) -> dict:
 class HitlDecisionRequest(BaseModel):
     """HITL decision or what-if input from frontend."""
 
-    action: str = "rewrite"  # "approve" | "rewrite" | "reanalyze" | "replan"
+    action: str = "rewrite"  # "approve" | "rewrite" | "reanalyze" | "replan" | "auto"
     comment: str = ""
     target_focus: list[str] | None = None
     fork_version: int | None = None  # If set, fork from this historical version instead of current
@@ -1253,10 +1272,22 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
     state = entry.get("state", {})
 
+    action = decision.action
+    comment = decision.comment
+    target_focus = decision.target_focus
+    if action == "auto":
+        from competition.nodes.rework_intent import parse_rework_intent
+        intent = parse_rework_intent(state, comment)
+        action = intent["action"]
+        comment = intent["comment"]
+        target_focus = intent["target_focus"]
+        state["rework_intent"] = intent
+        logger.info("Auto rework intent for %s: action=%s focus=%s", thread_id[:12], action, target_focus)
+
     state["hitl_decision"] = {
-        "action": decision.action,
-        "comment": decision.comment,
-        "target_focus": decision.target_focus,
+        "action": action,
+        "comment": comment,
+        "target_focus": target_focus,
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     }
 
@@ -1270,12 +1301,13 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
 
     _store[thread_id]["state"] = state
 
-    if decision.action in ("rewrite", "reanalyze", "replan"):
+    if action in ("rewrite", "reanalyze", "replan"):
+        _reset_stream_queue(thread_id)
         _store[thread_id]["status"] = "running"
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, _reanalyze_sync, thread_id, decision.action)
+        loop.run_in_executor(None, _reanalyze_sync, thread_id, action)
 
-    if decision.action == "approve":
+    if action == "approve":
         _store[thread_id]["status"] = "approved"
         # Mark latest version as approved in history store
         latest = _current_db_version(thread_id)
@@ -1756,11 +1788,19 @@ async def current_user(fastapi_request: Request):
         except Exception:
             pass
 
+    config_mode = "db"
+    try:
+        from competition.config_mode import is_file_mode
+        config_mode = "file" if is_file_mode() else "db"
+    except Exception:
+        pass
+
     return {
         "user_id": user_id,
         "authenticated": user_id != "default",
         "thread_count": thread_count,
         "email": email or "",
+        "config_mode": config_mode,
     }
 
 

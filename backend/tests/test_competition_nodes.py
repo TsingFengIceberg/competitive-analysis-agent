@@ -1014,3 +1014,92 @@ class TestFeishuDelivery:
 
     def test_send_notification_no_error(self):
         _send_bot_notification("Test", "https://example.com", {"_feishu_chat_id": "test-chat"})
+
+# ═══════════════════════════════════════════════════════════════
+# Rework intent routing (§5.7 / R16)
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_rework_intent_explicit_collect_calls_llm_before_routing(monkeypatch):
+    from competition.nodes.rework_intent import parse_rework_intent
+
+    calls = []
+
+    def fake_execute_agent(*args, **kwargs):
+        calls.append((args, kwargs))
+        return (
+            '{"action":"replan","target_focus":["来源"],"comment":"重新收集信息","reason":"用户要求补充数据","confidence":0.88}',
+            42,
+        )
+
+    monkeypatch.setattr("competition.executor.execute_agent", fake_execute_agent)
+
+    intent = parse_rework_intent({}, "我想要再次收集信息")
+
+    assert calls
+    assert calls[0][1]["agent_name"] == "rework_intent"
+    assert "disable_thinking" not in calls[0][1]
+    assert intent["action"] == "replan"
+    assert intent["confidence"] == 0.88
+
+
+def test_rework_intent_negated_collect_can_route_to_rewrite(monkeypatch):
+    from competition.nodes.rework_intent import parse_rework_intent
+
+    def fake_execute_agent(*args, **kwargs):
+        return (
+            '{"action":"rewrite","target_focus":["表达"],"comment":"不要重新收集，只改写表达","reason":"用户否定了重新收集，只要求表达调整","confidence":0.91}',
+            37,
+        )
+
+    monkeypatch.setattr("competition.executor.execute_agent", fake_execute_agent)
+
+    intent = parse_rework_intent({}, "不要重新收集数据，只把报告写得更简洁")
+
+    assert intent["action"] == "rewrite"
+    assert intent["confidence"] == 0.91
+
+
+def test_rework_intent_llm_failure_falls_back_to_rule(monkeypatch):
+    from competition.nodes.rework_intent import parse_rework_intent
+
+    def fake_execute_agent(*args, **kwargs):
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr("competition.executor.execute_agent", fake_execute_agent)
+
+    intent = parse_rework_intent({}, "请重新搜索更多来源和具体数字")
+
+    assert intent["action"] == "replan"
+
+
+def test_rework_intent_explicit_analysis_uses_llm_result(monkeypatch):
+    from competition.nodes.rework_intent import parse_rework_intent
+
+    def fake_execute_agent(*args, **kwargs):
+        return (
+            '{"action":"reanalyze","target_focus":["创业者视角"],"comment":"从创业者视角重新分析机会点","reason":"用户要求改变分析视角","confidence":0.86}',
+            39,
+        )
+
+    monkeypatch.setattr("competition.executor.execute_agent", fake_execute_agent)
+
+    intent = parse_rework_intent({}, "请从创业者视角重新分析机会点")
+
+    assert intent["action"] == "reanalyze"
+
+
+def test_rework_intent_explicit_rewrite_uses_llm_result(monkeypatch):
+    from competition.nodes.rework_intent import parse_rework_intent
+
+    def fake_execute_agent(*args, **kwargs):
+        return (
+            '{"action":"rewrite","target_focus":["结构"],"comment":"只改写表达，让结构更清楚，不改结论","reason":"用户只要求表达结构调整","confidence":0.89}',
+            41,
+        )
+
+    monkeypatch.setattr("competition.executor.execute_agent", fake_execute_agent)
+
+    intent = parse_rework_intent({}, "只改写表达，让结构更清楚，不改结论")
+
+    assert intent["action"] == "rewrite"

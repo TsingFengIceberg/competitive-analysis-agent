@@ -49,7 +49,7 @@ export default function ApprovalCard({
 
   const handleCustomSubmit = useCallback(() => {
     if (comment.trim()) {
-      const action = "reanalyze";
+      const action = "auto";
       onSubmit(action, comment);
       setComment("");
     }

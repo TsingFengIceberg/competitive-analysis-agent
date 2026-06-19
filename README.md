@@ -48,8 +48,8 @@ Competitive-Analysis-Agent 是一个"数字竞争情报小组"——6 个专门�
 | **Collector** | 多源搜索采集 + 去重 + 自评覆盖率 + VoC 问卷生成 | `CollectedDataPoint[]` |
 | **Analyst** | 对比矩阵 + SWOT + 趋势预测 + 动态维度 | `AnalysisResult` |
 | **Reviewer** | 8 项质量审查 + gap 判定 + 打回重做 | `ReviewVerdict` |
-| **Writer** | 结构化报告生成 + `[n]` 溯源标注 | `ReportData` |
-| **HITL Gate** | 人工审批：批准 / 重写 / 重分析 / 重采集 | `HitlDecision` |
+| **Writer** | 结构化报告生成 + `[n]` 溯源标注 + traceability_map | `ReportData` |
+| **HITL Gate / Rework Intent** | 人工审批；自然语言返工语义路由到重采集 / 重分析 / 重写 | `HitlDecision` / `ReworkIntent` |
 
 Agent 间通过 **结构化 Pydantic Schema** 通信（非纯自然语言），每个环节的 Prompt、输入、输出均可在前端流程追踪面板中查看。
 
@@ -67,7 +67,11 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 ### 分支树 BranchTree
 
-Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支持从任意历史版本 fork、版本对比、分支合并。类似 Git for Agent workflow。
+Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支持从任意历史版本 fork、版本对比、分支合并。类似 Git for Agent workflow。报告生成后，用户也可以在同一个输入框继续输入自然语言返工要求，系统通过 Rework Intent Agent 语义判断应进入 `replan`（补采数据）、`reanalyze`（重做分析）或 `rewrite`（重写表达），并把新结果记录为可追踪版本。
+
+### 返工输入与版本追踪
+
+报告生成后，用户可以在同一个输入框继续输入自然语言返工要求；新 query 和返工 query 会作为用户气泡插入对应执行轮次前，便于把人工输入、Agent 阶段气泡和版本树对应起来。
 
 ### 动态 Schema
 
@@ -216,7 +220,7 @@ cp .env.example .env && source .env
 
 ### File 模式（调试/演示）
 
-不使用数据库，直接从 `config.yaml` 和 `.env` 读取配置。适合调试、演示或无账号场景；LLM / 搜索 / 飞书密钥放在 `.env`，模型路由、搜索开关、飞书功能开关和 per-Agent 参数放在 `config.yaml`。
+不使用数据库，直接从 `config.yaml` 和 `.env` 读取配置。适合调试、演示或无账号场景；LLM / 搜索 / 飞书密钥放在 `.env`，模型路由、搜索开关、飞书功能开关和 per-Agent 参数放在 `config.yaml`。File 模式下 `/competition` 可直接进入演示页面，无需登录。
 
 ```bash
 cp .env.example .env
@@ -524,6 +528,7 @@ competitive-analysis-agent/
 │   │       │   ├── reviewer.py        # Reviewer: 8 项质量审查 + gap 判定
 │   │       │   ├── writer.py          # Writer: 报告生成 + 溯源标注
 │   │       │   ├── hitl_gate.py       # HITL Gate: LangGraph interrupt()
+│   │       │   ├── rework_intent.py   # 自然语言返工意图路由：replan / reanalyze / rewrite
 │   │       │   ├── error_handler.py   # 错误处理 + 降级
 │   │       │   └── deep_*.py          # 深度模式节点 (deep 模式)
 │   │       ├── tools/                 # Agent 工具
@@ -556,6 +561,7 @@ competitive-analysis-agent/
 ├── frontend/
 │   └── src/
 │       ├── app/competition/           # /competition 路由页面
+│       │   ├── competition-shell.tsx  # SidebarProvider + competition 布局状态
 │       │   ├── layout.tsx             # 根布局
 │       │   ├── page.tsx               # 首页 (新建分析)
 │       │   └── [thread_id]/           # 分析详情页 (动态路由)

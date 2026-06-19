@@ -86,6 +86,32 @@ class TestStream:
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
 
+    def test_full_live_queue_drops_old_frame_instead_of_failing(self):
+        import queue
+
+        import app.competition_router as competition_router
+
+        thread_id = "comp-test-full-queue"
+        original_queue = competition_router._stream_queues.get(thread_id)
+        try:
+            q = queue.Queue(maxsize=1)
+            q.put_nowait("stale-frame")
+            competition_router._stream_queues[thread_id] = q
+
+            competition_router._emit_event(thread_id, "end", {"status": "completed"})
+
+            assert q.qsize() == 1
+            frame = q.get_nowait()
+            assert "event: end" in frame
+            assert "stale-frame" not in frame
+        finally:
+            if original_queue is None:
+                competition_router._stream_queues.pop(thread_id, None)
+            else:
+                competition_router._stream_queues[thread_id] = original_queue
+            competition_router._event_buffers.pop(thread_id, None)
+            competition_router._event_counters.pop(thread_id, None)
+
 
 class TestHistory:
     def test_empty_history(self, client):

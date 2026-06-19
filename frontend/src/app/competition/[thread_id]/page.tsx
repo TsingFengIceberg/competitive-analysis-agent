@@ -12,7 +12,10 @@ import CompetitionReportPanel from "@/components/competition/competition-report-
 import ProcessTracePanel from "@/components/competition/process-trace-panel";
 import ReportEditor from "@/components/competition/report-editor";
 import BranchTreePanel from "@/components/competition/branch-tree-panel";
+import { useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+
+import { useCompetitionLayoutState } from "../competition-shell";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -376,6 +379,9 @@ export default function CompetitionPage() {
   const api = useCompetitionAPI();
   const params = useParams<{ thread_id: string }>();
   const threadIdFromURL = params.thread_id;
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
+  const { setReportPanelExpanded } = useCompetitionLayoutState();
+  const previousSidebarOpenRef = useRef<boolean | null>(null);
 
   const [query, setQuery] = useState("对比 Slack 和 飞书");
   const [persona, setPersona] = useState<Persona>("pm");
@@ -396,9 +402,14 @@ export default function CompetitionPage() {
       setDbLoadedThreadId(null);
       setViewingHistory(null);
       setReportPanelOpen(false);
+      setReportPanelExpanded(false);
+      if (previousSidebarOpenRef.current !== null) {
+        setSidebarOpen(previousSidebarOpenRef.current);
+        previousSidebarOpenRef.current = null;
+      }
       setSseConnected(false);
     }
-  }, [threadIdFromURL]);
+  }, [threadIdFromURL, setReportPanelExpanded, setSidebarOpen]);
 
   // Auto-load existing analysis when navigating to a real thread_id.
   // Use "loading" instead of "running" to avoid triggering SSE and the
@@ -421,11 +432,10 @@ export default function CompetitionPage() {
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
-        if (d.authenticated) {
-          setUserId(d.user_id);
-          setIsAuthenticated(true);
+        if (d.authenticated || d.config_mode === "file") {
+          setUserId(d.user_id ?? "default");
+          setIsAuthenticated(Boolean(d.authenticated));
         } else {
-          // Not authenticated — redirect to login page
           const redirect = encodeURIComponent(window.location.pathname);
           window.location.href = `/auth/login?redirect=${redirect}`;
           return;
@@ -722,7 +732,7 @@ export default function CompetitionPage() {
   const [tracePanelOpen, setTracePanelOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [branchTreeOpen, setBranchTreeOpen] = useState(false);
-  const [userMessages, setUserMessages] = useState<{text: string; timestamp: string}[]>([]);
+  const [userMessages, setUserMessages] = useState<{text: string; timestamp: string; generation: number}[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const titleRefreshedRef = useRef(false);
 
@@ -779,7 +789,7 @@ export default function CompetitionPage() {
     if (!text) return;
 
     setQuery(text);
-    setUserMessages((prev) => [...prev, { text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) }]);
+    setUserMessages([{ text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }), generation: 0 }]);
     setStatus("running");
     setPhaseMap(new Map());
     setStreamingContent({});
@@ -845,7 +855,7 @@ export default function CompetitionPage() {
   }, [threadId, api]);
 
   const handleStop = useCallback(() => {
-    handleCancel();
+    void handleCancel();
   }, [handleCancel]);
 
   // Fetch full history entries for tree display when count changes
@@ -932,6 +942,7 @@ export default function CompetitionPage() {
         timestamp: reportData?.generated_at
           ? new Date(reportData.generated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
           : new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+        generation: 0,
       }]);
     }
 
@@ -1079,12 +1090,38 @@ export default function CompetitionPage() {
     return cards;
   }, [historyEntries, reportData]);
 
+  const latestReportVersion = useMemo(() => {
+    if (reportCards.length > 0) return Math.max(...reportCards.map((card) => card.version));
+    if (historyEntries.length > 0) return Math.max(...historyEntries.map((entry) => entry.version));
+    return 1;
+  }, [historyEntries, reportCards]);
+
+  const reworkForkVersion = reportPanelOpen && viewingHistory ? viewingHistory.version : latestReportVersion;
+
+  const canSubmitRework = Boolean(
+    displayReport && threadId && threadId !== "new" && status !== "running",
+  );
+
+  const queryInputPlaceholder = canSubmitRework
+    ? "继续输入修改要求，系统会自动判断：重新搜索 / 重新分析 / 重写报告"
+    : "输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面";
+
   // Report panel + HITL callbacks
   const handleExpandReport = useCallback((version: number) => {
-    handleViewHistory(version);
+    previousSidebarOpenRef.current ??= sidebarOpen;
+    void handleViewHistory(version);
+    setReportPanelExpanded(true);
+    setSidebarOpen(false);
     setReportPanelOpen(true);
-  }, [handleViewHistory]);
-  const handleCloseReport = useCallback(() => setReportPanelOpen(false), []);
+  }, [handleViewHistory, sidebarOpen, setReportPanelExpanded, setSidebarOpen]);
+  const handleCloseReport = useCallback(() => {
+    setReportPanelOpen(false);
+    setReportPanelExpanded(false);
+    if (previousSidebarOpenRef.current !== null) {
+      setSidebarOpen(previousSidebarOpenRef.current);
+      previousSidebarOpenRef.current = null;
+    }
+  }, [setReportPanelExpanded, setSidebarOpen]);
   const handleViewTrace = useCallback(() => setTracePanelOpen(true), []);
   const handleCloseTrace = useCallback(() => setTracePanelOpen(false), []);
   const handleEdit = useCallback(() => setEditorOpen(true), []);
@@ -1093,7 +1130,7 @@ export default function CompetitionPage() {
   const handleCloseBranchTree = useCallback(() => setBranchTreeOpen(false), []);
 
   const handleNavigateVersion = useCallback((version: number) => {
-    handleViewHistory(version);
+    void handleViewHistory(version);
     setTimeout(() => {
       document.getElementById(`report-card-v${version}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 100);
@@ -1113,15 +1150,32 @@ export default function CompetitionPage() {
   const handleReanalyze = useCallback((action: string, comment: string, cardVersion: number) => {
     if (!threadId) return;
     setHitlSubmitting(true);
-    setStatus("running");
     api.submitDecision(threadId, {
       action, comment, target_focus: null,
       fork_version: cardVersion,
+    }).then(() => {
+      setStatus("running");
+      setHitlVisible(false);
     }).catch((err) => {
       console.error("HITL submit failed:", err);
       setHitlSubmitting(false);
     });
   }, [threadId, api]);
+
+  const handleConversationSubmit = useCallback((message: PromptInputMessage) => {
+    const text = message.text.trim();
+    if (!text) return;
+    if (canSubmitRework) {
+      setUserMessages((prev) => [...prev, {
+        text,
+        timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+        generation: reworkForkVersion,
+      }]);
+      handleReanalyze("auto", text, reworkForkVersion);
+      return;
+    }
+    void handleSubmit(message);
+  }, [canSubmitRework, handleReanalyze, handleSubmit, reworkForkVersion]);
 
   const handleExportMD = useCallback(() => {
     if (threadId) window.open(`/api/competition/report/${threadId}/export?format=md`, "_blank");
@@ -1135,7 +1189,7 @@ export default function CompetitionPage() {
   const isWelcome = status === "idle";
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden bg-background">
       {/* CI-Agent badge - top-left corner */}
       {!isWelcome && (
         <div className="pointer-events-none absolute left-3 top-3 z-20 flex select-none items-center gap-1.5 rounded-lg bg-background/80 px-2 py-1 backdrop-blur-sm">
@@ -1144,10 +1198,13 @@ export default function CompetitionPage() {
         </div>
       )}
       {/* Main area: chat column [+ inline report panel when open] */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className={cn(
+        "grid w-full min-w-0 flex-1 overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out",
+        reportPanelOpen ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]",
+      )}>
         {/* Chat column */}
-        <div className={cn("flex flex-col min-h-0", reportPanelOpen ? "flex-1" : "flex-1")}>
-          <main className="flex min-h-0 max-w-full grow flex-col">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <main className="flex min-h-0 w-full min-w-0 max-w-full grow flex-col overflow-hidden">
             {/* Messages */}
             <div className="flex min-h-0 flex-1 justify-center">
               <div className="flex flex-col flex-1 min-h-0 w-full">
@@ -1193,9 +1250,10 @@ export default function CompetitionPage() {
                     disabled={false}
                     industry={industry}
                     onIndustryChange={setIndustry}
-                    onSubmit={handleSubmit}
+                    onSubmit={handleConversationSubmit}
                     onStop={handleStop}
                     analysisRunning={false}
+                    placeholder={queryInputPlaceholder}
                   />
                 </div>
               </div>
@@ -1207,9 +1265,10 @@ export default function CompetitionPage() {
                     disabled={status === "running"}
                     industry={industry}
                     onIndustryChange={setIndustry}
-                    onSubmit={handleSubmit}
+                    onSubmit={handleConversationSubmit}
                     onStop={handleStop}
                     analysisRunning={status === "running"}
+                    placeholder={queryInputPlaceholder}
                   />
                 </div>
               </div>
@@ -1219,11 +1278,10 @@ export default function CompetitionPage() {
 
         {/* Inline report panel — splits the chat area */}
         {reportPanelOpen && (
-          <div className="w-[42%] min-w-[420px] h-full">
+          <div className="h-full min-w-0 overflow-hidden opacity-100 transition-opacity duration-300 ease-in-out">
             <CompetitionReportPanel
               open={reportPanelOpen}
               onClose={handleCloseReport}
-              threadId={threadId}
               displayReport={displayReport}
               historyEntries={historyEntries}
               viewingHistory={viewingHistory}
@@ -1240,10 +1298,7 @@ export default function CompetitionPage() {
               dbLoadedThreadId={dbLoadedThreadId}
               dbLoadedReport={dbLoadedReport}
               hitlVisible={hitlVisible}
-              hitlSubmitting={hitlSubmitting}
               status={status}
-              onApprove={handleApprove}
-              onReanalyze={(action, comment) => handleReanalyze(action, comment, viewingHistory?.version ?? 0)}
               threadIdForApi={threadId}
             />
           </div>

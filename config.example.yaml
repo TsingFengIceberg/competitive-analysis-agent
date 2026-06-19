@@ -136,6 +136,14 @@ competition:
       hitl:
         approval_timeout_minutes: 30
 
+      # 返工意图解析 — HITL 后解析用户二次 query，建议用低成本轻量模型
+      rework_intent:
+        provider: "doubao"
+        model: "your-doubao-lite-model-or-endpoint-id"
+        timeout_seconds: 30
+        temperature: 0.0
+        max_tokens: 512
+
       # 飞书集成 — 凭证在 .env，此处只控制功能开关
       feishu:
         notify_enabled: false        # 分析完成飞书私聊通知
@@ -198,6 +206,13 @@ competition:
 
       hitl:
         approval_timeout_minutes: 30
+
+      rework_intent:
+        provider: "deepseek"
+        model: "your-deepseek-model"
+        timeout_seconds: 30
+        temperature: 0.0
+        max_tokens: 512
 
       feishu:
         notify_enabled: false

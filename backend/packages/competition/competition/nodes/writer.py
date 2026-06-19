@@ -181,7 +181,7 @@ def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: l
             if not isinstance(item, dict):
                 continue
             src_ids = item.get("source_data_point_ids", [])
-            swot_content += f"- **{item.get('category', '?')}**: {item.get('statement', '')} {_src_ref(src_ids)}\n  - *证据*: {item.get('evidence', '')}\n"
+            swot_content += f"- **{item.get('category', '?')}**: {item.get('statement', '')} {_src_ref(src_ids)}\n  - 证据: {item.get('evidence', '')}\n"
     sections.append({
         "id": "sec-swot", "title": "SWOT 分析",
         "content": swot_content or "_暂无 SWOT 数据_", "content_type": "text",

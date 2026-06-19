@@ -39,6 +39,7 @@ const AGENT_TO_PHASE: Record<string, string> = {
 interface UserMessage {
   text: string;
   timestamp: string;
+  generation: number;
 }
 
 interface ReportCardData {
@@ -133,13 +134,20 @@ export default function CompetitionChatArea({
       genMap.set(gen, entry);
     }
 
+    // Ensure freshly submitted user messages are visible before the first phase arrives.
+    for (const msg of userMessages) {
+      if (!genMap.has(msg.generation)) {
+        genMap.set(msg.generation, { phases: [] });
+      }
+    }
+
     // Sort phases within each generation by startTime
     for (const entry of genMap.values()) {
       entry.phases.sort((a, b) => a.startTime - b.startTime);
     }
 
     return new Map([...genMap.entries()].sort(([a], [b]) => a - b));
-  }, [phases, reportCards]);
+  }, [phases, reportCards, userMessages]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const userAtBottomRef = useRef(true);
@@ -159,24 +167,17 @@ export default function CompetitionChatArea({
     if (el && userAtBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [phases, streamingContent]);
+  }, [phases, streamingContent, userMessages]);
 
   return (
-    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
-      <div className="mx-auto max-w-(--container-width-md) flex flex-col gap-5 p-4">
-        {/* User messages */}
-        {userMessages.map((msg, i) => (
-          <div key={i} className="flex flex-col items-end gap-1">
-            <div className="rounded-2xl bg-muted px-4 py-2.5 max-w-[85%]">
-              <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-            </div>
-            <span className="text-[10px] text-muted-foreground px-2">{msg.timestamp}</span>
-          </div>
-        ))}
-
+    <div ref={scrollRef} className="flex-1 min-h-0 w-full min-w-0 overflow-y-auto overflow-x-hidden">
+      <div className="mx-auto w-full max-w-(--container-width-md) min-w-0 flex flex-col gap-5 p-4">
         {/* Phases + cards interleaved by generation */}
         {[...generations.entries()].map(([gen, { phases: genPhases, card }]) => (
           <Fragment key={gen}>
+            {userMessages
+              .filter((msg) => msg.generation === gen)
+              .map((msg, i) => <UserBubble key={`user-${gen}-${i}`} message={msg} />)}
             {genPhases.map((phase) => (
               <PhaseMessage
                 key={phase.key}
@@ -246,6 +247,19 @@ export default function CompetitionChatArea({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── UserBubble ──
+
+function UserBubble({ message }: { message: UserMessage }) {
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="rounded-2xl bg-muted px-4 py-2.5 max-w-[85%]">
+        <p className="text-sm whitespace-pre-wrap">{message.text}</p>
+      </div>
+      <span className="text-[10px] text-muted-foreground px-2">{message.timestamp}</span>
     </div>
   );
 }

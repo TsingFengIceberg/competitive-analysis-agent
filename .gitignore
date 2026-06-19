@@ -122,6 +122,9 @@ frontend/src/core/utils/
 frontend/src/mdx-components.ts
 frontend/src/typings/
 
+.agents/
+skills-lock.json
+
 # Internal development docs (not needed by judges)
 CLAUDE.md
 frontend/CLAUDE.md
@@ -140,6 +143,7 @@ COMPETITION_TODO.md
 DOCS/
 DOCS-PA-AGENT/
 DOCS-STUDY/
+PPT/
 deer-flow.code-workspace
 
 TEMP_IMG/

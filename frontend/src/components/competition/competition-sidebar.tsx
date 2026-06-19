@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 
+import { useCompetitionLayoutState } from "@/app/competition/competition-shell";
 import {
   Sidebar,
   SidebarContent,
@@ -73,10 +74,11 @@ export function CompetitionSidebar({
   ...props
 }: React.ComponentProps<typeof Sidebar>) {
   const { open: isSidebarOpen } = useSidebar();
+  const { reportPanelExpanded } = useCompetitionLayoutState();
   const pathname = usePathname();
 
   return (
-    <Sidebar variant="sidebar" collapsible="icon" {...props}>
+    <Sidebar variant="sidebar" collapsible={reportPanelExpanded ? "offcanvas" : "icon"} {...props}>
       <SidebarHeader className="py-0">
         <CompetitionHeader />
         <SidebarMenu>

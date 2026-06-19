@@ -24,7 +24,7 @@ interface ConfigGroup {
   agent_configs: Record<string, Record<string, string | number>>;
 }
 
-const AGENTS = ["orchestrator", "collector", "analyst", "reviewer", "writer", "hitl"];
+const AGENTS = ["orchestrator", "collector", "analyst", "reviewer", "writer", "hitl", "rework_intent"];
 
 const FEISHU_TOGGLES = [
   { key: "notify_enabled", label: "分析完成通知" },
@@ -537,7 +537,8 @@ export default function SettingsPage() {
                     </div>
                     {AGENTS.map((agent) => (
                       <div key={agent} className="rounded border bg-muted/30 p-2.5 space-y-1.5">
-                        <h4 className="text-xs font-medium capitalize">{agent === "hitl" ? "HITL Gate" : agent}</h4>
+                        <h4 className="text-xs font-medium capitalize">{agent === "hitl" ? "HITL Gate" : agent === "rework_intent" ? "Rework Intent Parser（HITL 返工意图解析）" : agent}</h4>
+                        {agent === "rework_intent" && <p className="text-[10px] text-muted-foreground">解析报告后的二次修改 query，自动判断重新搜索 / 重新分析 / 重写报告；建议使用低成本轻量模型。</p>}
                     {agent === "hitl" ? (
                     <div className="flex items-center gap-2">
                       <label className="space-y-0.5">
