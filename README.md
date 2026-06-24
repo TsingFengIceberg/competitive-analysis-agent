@@ -155,15 +155,15 @@ make build              # 重新构建前端
 
 ```bash
 cp .env.example .env
-docker compose -f docker/docker-compose.yaml up -d
+docker compose up -d --build
 ```
 
 常用命令：
 
 ```bash
-docker compose -f docker/docker-compose.yaml down          # 停止
-docker compose -f docker/docker-compose.yaml logs -f       # 日志
-docker compose -f docker/docker-compose.yaml up -d --build # 重建
+docker compose down          # 停止
+docker compose logs -f       # 日志
+docker compose up -d --build # 重建
 ```
 
 ### 方式三：手动脚本

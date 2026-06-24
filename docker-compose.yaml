@@ -37,6 +37,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      network: host
     container_name: ci-agent-gateway
     command: >
       sh -c "cd backend
@@ -44,6 +45,7 @@ services:
       uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8001"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./.env:/app/.env:ro
     environment:
       - LANG=C.UTF-8
       - LC_ALL=C.UTF-8
