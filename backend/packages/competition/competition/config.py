@@ -127,17 +127,6 @@ class DataSourceRoutingConfig(BaseModel):
     )
 
 
-class DeepModeConfig(BaseModel):
-    """Deep mode pipeline configuration — §3.1 (P1)."""
-
-    enabled: bool = Field(default=True, description="Allow deep_mode=true in requests")
-    max_review_rounds: int = Field(default=5, description="Relaxed round cap for deep Reviewer")
-    extra_sources: list[str] = Field(
-        default_factory=lambda: ["youtube_transcript", "bilibili_api", "douyin_api", "feishu_docs"],
-        description="Additional data sources for deep Collector",
-    )
-
-
 class SearchBackendConfig(BaseModel):
     """Real web search backend toggles — controls which APIs Collector actually calls.
 
@@ -194,7 +183,6 @@ class CompetitionConfig(BaseModel):
     writer: WriterConfig = Field(default_factory=WriterConfig)
     hitl: HitlConfig = Field(default_factory=HitlConfig)
     data_sources: DataSourceRoutingConfig = Field(default_factory=DataSourceRoutingConfig)
-    deep_mode: DeepModeConfig = Field(default_factory=DeepModeConfig)
     search: SearchBackendConfig = Field(default_factory=SearchBackendConfig)
     branch_exploration: BranchExplorationConfig = Field(default_factory=BranchExplorationConfig)
 

@@ -110,32 +110,5 @@ def _graceful_stop(error: str, state: dict) -> dict:
     }
 
 
-def deep_error_handler_node(state: dict) -> dict:
-    """Deep mode variant — same logic, different error field handling."""
-    error = state.get("error", "")
-    has_results = bool(state.get("deep_collected_data") or state.get("analysis_result"))
-
-    if has_results:
-        return {
-            "error": None,
-            "unresolved_issues": [{
-                "type": "system_error",
-                "description": f"Deep mode error (degraded): {error[:200]}",
-                "severity": "minor",
-            }],
-        }
-    else:
-        logger.error("Deep error handler: graceful stop — %s", error[:100])
-        return {
-            "error": f"FATAL (deep): {error}",
-            "deep_hitl_decision": {
-                "action": "approve",
-                "comment": f"Deep mode fatal error: {error[:100]}",
-                "target_focus": None,
-                "timestamp": _now_iso(),
-            },
-        }
-
-
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()

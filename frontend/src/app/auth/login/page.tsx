@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function CompetitionLoginPage() {
+function CompetitionLoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get("redirect") || "/competition/new";
@@ -93,8 +93,9 @@ export default function CompetitionLoginPage() {
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">邮箱</label>
+            <label htmlFor="email" className="text-sm font-medium">邮箱</label>
             <input
+              id="email"
               type="email"
               required
               value={email}
@@ -104,8 +105,9 @@ export default function CompetitionLoginPage() {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">密码</label>
+            <label htmlFor="password" className="text-sm font-medium">密码</label>
             <input
+              id="password"
               type="password"
               required
               minLength={4}
@@ -138,5 +140,13 @@ export default function CompetitionLoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function CompetitionLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <CompetitionLoginForm />
+    </Suspense>
   );
 }

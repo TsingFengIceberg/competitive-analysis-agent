@@ -1,15 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Send, Square } from "lucide-react";
 
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputTextarea,
-  PromptInputFooter,
-  PromptInputSubmit,
-  type PromptInputMessage,
-} from "@/components/ai-elements/prompt-input";
 import {
   Select,
   SelectContent,
@@ -18,6 +11,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+export interface CompetitionPromptMessage {
+  text: string;
+  files: never[];
+}
+
 type ChatStatus = "ready" | "streaming" | "submitted" | "error";
 
 interface Props {
@@ -25,28 +23,10 @@ interface Props {
   disabled?: boolean;
   industry: string;
   onIndustryChange: (industry: string) => void;
-  onSubmit: (message: PromptInputMessage) => void;
+  onSubmit: (message: CompetitionPromptMessage) => void;
   onStop: () => void;
   analysisRunning: boolean;
   placeholder?: string;
-}
-
-function SubmitButton({ isStreaming, analysisRunning }: { isStreaming: boolean; analysisRunning: boolean }) {
-  const [isEmpty, setIsEmpty] = useState(true);
-
-  useEffect(() => {
-    const check = () => {
-      const ta = document.querySelector<HTMLTextAreaElement>("form textarea");
-      setIsEmpty(!ta?.value.trim());
-    };
-    check();
-    document.addEventListener("input", check);
-    return () => document.removeEventListener("input", check);
-  }, []);
-
-  if (isStreaming) return <PromptInputSubmit status="streaming" />;
-  const gray = isEmpty && !analysisRunning;
-  return <PromptInputSubmit status="ready" className={gray ? "opacity-40" : ""} />;
 }
 
 const INDUSTRIES: Record<string, string> = {
@@ -67,34 +47,53 @@ export default function CompetitionQueryInput({
   onSubmit,
   onStop,
   analysisRunning,
-  placeholder = "输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面",
+  placeholder = "输入竞品分析请求，例如：深度分析 Claude Code、Codex 和 Antigravity",
 }: Props) {
+  const [text, setText] = useState("");
   const isStreaming = status === "streaming" || status === "submitted";
+  const canSubmit = text.trim().length > 0 && !disabled;
 
-  const handleSubmit = useCallback(
-    (message: PromptInputMessage) => {
-      if (isStreaming) {
-        onStop();
-      } else if (message.text.trim()) {
-        onSubmit(message);
-      }
-    },
-    [isStreaming, onStop, onSubmit],
-  );
+  const submit = useCallback(() => {
+    if (isStreaming) {
+      onStop();
+      return;
+    }
+    if (!canSubmit) return;
+    onSubmit({ text: text.trim(), files: [] });
+    setText("");
+  }, [canSubmit, isStreaming, onStop, onSubmit, text]);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    submit();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  };
 
   return (
-    <PromptInput onSubmit={handleSubmit} disabled={disabled}>
-      <PromptInputBody>
-        <PromptInputTextarea
-          placeholder={placeholder}
-        />
-      </PromptInputBody>
-      <PromptInputFooter>
-        {/* Industry selector — left side */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground shrink-0">行业</span>
+    <form
+      onSubmit={handleSubmit}
+      className="overflow-hidden rounded-lg border bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring/30"
+    >
+      <textarea
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+        placeholder={placeholder}
+        rows={3}
+        className="max-h-48 min-h-20 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      />
+      <div className="flex min-h-11 items-center justify-between gap-3 border-t px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[11px] text-muted-foreground">行业</span>
           <Select value={industry} onValueChange={onIndustryChange} disabled={disabled}>
-            <SelectTrigger className="h-7 text-xs w-fit min-w-[120px]">
+            <SelectTrigger className="h-7 min-w-[120px] text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -106,9 +105,17 @@ export default function CompetitionQueryInput({
             </SelectContent>
           </Select>
         </div>
-        {/* Submit/Stop button — right side */}
-        <SubmitButton isStreaming={isStreaming} analysisRunning={analysisRunning} />
-      </PromptInputFooter>
-    </PromptInput>
+        <button
+          type={isStreaming ? "button" : "submit"}
+          onClick={isStreaming ? onStop : undefined}
+          disabled={!isStreaming && !canSubmit && !analysisRunning}
+          title={isStreaming ? "停止分析" : "发送"}
+          aria-label={isStreaming ? "停止分析" : "发送"}
+          className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {isStreaming ? <Square className="size-3.5" /> : <Send className="size-4" />}
+        </button>
+      </div>
+    </form>
   );
 }

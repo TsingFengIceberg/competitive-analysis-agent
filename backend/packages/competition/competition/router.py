@@ -78,12 +78,12 @@ def route_after_writer(state: dict) -> str:
 
 
 def route_after_hitl(state: dict) -> str:
-    """HITL Gate → END / Collector / Analyst / Writer / deep_collector."""
+    """HITL Gate → END / Collector / Analyst / Writer."""
     decision = state.get("hitl_decision") or {}
     action = decision.get("action", "approve")
 
     if action == "approve":
-        return "deep_collector" if state.get("deep_mode") else "__end__"
+        return "__end__"
     elif action == "replan":
         return "collector"
     elif action == "reanalyze":
@@ -91,56 +91,3 @@ def route_after_hitl(state: dict) -> str:
     elif action == "rewrite":
         return "writer"
     return "__end__"
-
-
-# ── Deep Mode Routing (§3.12, P1) ──
-
-
-def route_after_deep_collector(state: dict) -> str:
-    """Deep Collector → Deep Analyst."""
-    if state.get("error"):
-        return "deep_error_handler"
-    return "deep_analyst"
-
-
-def route_after_deep_analyst(state: dict) -> str:
-    """Deep Analyst → Deep Reviewer."""
-    if state.get("error"):
-        return "deep_error_handler"
-    return "deep_reviewer"
-
-
-def route_after_deep_reviewer(state: dict) -> str:
-    """Deep Reviewer → Deep Writer (passed / max rounds) or Deep Collector (gap)."""
-    verdict = state.get("review_verdict") or {}
-    if verdict.get("passed"):
-        return "deep_writer"
-
-    deep_round = state.get("deep_review_round", 0)
-    if deep_round >= 5:
-        return "deep_writer"
-
-    return "deep_collector"
-
-
-def route_after_deep_writer(state: dict) -> str:
-    """Deep Writer → Deep HITL."""
-    if state.get("error"):
-        return "deep_error_handler"
-    return "deep_hitl"
-
-
-def route_after_deep_hitl(state: dict) -> str:
-    """Deep HITL → feishu_delivery (approve) / deep_collector / deep_analyst / deep_writer."""
-    decision = state.get("deep_hitl_decision") or {}
-    action = decision.get("action", "approve")
-
-    if action == "approve":
-        return "feishu_delivery"
-    elif action == "replan":
-        return "deep_collector"
-    elif action == "reanalyze":
-        return "deep_analyst"
-    elif action == "rewrite":
-        return "deep_writer"
-    return "feishu_delivery"

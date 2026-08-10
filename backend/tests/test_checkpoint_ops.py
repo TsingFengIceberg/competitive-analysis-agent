@@ -421,8 +421,8 @@ class TestEmptyThread:
 
     def test_empty_thread_lineage(self, ops, mock_saver):
         mock_saver.list.return_value = []
-        # unknown checkpoint in empty thread → returns just itself
-        assert ops.lineage("t1", "nonexistent") == ["nonexistent"]
+        # Unknown checkpoints have no lineage in an empty thread.
+        assert ops.lineage("t1", "nonexistent") == []
 
     def test_single_node_thread(self, ops, mock_saver):
         """Thread with one checkpoint."""

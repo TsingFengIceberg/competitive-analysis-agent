@@ -1,8 +1,7 @@
-"""Independent gateway for Competitive-Analysis-Agent.
+"""FastAPI application for Competitive Analysis Agent.
 
 A minimal FastAPI app that mounts the competition router without any
-dependency on the DeerFlow framework. Provides auth endpoints backed
-by a simple SQLite user store + JWT cookie auth.
+Provides auth endpoints backed by a simple SQLite user store and JWT cookie auth.
 """
 
 from __future__ import annotations

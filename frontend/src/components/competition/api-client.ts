@@ -28,7 +28,6 @@ export interface AnalyzeRequest {
   target_products: string[];
   persona: Persona;
   industry?: string;  // §17: Industry selection — saas|devtools|ai|database|hardware|gaming|general
-  deep_mode: boolean;
   context_report?: Record<string, unknown> | null;
   uploaded_files?: string[] | null;
 }

@@ -3,14 +3,14 @@
 
 Usage:
     # Push: write config.yaml + .env values into a user's DB record
-    PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email>
+    uv run --project backend python scripts/sync-user-config.py push <user_email>
 
     # Pull: read a user's DB record and overwrite config.yaml + .env
-    PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email>
+    uv run --project backend python scripts/sync-user-config.py pull <user_email>
 
     # Dry-run: preview changes without writing
-    PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email> --dry-run
-    PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email> --dry-run
+    uv run --project backend python scripts/sync-user-config.py push <user_email> --dry-run
+    uv run --project backend python scripts/sync-user-config.py pull <user_email> --dry-run
 
 Both directions support --dry-run to preview changes without writing.
 """
@@ -163,8 +163,8 @@ def ensure_db_initialized(db_path: Path) -> sqlite3.Connection:
 
 
 def resolve_user_id(email: str, conn: sqlite3.Connection) -> str | None:
-    # Try the gateway auth DB (both .deer-flow/ and .ci-agent/)
-    for auth_path in (BACKEND_DIR / ".deer-flow" / "auth.db",
+    # Resolve the user created by the standalone FastAPI auth service.
+    for auth_path in (BACKEND_DIR / ".ci-agent" / "auth.db",
                       PROJECT_ROOT / ".ci-agent" / "auth.db"):
         if auth_path.exists():
             ac = sqlite3.connect(str(auth_path))

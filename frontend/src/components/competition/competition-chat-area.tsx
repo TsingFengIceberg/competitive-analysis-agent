@@ -3,7 +3,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useState, useRef, useEffect, memo, useMemo } from "react";
 
-import type { ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
+import type { ReportData, ReportHistoryItem } from "@/components/competition/api-client";
 
 import CompetitionReportCard from "./competition-report-card";
 
@@ -20,12 +20,6 @@ interface PhaseState {
   content: Record<string, string>;
   details: Record<string, unknown>[];
 }
-
-const AGENT_DISPLAY: Record<string, string> = {
-  Writer: "报告生成", Orchestrator: "解析意图",
-  Collector: "信息采集", Analyst: "对比分析",
-  Reviewer: "质量审查", analysis: "分析中",
-};
 
 // Map agent names (from streaming) to phase keys
 const AGENT_TO_PHASE: Record<string, string> = {
@@ -52,16 +46,13 @@ interface ReportCardData {
 interface Props {
   phases: PhaseState[];
   streamingContent: Record<string, string>;
-  currentAgent: string | null;
   status: string;
   userMessages: UserMessage[];
-  isWelcome: boolean;
   reportCards: ReportCardData[];
   displayReport: ReportData | null;
   threadId: string | null;
   hitlVisible: boolean;
   hitlSubmitting: boolean;
-  tokenUsage: TokenEntry[];
   tick: number;
   historyEntries: ReportHistoryItem[];
   viewingHistory: ReportHistoryItem | null;
@@ -94,8 +85,8 @@ function getPhaseGen(key: string): number {
 }
 
 export default function CompetitionChatArea({
-  phases, streamingContent, currentAgent, status, userMessages, isWelcome,
-  reportCards, displayReport, threadId, hitlVisible, hitlSubmitting, tokenUsage, tick,
+  phases, streamingContent, status, userMessages,
+  reportCards, displayReport, threadId, hitlVisible, hitlSubmitting, tick,
   historyEntries, viewingHistory,
   onExpandReport, onApprove, onReanalyze, onExportMD, onExportJSON,
   onNavigateVersion, onViewTrace, onViewBranchTree, onEdit,
@@ -422,15 +413,6 @@ function extractBalancedJson(text: string): string | null {
     else if (ch === close) { depth--; if (depth === 0) return text.slice(0, i + 1); }
   }
   return null;
-}
-
-/** Quick check: does the text look like a structurally complete JSON value? */
-function isCompleteJsonText(text: string): boolean {
-  const s = text.trim();
-  if (!s.startsWith("[") && !s.startsWith("{")) return true; // non-JSON → always "complete" (show as text)
-  const extracted = extractBalancedJson(s);
-  if (!extracted) return false; // unbalanced brackets → incomplete
-  try { JSON.parse(extracted); return true; } catch { return false; }
 }
 
 /** Extract the FIRST complete JSON object/value from text, even from inside an array.

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Save, Database, Eye, EyeOff, Copy, Check, Plus, Trash2, ChevronDown, ChevronRight, Circle, CheckCircle } from "lucide-react";
+import { ArrowLeft, Save, Eye, EyeOff, Copy, Check, Plus, Trash2, ChevronDown, ChevronRight, Circle, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -74,9 +74,6 @@ export default function SettingsPage() {
   const router = useRouter();
   const [userEmail, setUserEmail] = useState("");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [migrating, setMigrating] = useState(false);
-
   const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
   const [tavilyProviders, setTavilyProviders] = useState<SearchProvider[]>([]);
   const [jinaProviders, setJinaProviders] = useState<SearchProvider[]>([]);
@@ -156,38 +153,6 @@ export default function SettingsPage() {
     });
     toast(res.ok ? "已保存" : "保存失败");
   }
-
-  const handleSaveAll = async () => {
-    setSaving(true);
-    const provider_keys: Record<string, string> = {};
-    const provider_bases: Record<string, string> = {};
-    for (const p of llmProviders) { if (p.name.trim()) { provider_keys[p.name.trim()] = p.key; if (p.base.trim()) provider_bases[p.name.trim()] = p.base.trim(); } }
-    for (const p of tavilyProviders) { if (p.name.trim() && p.key) provider_keys["search:tavily:" + p.name.trim()] = p.key; }
-    for (const p of jinaProviders) { if (p.name.trim() && p.key) provider_keys["search:jina:" + p.name.trim()] = p.key; }
-    const feishu_config: Record<string, Record<string, string>> = {};
-    for (const p of feishuProviders) {
-      if (p.name.trim() && (p.app_id || p.app_secret)) {
-        feishu_config[p.name.trim()] = { app_id: p.app_id, app_secret: p.app_secret, notify_open_id: p.notify_open_id, tenant: p.tenant };
-      }
-    }
-    const g = configGroups.find((cg) => cg.name === activeGroup) || configGroups[0];
-    await saveSettings({
-      active_group: activeGroup, provider_keys, provider_bases, feishu_config,
-      search_toggles: { ...(g?.search_toggles || {}), ...(g?.feishu_toggles || {}) },
-      default_model: g?.default_model || "", agent_configs: g?.agent_configs || {},
-      config_groups: configGroups,
-    });
-    setSaving(false);
-    toast("设置已保存");
-  };
-
-  const handleMigrate = async () => {
-    if (!confirm("将现有分析数据迁移到当前账号？")) return;
-    setMigrating(true);
-    const d = await fetch("/api/competition/settings/migrate", { method: "POST", credentials: "include" }).then((r) => r.json());
-    toast(d.ok ? `已迁移 ${d.migrated_rows} 条。` : "迁移失败。");
-    setMigrating(false);
-  };
 
   const toggleExpand = (name: string) => {
     const next = new Set(expandedGroups);

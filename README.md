@@ -13,7 +13,6 @@ AI 驱动的竞品分析 Agent 协作系统
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
 ## 目录
 
@@ -113,7 +112,7 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 | **DAG 可视化** | [@xyflow/react](https://reactflow.dev/) (ReactFlow) |
 | **LLM** | OpenAI 兼容 API |
 | **搜索** | Tavily / DuckDuckGo / Jina AI / LLM 内置联网搜索 |
-| **部署** | Docker Compose + Nginx 反向代理 |
+| **部署** | uv + pnpm（Next.js 直接代理 FastAPI） |
 | **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + branch_snapshots |
 
 ---
@@ -122,69 +121,52 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 
 ### 环境要求
 
-| | 方式一 (Make) | 方式二 (Docker) | 方式三 (手动) |
-|---|:---:|:---:|:---:|
-| Docker + Docker Compose | | ● | |
-| Node.js 22+ | ● | | ● |
-| Python 3.12+ | ● | | ● |
-| uv (Python 包管理器) | ● | | ● |
-| pnpm | ● | | ● |
-| nginx | ● | | ● |
+| 依赖 | 版本 |
+|------|------|
+| Python | 3.12+ |
+| uv | 最新稳定版 |
+| Node.js | 22+ |
+| pnpm | 10+ |
 
-三种方式任选其一即可，最终均访问 `http://localhost:2026/competition`。
-
-### 方式一：Make 命令（推荐）
+### Make 命令（推荐）
 
 ```bash
 cp .env.example .env    # 编辑填写 DOUBAO_API_KEY 等
 make install            # 安装依赖
-make start              # 启动全部服务
+make dev                # 低 I/O 启动全部服务
 ```
+
+启动后访问 `http://localhost:2026/competition`。`make dev` 会在前端源码未变化时复用已有构建，后端不启用文件监听，适合共享服务器日常开发。
 
 常用命令：
 
 ```bash
 make stop               # 停止
-make restart            # 重启
+make restart            # 重新以低 I/O 模式启动
+make watch              # 前后端热更新（高 I/O，仅按需使用）
+make start              # 使用已有前端 production build 启动
 make test               # 运行测试
 make lint               # 代码检查
 make build              # 重新构建前端
 ```
 
-### 方式二：Docker Compose
+如需使用其他端口：
 
 ```bash
-cp .env.example .env
-docker compose up -d --build
+BACKEND_PORT=8002 FRONTEND_PORT=2027 make dev
 ```
 
-常用命令：
+### 分别启动
 
 ```bash
-docker compose down          # 停止
-docker compose logs -f       # 日志
-docker compose up -d --build # 重建
-```
+# 终端 1：后端
+cd backend
+PYTHONDONTWRITEBYTECODE=1 uv run --locked --no-dev --no-sync \
+  uvicorn app.main:app --host 0.0.0.0 --port 8001
 
-### 方式三：手动脚本
-
-```bash
-# 安装（在项目根目录执行）
-cd backend && uv sync
-cd ../frontend && pnpm install
-cd ..
-
-# 配置
-cp .env.example .env && source .env
-
-# 一键启动
-./scripts/restart-light.sh              # 启动全部
-./scripts/restart-light.sh --backend    # 仅后端
-./scripts/restart-light.sh --frontend   # 仅前端（自动检测源码变更）
-
-# 调试实例（独立端口 :8002/:3001/:2027，不影响生产实例）
-./scripts/dev-instance.sh start
-./scripts/dev-instance.sh stop
+# 终端 2：前端（首次启动前先执行 pnpm build）
+cd frontend
+pnpm start --hostname 0.0.0.0 --port 2026
 ```
 
 ---
@@ -226,7 +208,7 @@ cp .env.example .env && source .env
 cp .env.example .env
 cp config.example.yaml config.yaml
 # 编辑 .env 和 config.yaml 填写实际值
-CI_AGENT_CONFIG_MODE=file ./scripts/restart-light.sh
+CI_AGENT_CONFIG_MODE=file make dev
 ```
 
 ### 配置同步脚本
@@ -234,17 +216,17 @@ CI_AGENT_CONFIG_MODE=file ./scripts/restart-light.sh
 `scripts/sync-user-config.py` 可在两种模式间迁移配置：
 
 ```bash
-cd backend
+# 在项目根目录执行
 
 # File → DB：将 config.yaml + .env 写入指定用户的 DB 记录
-PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email>
+uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py push <user_email>
 
 # DB → File：将用户 DB 记录写回 config.yaml + .env
-PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email>
+uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py pull <user_email>
 
 # 预览变更（不实际写入）
-PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <user_email> --dry-run
-PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <user_email> --dry-run
+uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py push <user_email> --dry-run
+uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py pull <user_email> --dry-run
 ```
 
 ### .env
@@ -670,4 +652,3 @@ competitive-analysis-agent/
 ## License
 
 [MIT](LICENSE)
-
