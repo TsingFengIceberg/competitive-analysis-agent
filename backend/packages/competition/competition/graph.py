@@ -1,7 +1,7 @@
 """LangGraph StateGraph builder for the CI-Agent competition system.
 
-Per COMPETITION_PLAN.md §3 — single graph with Orchestrator entry + 4-agent
-normal mode + optional deep mode pipeline. Nodes are placeholder lambdas; real
+Single graph with an Orchestrator entry and the competition analysis pipeline.
+Nodes are placeholder lambdas; real
 node implementations are injected via ``register_nodes()`` or set directly
 on the module-level ``_NODE_IMPLEMENTATIONS`` dict.
 
@@ -29,11 +29,6 @@ from langgraph.graph.state import CompiledStateGraph
 from competition.router import (
     route_after_analyst,
     route_after_collector,
-    route_after_deep_analyst,
-    route_after_deep_collector,
-    route_after_deep_hitl,
-    route_after_deep_reviewer,
-    route_after_deep_writer,
     route_after_hitl,
     route_after_reviewer,
     route_after_writer,
@@ -65,14 +60,6 @@ _NODE_IMPLEMENTATIONS: dict[str, Callable] = {
     "writer": _placeholder("writer"),
     "hitl_gate": _placeholder("hitl_gate"),
     "error_handler": _placeholder("error_handler"),
-    # Deep mode
-    "deep_collector": _placeholder("deep_collector"),
-    "deep_analyst": _placeholder("deep_analyst"),
-    "deep_reviewer": _placeholder("deep_reviewer"),
-    "deep_writer": _placeholder("deep_writer"),
-    "deep_hitl": _placeholder("deep_hitl"),
-    "deep_error_handler": _placeholder("deep_error_handler"),
-    "feishu_delivery": _placeholder("feishu_delivery"),
 }
 
 
@@ -115,15 +102,6 @@ def build_competition_graph(
     builder.add_node("hitl_gate", _NODE_IMPLEMENTATIONS["hitl_gate"])
     builder.add_node("error_handler", _NODE_IMPLEMENTATIONS["error_handler"])
 
-    # ── Deep mode nodes ──
-    builder.add_node("deep_collector", _NODE_IMPLEMENTATIONS["deep_collector"])
-    builder.add_node("deep_analyst", _NODE_IMPLEMENTATIONS["deep_analyst"])
-    builder.add_node("deep_reviewer", _NODE_IMPLEMENTATIONS["deep_reviewer"])
-    builder.add_node("deep_writer", _NODE_IMPLEMENTATIONS["deep_writer"])
-    builder.add_node("deep_hitl", _NODE_IMPLEMENTATIONS["deep_hitl"])
-    builder.add_node("deep_error_handler", _NODE_IMPLEMENTATIONS["deep_error_handler"])
-    builder.add_node("feishu_delivery", _NODE_IMPLEMENTATIONS["feishu_delivery"])
-
     # ── Normal mode edges ──
     builder.set_entry_point("orchestrator")  # v4: Orchestrator as entry
     builder.add_edge("orchestrator", "collector")  # fixed: O→C always
@@ -149,36 +127,8 @@ def build_competition_graph(
         "collector": "collector",
         "analyst": "analyst",
         "writer": "writer",
-        "deep_collector": "deep_collector",
     })
-
-    # ── Deep mode edges ──
-    builder.add_conditional_edges("deep_collector", route_after_deep_collector, {
-        "deep_analyst": "deep_analyst",
-        "deep_error_handler": "deep_error_handler",
-    })
-    builder.add_conditional_edges("deep_analyst", route_after_deep_analyst, {
-        "deep_reviewer": "deep_reviewer",
-        "deep_error_handler": "deep_error_handler",
-    })
-    builder.add_conditional_edges("deep_reviewer", route_after_deep_reviewer, {
-        "deep_writer": "deep_writer",
-        "deep_collector": "deep_collector",
-        "deep_error_handler": "deep_error_handler",
-    })
-    builder.add_conditional_edges("deep_writer", route_after_deep_writer, {
-        "deep_hitl": "deep_hitl",
-        "deep_error_handler": "deep_error_handler",
-    })
-    builder.add_conditional_edges("deep_hitl", route_after_deep_hitl, {
-        "feishu_delivery": "feishu_delivery",
-        "deep_collector": "deep_collector",
-        "deep_analyst": "deep_analyst",
-        "deep_writer": "deep_writer",
-    })
-    builder.add_edge("feishu_delivery", END)
     builder.add_edge("error_handler", END)
-    builder.add_edge("deep_error_handler", END)
 
     logger.info("Compiling competition graph%s", " with checkpointer" if checkpointer else "")
     return builder.compile(checkpointer=checkpointer)

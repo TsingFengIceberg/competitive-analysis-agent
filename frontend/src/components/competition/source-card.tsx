@@ -283,7 +283,7 @@ function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] 
 
   // Now merge into proper sequence
   const merged: DiffSegment[] = [];
-  let sameBuf: string[] = [];
+  const sameBuf: string[] = [];
   for (const seg of result) {
     if (seg.type === "same") {
       sameBuf.push(seg.text);
@@ -387,8 +387,8 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
         const isRemoved = sd.status === "removed";
         const isModified = sd.status === "modified";
 
-        let oldText = sd.old_content ?? "";
-        let newText = sd.new_content ?? "";
+        const oldText = sd.old_content ?? "";
+        const newText = sd.new_content ?? "";
         let oldSegs: DiffSegment[] = [];
         let newSegs: DiffSegment[] = [];
 

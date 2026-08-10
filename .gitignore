@@ -1,158 +1,49 @@
-# DeerFlow docker image cache
-docker/.cache/
-# oh-my-claudecode state
-.omc/
-# OS generated files
+# OS and editor files
 .DS_Store
-*.local
 ._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# Virtual environments
-.venv
-venv/
-
-# Environment variables
-.env
-
-# Configuration files
-config.yaml
-mcp_config.json
-extensions_config.json
-extensions_config.example.json
-
-# IDE
 .idea/
 .vscode/
 
-# CI/CD (upstream DeerFlow)
-.github/
-
-# Coverage report
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
 coverage.xml
 coverage/
-.deer-flow/
-/.next/
+
+# JavaScript
+node_modules/
 .next/
-.claude/
-skills/custom/*
+.pnpm-store/
+frontend/test-results/
+frontend/playwright-report/
+
+# Local configuration and secrets
+.env
+config.yaml
+config.yaml.bak
+*.local
+
+# Runtime data and logs
+.ci-agent/
+backend/.ci-agent/
+backend/model_context_registry.json
 logs/
 log/
-debug.log
+*.log
 
-# Local git hooks (keep only on this machine, do not push)
+# Local tooling state
+.agents/
+.claude/
+.codex/
+.gstack/
+.omc/
+.playwright-mcp/
+.worktrees/
 .githooks/
 
-# pnpm
-.pnpm-store
-sandbox_image_cache.tar
-
-# ignore the legacy `web` folder
-web/
-
-# Deployment artifacts
-backend/Dockerfile.langgraph
-config.yaml.bak
-.pre-commit-config.yaml
-.playwright-mcp
-/frontend/test-results/
-/frontend/playwright-report/
-.gstack/
-.worktrees
-
-# DF upstream scripts (only keep our own)
-scripts/*
-!scripts/cleanup-all.sh
-!scripts/restart-light.sh
-!scripts/dev-instance.sh
-!scripts/sync-user-config.py
-
-/#DEMO
-# DeerFlow upstream directories (kept for reference, not tracked)
-/.agent/
-/pr-build/
-/docs/
-/skills/
-DOCS-UPSTREAM/
-
-# DeerFlow framework directories (fully decoupled)
-backend/app/channels/
-backend/app/gateway/
-backend/packages/harness/
-
-# DeerFlow frontend original files (kept on disk for reference, not tracked)
-frontend/public/demo/
-frontend/src/app/\[lang\]/
-frontend/src/app/api/memory/
-frontend/src/app/blog/
-frontend/src/app/mock/
-frontend/src/app/workspace/
-frontend/src/components/landing/
-frontend/src/components/workspace/
-frontend/src/content/
-frontend/src/core/agents/
-frontend/src/core/api/api-client.ts
-frontend/src/core/api/feedback.ts
-frontend/src/core/api/index.ts
-frontend/src/core/api/stream-mode.ts
-frontend/src/core/artifacts/
-frontend/src/core/blog/
-frontend/src/core/mcp/
-frontend/src/core/memory/
-frontend/src/core/messages/
-frontend/src/core/models/
-frontend/src/core/notification/
-frontend/src/core/rehype/
-frontend/src/core/settings/
-frontend/src/core/skills/
-frontend/src/core/streamdown/
-frontend/src/core/tasks/
-frontend/src/core/threads/
-frontend/src/core/todos/
-frontend/src/core/tools/
-frontend/src/core/utils/
-frontend/src/mdx-components.ts
-frontend/src/typings/
-
-.agents/
-skills-lock.json
-
-# Internal development docs (not needed by judges)
-CLAUDE.md
-frontend/CLAUDE.md
-frontend/AGENTS.md
-frontend/README.md
-frontend/.vscode/
-backend/CLAUDE.md
-backend/AGENTS.md
-backend/CONTRIBUTING.md
-backend/README.md
-backend/docs/
-backend/debug.py
-backend/.vscode/
-COMPETITION_PLAN.md
-COMPETITION_TODO.md
-DOCS/
-DOCS-PA-AGENT/
-DOCS-STUDY/
-PPT/
-deer-flow.code-workspace
-
-TEMP_IMG/
-
-# Runtime artifacts
-backend/model_context_registry.json
-
-backend/.ci-agent
-.ci-agent
-
-migration-to-codex.md
-project-handoff.md
+# Locally installed custom skills
+skills/custom/*

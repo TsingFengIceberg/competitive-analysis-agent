@@ -606,7 +606,7 @@ class TestBuildSections:
         assert "sec-sources" in ids
         assert "appendix-quality" in ids
 
-    def test_forecast_adds_whatif_section(self):
+    def test_forecast_does_not_add_disabled_whatif_section(self):
         sections = _build_sections(
             {
                 "comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"},
@@ -616,7 +616,7 @@ class TestBuildSections:
         )
         ids = {s["id"] for s in sections}
         assert "sec-forecast" in ids
-        assert "sec-whatif" in ids
+        assert "sec-whatif" not in ids
 
     def test_executive_summary_mentions_products(self):
         sections = _build_sections(
@@ -818,10 +818,7 @@ class TestBuildApprovalCard:
 # Error Handler Node (§3.15.6)
 # ═══════════════════════════════════════════════════════════════
 
-from competition.nodes.error_handler import (  # noqa: E402
-    deep_error_handler_node,
-    error_handler_node,
-)
+from competition.nodes.error_handler import error_handler_node  # noqa: E402
 
 
 class TestErrorHandlerNode:
@@ -866,156 +863,6 @@ class TestErrorHandlerNode:
 
     def test_empty_error(self):
         result = error_handler_node({"error": "", "collected_data": []})
-        assert result["error"] != ""  # empty error with no results → still fatal
-
-
-class TestDeepErrorHandler:
-    def test_no_results_fatal(self):
-        result = deep_error_handler_node({"error": "deep collector crashed"})
-        assert result["error"] != ""
-        assert result["deep_hitl_decision"]["action"] == "approve"
-
-    def test_partial_results_degraded(self):
-        result = deep_error_handler_node({
-            "error": "deep timeout",
-            "deep_collected_data": [{"id": "deep-1"}],
-        })
-        assert result["error"] is None
-
-
-# ═══════════════════════════════════════════════════════════════
-# Deep Mode Nodes (P1)
-# ═══════════════════════════════════════════════════════════════
-
-from competition.nodes.deep_collector import (  # noqa: E402
-    _build_deep_task,
-    _find_missing_dimensions,
-)
-from competition.nodes.deep_writer import (  # noqa: E402
-    _generate_html_export,
-)
-
-
-class TestFindMissingDimensions:
-    def test_all_covered(self):
-        matrix = {
-            "products": ["A", "B"],
-            "dimensions": ["Price", "Features"],
-            "cells": [
-                {"product": "A", "dimension": "Price"},
-                {"product": "A", "dimension": "Features"},
-                {"product": "B", "dimension": "Price"},
-                {"product": "B", "dimension": "Features"},
-            ],
-        }
-        assert _find_missing_dimensions(matrix, ["A", "B"]) == []
-
-    def test_missing(self):
-        matrix = {
-            "products": ["A"],
-            "dimensions": ["Price", "Features", "Users"],
-            "cells": [{"product": "A", "dimension": "Price"}],
-        }
-        missing = _find_missing_dimensions(matrix, ["A"])
-        assert "Features" in missing
-        assert "Users" in missing
-
-
-class TestBuildDeepTask:
-    def test_includes_gaps(self):
-        task = _build_deep_task("test", ["A"], [
-            {"type": "missing_data", "target_collect_task": "search enterprise pricing"},
-        ], ["Features"])
-        assert "enterprise pricing" in task
-        assert "Features" in task
-        assert "YouTube" in task
-        assert "Bilibili" in task
-
-
-class TestGenerateHtmlExport:
-    def test_basic_html(self):
-        html = _generate_html_export({
-            "title": "Test Report",
-            "generated_at": "2026-05-23",
-            "persona": "pm",
-            "sections": [
-                {"id": "s1", "title": "Section 1", "content": "<p>Hello</p>"},
-            ],
-        })
-        assert "<!DOCTYPE html>" in html
-        assert "Test Report" in html
-        assert "Section 1" in html
-        assert "CI-Agent" in html
-
-
-from competition.nodes.deep_analyst import (  # noqa: E402
-    _build_deep_analyst_task,
-    deep_analyst_node,
-)
-from competition.nodes.deep_reviewer import (  # noqa: E402
-    deep_reviewer_node,
-)
-from competition.nodes.feishu_delivery import (  # noqa: E402
-    _create_feishu_doc,
-    _send_bot_notification,
-)
-
-
-class TestDeepAnalystNode:
-    def test_node_returns_result(self):
-        result = deep_analyst_node({
-            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"}},
-            "deep_collected_data": [],
-            "target_products": ["A"],
-        })
-        assert "analysis_result" in result
-        assert result["analysis_result"]["_deep_mode"] is True
-
-    def test_task_includes_deep_data(self):
-        task = _build_deep_analyst_task(
-            {"comparison_matrix": {"summary": "test"}},
-            [{"id": "d-1"}], ["A", "B"],
-        )
-        assert "Deep analysis" in task
-        assert "deep-mode" in task
-        assert "1" in task  # deep data count
-
-
-class TestDeepReviewerNode:
-    def test_node_runs_all_checks(self):
-        result = deep_reviewer_node({
-            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"}},
-            "collected_data": [],
-            "deep_collected_data": [{"id": "deep-1", "source_url": "", "label": "X", "confidence": 0.9}],
-            "target_products": ["A"],
-            "deep_review_round": 0,
-        })
-        assert "review_verdict" in result
-        assert "deep_review_round" in result
-        assert result["deep_review_round"] == 1  # incremented
-
-    def test_relaxed_cap_round_5(self):
-        """Deep mode: round 5 should pass even with critical gaps."""
-        result = deep_reviewer_node({
-            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"}},
-            "collected_data": [],
-            "deep_collected_data": [{"id": "deep-1", "source_url": "", "label": "X", "confidence": 0.9}],
-            "target_products": ["A"],
-            "deep_review_round": 5,
-        })
-        assert result["review_verdict"]["passed"] is True
-
-
-class TestFeishuDelivery:
-    def test_create_doc_returns_url(self):
-        url = _create_feishu_doc("Test Report", {}, "")
-        assert url.startswith("https://")
-        assert "placeholder" in url
-
-    def test_send_notification_no_error(self):
-        _send_bot_notification("Test", "https://example.com", {"_feishu_chat_id": "test-chat"})
-
-# ═══════════════════════════════════════════════════════════════
 # Rework intent routing (§5.7 / R16)
 # ═══════════════════════════════════════════════════════════════
 

@@ -51,7 +51,6 @@ class AnalyzeRequest(BaseModel):
     target_products: list[str] = Field(default_factory=list, description="Products to compare. Optional — leave empty for AI auto-detection.")
     industry: str = Field(default="general", description="Industry selection: 'saas' | 'devtools' | 'ai' | 'database' | 'hardware' | 'gaming' | 'general'")
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
-    deep_mode: bool = Field(default=False, description="Enable deep mode pipeline after normal mode")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
     context_report: dict | None = Field(default=None, description="Previous report data to use as analysis context")
 
@@ -814,7 +813,6 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
             "target_products": request.target_products or [],
             "persona": request.persona,
             "industry": request.industry,
-            "deep_mode": request.deep_mode,
             "collected_data": [],
             "context_report": request.context_report,
         },

@@ -28,7 +28,6 @@ class TestCompetitionStateFields:
         assert "user_request" in hints
         assert "target_products" in hints
         assert "persona" in hints
-        assert "deep_mode" in hints
 
     def test_collector_output_fields(self):
         hints = get_type_hints(CompetitionState, include_extras=True)
@@ -52,17 +51,9 @@ class TestCompetitionStateFields:
         assert "traceability_map" in hints
         assert "review_package" in hints
 
-    def test_deep_mode_fields(self):
-        hints = get_type_hints(CompetitionState, include_extras=True)
-        assert "deep_collected_data" in hints
-        assert "deep_review_round" in hints
-        assert "deep_report" in hints
-        assert "deep_feishu_url" in hints
-
     def test_hitl_fields(self):
         hints = get_type_hints(CompetitionState, include_extras=True)
         assert "hitl_decision" in hints
-        assert "deep_hitl_decision" in hints
 
     def test_error_field(self):
         hints = get_type_hints(CompetitionState, include_extras=True)
@@ -72,7 +63,7 @@ class TestCompetitionStateFields:
         """25 custom fields (v4: +orchestration_result, +complexity) + inherited messages = 26 total annotations."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 30, f"Expected 30 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 24, f"Expected 24 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:
@@ -84,13 +75,6 @@ class TestReducers:
         assert "collected_data" in hints
         metadata = getattr(hints["collected_data"], "__metadata__", None)
         assert metadata is not None, "collected_data must be Annotated[list, op_add]"
-
-    def test_deep_collected_data_is_add_reducer(self):
-        hints = get_type_hints(CompetitionState, include_extras=True)
-        assert "deep_collected_data" in hints
-        metadata = getattr(hints["deep_collected_data"], "__metadata__", None)
-        assert metadata is not None, "deep_collected_data must be Annotated[list, op_add]"
-
 
 class TestOptionalFields:
     """Most fields should be NotRequired (graph nodes return partial updates)."""

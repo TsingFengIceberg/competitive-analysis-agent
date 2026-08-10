@@ -2,7 +2,7 @@
 
 Covers §2.2 of the coding plan.
 - Graph compiles without errors
-- All 13 nodes registered
+- All pipeline nodes registered
 - Conditional edges map to correct targets
 - register_nodes() injects real implementations
 """
@@ -35,9 +35,6 @@ class TestBuildCompetitionGraph:
             "orchestrator",  # v4
             "collector", "analyst", "reviewer", "writer", "hitl_gate",
             "error_handler",
-            "deep_collector", "deep_analyst", "deep_reviewer",
-            "deep_writer", "deep_hitl", "deep_error_handler",
-            "feishu_delivery",
         }
         assert set(_NODE_IMPLEMENTATIONS.keys()) == expected
 

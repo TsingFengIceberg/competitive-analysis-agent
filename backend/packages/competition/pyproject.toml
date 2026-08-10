@@ -1,7 +1,7 @@
 [project]
 name = "competition"
 version = "0.1.0"
-description = "CI-Agent Competition Analysis — standalone package decoupled from DeerFlow"
+description = "Competitive Analysis Agent LangGraph workflow"
 requires-python = ">=3.12"
 dependencies = [
     "langchain>=1.2.15",
@@ -11,8 +11,6 @@ dependencies = [
     "pyyaml>=6.0.3",
     "tavily-python>=0.7.17",
     "ddgs>=9.10.0",
-    "matplotlib>=3.10",
-    "wordcloud>=1.9",
 ]
 
 [build-system]

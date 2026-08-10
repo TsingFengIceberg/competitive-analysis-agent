@@ -13,8 +13,8 @@
 #
 # 模式切换:         使用 scripts/sync-user-config.py 在两种模式间迁移配置。
 #
-#   # File → DB:   PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py push <email>
-#   # DB → File:   PYTHONPATH=packages/harness uv run python scripts/sync-user-config.py pull <email>
+#   # File → DB:   uv run --project backend python scripts/sync-user-config.py push <email>
+#   # DB → File:   uv run --project backend python scripts/sync-user-config.py pull <email>
 #
 # ============================================================================
 # 使用方法:

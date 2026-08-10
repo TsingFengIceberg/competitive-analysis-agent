@@ -1,7 +1,7 @@
 """Tests for CheckpointOps and AgentBranchOps.
 
 Usage:
-    cd backend && PYTHONPATH=packages/harness uv run pytest tests/test_competition_branchtree_agent.py -v
+    cd backend && uv run pytest tests/test_competition_branchtree_agent.py -v
 """
 
 import pytest

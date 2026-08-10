@@ -14,7 +14,6 @@ from competition.config import (
     CollectorConfig,
     CompetitionConfig,
     DataSourceRoutingConfig,
-    DeepModeConfig,
     HitlConfig,
     ReviewerConfig,
     WriterConfig,
@@ -115,14 +114,6 @@ class TestDataSourceRoutingConfig:
         assert "github_api" in cfg.tech_first
 
 
-class TestDeepModeConfig:
-    def test_defaults(self):
-        cfg = DeepModeConfig()
-        assert cfg.enabled is True
-        assert cfg.max_review_rounds == 5
-        assert "youtube_transcript" in cfg.extra_sources
-
-
 class TestCompetitionConfig:
     def test_default_root(self):
         cfg = CompetitionConfig()
@@ -134,7 +125,6 @@ class TestCompetitionConfig:
         assert isinstance(cfg.writer, WriterConfig)
         assert isinstance(cfg.hitl, HitlConfig)
         assert isinstance(cfg.data_sources, DataSourceRoutingConfig)
-        assert isinstance(cfg.deep_mode, DeepModeConfig)
 
     def test_nested_override(self):
         cfg = CompetitionConfig.model_validate({

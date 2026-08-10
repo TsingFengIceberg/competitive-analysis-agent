@@ -355,8 +355,8 @@ class AgentBranchOps:
             thread_id="t1",
             base_checkpoint=latest_id,
             variants=[
-                {"label": "aggressive", "state_update": {"deep_mode": True}},
-                {"label": "conservative", "state_update": {"deep_mode": False}},
+                {"label": "broad", "state_update": {"industry": "general"}},
+                {"label": "focused", "state_update": {"industry": "devtools"}},
             ],
         )
         best = agent.compare_branches(thread_id, variants, key="coverage")

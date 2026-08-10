@@ -37,9 +37,6 @@ class CompetitionState(AgentState):
     """"pm" | "entrepreneur" | "both" — drives Writer dual-perspective output."""
     industry: NotRequired[str | None]
     """"saas" | "devtools" | "ai" | "database" | "hardware" | "gaming" | "general" — §17 industry selection."""
-    deep_mode: NotRequired[bool | None]
-    """False = normal mode only, True = normal + deep mode pipeline."""
-
     # ── Orchestrator Output `[v4 新增]` ──
     orchestration_result: NotRequired[dict | None]
     """OrchestrationResult: intent parsing + dimension weights + schema tailoring + pipeline routing."""
@@ -52,7 +49,7 @@ class CompetitionState(AgentState):
     collection_summary: NotRequired[dict | None]
     """Per-round summary: total_data_points, products_covered, stopped_by, etc. (§3.4.6)."""
     knowledge_gaps: NotRequired[list[dict] | None]
-    """Gaps discovered by Reviewer → deep mode Collector re-targets these."""
+    """Gaps discovered by Reviewer for a targeted collection retry."""
     enable_questionnaire: NotRequired[bool | None]
     """§14: Enable automatic questionnaire generation. Default False. Reserved for future use."""
     questionnaire: NotRequired[dict | None]
@@ -80,22 +77,9 @@ class CompetitionState(AgentState):
     review_package: NotRequired[dict | None]
     """ReviewPackage: Writer → HITL Gate approval briefing (§3.13.5)."""
 
-    # ── Deep Mode ──
-    deep_collected_data: Annotated[list[dict], op_add]
-    """Incremental data collected in deep mode (op_add accumulator)."""
-    deep_review_round: NotRequired[int | None]
-    """Deep mode Reviewer round counter."""
-    deep_report: NotRequired[str | None]
-    """Deep mode final report (HTML)."""
-    deep_feishu_url: NotRequired[str | None]
-    """Feishu document URL from deep mode delivery."""
-
     # ── HITL Gate ──
     hitl_decision: NotRequired[dict | None]
     """HitlDecision: action + comment + target_focus + timestamp (§3.13.7)."""
-    deep_hitl_decision: NotRequired[dict | None]
-    """Deep mode HITL decision (separate from normal mode)."""
-
     # ── Error ──
     error: NotRequired[str | None]
     """Non-empty triggers Graph-level routing to error_handler node (§3.15.6.3)."""

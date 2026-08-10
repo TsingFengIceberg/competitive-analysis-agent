@@ -187,7 +187,7 @@ export function CompetitionHistoryList() {
             <DialogTitle>删除分析记录</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除 "{deleteTarget?.title || deleteTarget?.query}" 吗？此操作不可撤销。
+            确定要删除「{deleteTarget?.title || deleteTarget?.query}」吗？此操作不可撤销。
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>

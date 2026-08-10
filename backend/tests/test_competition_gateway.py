@@ -3,24 +3,48 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 
-@pytest.fixture
-def client():
-    """Create a TestClient for the competition router."""
+@pytest_asyncio.fixture
+async def client(monkeypatch):
+    """Create an async HTTP client for the competition router."""
+    from types import SimpleNamespace
+
     from fastapi import FastAPI
 
-    from app.competition_router import router
+    import app.competition_router as competition_router
+
+    monkeypatch.setattr(
+        competition_router,
+        "_resolve_and_run_graph",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        competition_router,
+        "asyncio",
+        SimpleNamespace(
+            get_event_loop=lambda: SimpleNamespace(
+                run_in_executor=lambda *_args, **_kwargs: None,
+            ),
+        ),
+    )
 
     app = FastAPI()
-    app.include_router(router)
-    return TestClient(app)
+    app.include_router(competition_router.router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as test_client:
+        yield test_client
 
 
 class TestPostAnalyze:
-    def test_basic_request(self, client):
-        response = client.post("/api/competition/analyze", json={
+    @pytest.mark.asyncio
+    async def test_basic_request(self, client):
+        response = await client.post("/api/competition/analyze", json={
             "query": "analyze Cursor vs Copilot",
             "target_products": ["Cursor", "Copilot"],
             "persona": "pm",
@@ -30,61 +54,80 @@ class TestPostAnalyze:
         assert "thread_id" in data
         assert data["status"] == "running"
 
-    def test_with_deep_mode(self, client):
-        response = client.post("/api/competition/analyze", json={
+    @pytest.mark.asyncio
+    async def test_with_industry(self, client):
+        response = await client.post("/api/competition/analyze", json={
             "query": "analyze",
             "target_products": ["A"],
-            "deep_mode": True,
+            "industry": "devtools",
         })
         assert response.status_code == 200
 
-    def test_entrepreneur_persona(self, client):
-        response = client.post("/api/competition/analyze", json={
+    @pytest.mark.asyncio
+    async def test_entrepreneur_persona(self, client):
+        response = await client.post("/api/competition/analyze", json={
             "query": "analyze",
             "target_products": ["A"],
             "persona": "entrepreneur",
         })
         assert response.status_code == 200
 
-    def test_missing_required_field(self, client):
-        response = client.post("/api/competition/analyze", json={
-            "query": "analyze",
+    @pytest.mark.asyncio
+    async def test_missing_required_field(self, client):
+        response = await client.post("/api/competition/analyze", json={
+            "target_products": [],
         })
         assert response.status_code == 422  # Validation error
 
 
 class TestGetReport:
-    def test_not_found(self, client):
-        response = client.get("/api/competition/report/nonexistent")
+    @pytest.mark.asyncio
+    async def test_not_found(self, client):
+        response = await client.get("/api/competition/report/nonexistent")
         assert response.status_code == 404
 
-    def test_running_report(self, client):
+    @pytest.mark.asyncio
+    async def test_running_report(self, client):
         # Create an analysis first
-        create = client.post("/api/competition/analyze", json={
+        create = await client.post("/api/competition/analyze", json={
             "query": "test", "target_products": ["A"],
         })
         thread_id = create.json()["thread_id"]
 
-        response = client.get(f"/api/competition/report/{thread_id}")
+        response = await client.get(f"/api/competition/report/{thread_id}")
         assert response.status_code == 200
         data = response.json()
         assert data["status"] in ("running", "completed", "failed")
 
 
 class TestStream:
-    def test_not_found(self, client):
-        response = client.get("/api/competition/stream/nonexistent")
+    @pytest.mark.asyncio
+    async def test_not_found(self, client):
+        response = await client.get("/api/competition/stream/nonexistent")
         assert response.status_code == 404
 
-    def test_stream_response(self, client):
-        create = client.post("/api/competition/analyze", json={
+    @pytest.mark.asyncio
+    async def test_stream_response(self, client):
+        import app.competition_router as competition_router
+
+        create = await client.post("/api/competition/analyze", json={
             "query": "test", "target_products": ["A"],
         })
         thread_id = create.json()["thread_id"]
+        competition_router._emit_event(
+            thread_id,
+            "end",
+            {"status": "completed"},
+        )
 
-        response = client.get(f"/api/competition/stream/{thread_id}")
-        assert response.status_code == 200
-        assert "text/event-stream" in response.headers["content-type"]
+        request = Request({"type": "http", "headers": []})
+        response = await competition_router.stream(thread_id, request)
+        assert response.media_type == "text/event-stream"
+
+        frames = list(competition_router._stream_events_sync(thread_id))
+        assert "event: metadata" in frames[0]
+        assert "event: values" in frames[1]
+        assert "event: end" in frames[2]
 
     def test_full_live_queue_drops_old_frame_instead_of_failing(self):
         import queue
@@ -114,16 +157,18 @@ class TestStream:
 
 
 class TestHistory:
-    def test_empty_history(self, client):
-        response = client.get("/api/competition/history")
+    @pytest.mark.asyncio
+    async def test_empty_history(self, client):
+        response = await client.get("/api/competition/history")
         assert response.status_code == 200
         data = response.json()
         assert "history" in data
         assert "total" in data
 
-    def test_after_analysis(self, client):
-        client.post("/api/competition/analyze", json={
+    @pytest.mark.asyncio
+    async def test_after_analysis(self, client):
+        await client.post("/api/competition/analyze", json={
             "query": "test", "target_products": ["A"],
         })
-        response = client.get("/api/competition/history")
+        response = await client.get("/api/competition/history")
         assert response.json()["total"] >= 1

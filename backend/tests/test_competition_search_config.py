@@ -129,17 +129,18 @@ class TestGetSearchConfig:
         assert cfg["jina"] is True
         assert cfg["provider_search"] is False
 
-    def test_defaults_all_false_when_no_config(self):
-        """When no config_group, all search backends default to False."""
+    def test_db_mode_defaults_when_no_config(self):
+        """DB mode keeps free search fallbacks enabled before user setup."""
         import competition.tools.search as mod
         with mock.patch.object(mod, "_get_active_config_group", return_value={}):
             cfg = mod._get_search_config()
-        assert cfg["tavily"] is False
-        assert cfg["ddg"] is False
+        assert cfg["tavily"] is True
+        assert cfg["ddg"] is True
         assert cfg["jina"] is False
-        assert cfg["provider_search"] is False
+        assert cfg["provider_search"] is True
 
     def test_ddg_disabled_in_group(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("CI_AGENT_CONFIG_MODE", "file")
         cfg = _minimal_config()
         cfg["competition"]["groups"]["groupA"]["search"]["ddg"] = False
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -148,6 +149,7 @@ class TestGetSearchConfig:
         assert result["ddg"] is False
 
     def test_tavily_disabled_in_group(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("CI_AGENT_CONFIG_MODE", "file")
         cfg = _minimal_config()
         cfg["competition"]["groups"]["groupA"]["search"]["tavily"] = False
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -156,6 +158,7 @@ class TestGetSearchConfig:
         assert result["tavily"] is False
 
     def test_provider_search_disabled(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("CI_AGENT_CONFIG_MODE", "file")
         cfg = _minimal_config()
         cfg["competition"]["groups"]["groupA"]["search"]["provider_search"] = False
         _write_yaml(tmp_path / "config.yaml", cfg)
@@ -164,6 +167,7 @@ class TestGetSearchConfig:
         assert result["provider_search"] is False
 
     def test_jina_disabled(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("CI_AGENT_CONFIG_MODE", "file")
         cfg = _minimal_config()
         cfg["competition"]["groups"]["groupA"]["search"]["jina"] = False
         _write_yaml(tmp_path / "config.yaml", cfg)
