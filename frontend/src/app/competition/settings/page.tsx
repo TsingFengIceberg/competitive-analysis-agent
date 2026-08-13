@@ -24,7 +24,7 @@ interface ConfigGroup {
   agent_configs: Record<string, Record<string, string | number>>;
 }
 
-const AGENTS = ["orchestrator", "collector", "analyst", "reviewer", "writer", "hitl", "rework_intent"];
+const AGENTS = ["brief_builder", "orchestrator", "collector", "analyst", "reviewer", "writer", "hitl", "rework_intent"];
 
 const FEISHU_TOGGLES = [
   { key: "notify_enabled", label: "分析完成通知" },

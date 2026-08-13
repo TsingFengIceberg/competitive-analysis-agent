@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,10 @@ def reviewer_node(state: dict) -> dict:
     gaps: list[dict] = []
     gaps.extend(check_url_reachability(collected))        # G1
     gaps.extend(check_multi_source_consistency(collected)) # G2
-    gaps.extend(check_data_freshness(collected))           # G3
-    gaps.extend(check_dimension_coverage(analysis, state.get("target_products", [])))  # G4
+    brief = state.get("analysis_brief") or {}
+    gaps.extend(check_data_freshness(collected, use_collection_fallback=not bool(brief)))  # G3
+    gaps.extend(check_brief_evidence_policy(collected, brief))
+    gaps.extend(check_dimension_coverage(analysis, state.get("target_products", []), state.get("analysis_brief")))  # G4
     gaps.extend(check_all_na_competitor(analysis, state.get("target_products", [])))  # G4.5
     gaps.extend(check_source_diversity(collected))         # G5
     gaps.extend(check_statistical_outliers(collected))     # G6
@@ -59,6 +61,10 @@ def reviewer_node(state: dict) -> dict:
 
     # Build quality summary
     quality = _build_quality_summary(collected, gaps, improvement)
+    if brief:
+        quality["selected_dimensions"] = [item.get("id") for item in brief.get("dimensions", [])]
+        quality["evidence_policy"] = brief.get("evidence_policy", "balanced")
+        quality["evidence_policy_compliant"] = not any(g.get("method") == "evidence_policy" or g.get("method") == "multi_source_policy" for g in gaps)
     quality["round_metrics"] = round_metrics
     quality["round_metrics_prev"] = prev_metrics
     # repair_delta: improvement in evidence tier distribution from previous round
@@ -152,16 +158,20 @@ def check_multi_source_consistency(points: list[dict]) -> list[dict]:
 # ── G3: Data Freshness (§3.6.1) ──
 
 
-def check_data_freshness(points: list[dict], max_age_days: int = 180) -> list[dict]:
+def check_data_freshness(
+    points: list[dict], max_age_days: int = 180, *, use_collection_fallback: bool = True,
+) -> list[dict]:
     """G3: Flag data points older than max_age_days as outdated."""
     gaps = []
     now = datetime.now(UTC)
     for dp in points:
-        collected_at = dp.get("collected_at", "")
-        if not collected_at:
+        timestamp = dp.get("published_at")
+        if not timestamp and use_collection_fallback:
+            timestamp = dp.get("collected_at", "")
+        if not timestamp:
             continue
         try:
-            ts = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+            ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             age_days = (now - ts).days
             if age_days > max_age_days:
                 gaps.append(_make_gap(
@@ -169,7 +179,7 @@ def check_data_freshness(points: list[dict], max_age_days: int = 180) -> list[di
                     gap_type="outdated",
                     method="data_freshness",
                     desc=f"Data point '{dp.get('label', '')}' is {age_days} days old (>{max_age_days})",
-                    evidence=f"Collected at: {collected_at}, now: {now.isoformat()}",
+                    evidence=f"Published at: {timestamp}, now: {now.isoformat()}",
                     task=f"Search for latest data on: {dp.get('label', dp.get('id', '?'))}",
                     severity="minor",
                     related_ids=[dp.get("id", "")],
@@ -179,14 +189,76 @@ def check_data_freshness(points: list[dict], max_age_days: int = 180) -> list[di
     return gaps
 
 
+def check_brief_evidence_policy(points: list[dict], brief: dict | None) -> list[dict]:
+    """Apply source-count and custom publication-window rules for new Briefs."""
+    if not brief:
+        return []
+    policy = brief.get("evidence_policy", "balanced")
+    selected = {item.get("id") for item in brief.get("dimensions", [])}
+    relevant = [point for point in points if point.get("category") in selected]
+    domains_by_dimension: dict[str, set[str]] = {}
+    gaps: list[dict] = []
+    for point in relevant:
+        category = point.get("category", "")
+        url = point.get("source_url", "")
+        domain = url.split("/", 3)[2] if url.startswith("http") else url
+        domains_by_dimension.setdefault(category, set()).add(domain)
+        if policy == "official_preferred" and category in {"features", "pricing", "technology"} and point.get("source_type") not in {"official", "docs", "pricing"}:
+            gaps.append(_make_gap(
+                gid=f"gap-policy-{point.get('id', '?')}", gap_type="missing_data", method="evidence_policy",
+                desc=f"{category} evidence lacks an official or primary source", evidence=url,
+                task=f"Find an official source for {point.get('label', '')}", severity="minor",
+                related_ids=[point.get("id", "")],
+            ))
+        time_range = brief.get("time_range") or {}
+        if time_range.get("mode") == "custom" and point.get("published_at"):
+            try:
+                published = date.fromisoformat(str(point["published_at"])[:10])
+                if not date.fromisoformat(time_range["start"]) <= published <= date.fromisoformat(time_range["end"]):
+                    gaps.append(_make_gap(
+                        gid=f"gap-time-{point.get('id', '?')}", gap_type="outdated", method="publication_window",
+                        desc=f"Source publication date {published} is outside the requested range",
+                        evidence=str(point.get("published_at")), task=f"Find an in-range source for {point.get('label', '')}",
+                        severity="major" if policy == "strict_multi_source" else "minor", related_ids=[point.get("id", "")],
+                    ))
+            except (TypeError, ValueError):
+                pass
+        elif time_range.get("mode") == "custom" and policy != "balanced":
+            gaps.append(_make_gap(
+                gid=f"gap-time-unknown-{point.get('id', '?')}", gap_type="outdated", method="publication_window",
+                desc="Source publication date is unknown; it cannot be verified against the requested custom range",
+                evidence=point.get("source_url", ""), task=f"Find a source with a publication date for {point.get('label', '')}",
+                severity="major" if policy == "strict_multi_source" else "minor", related_ids=[point.get("id", "")],
+            ))
+        elif not point.get("published_at") and policy != "balanced":
+            gaps.append(_make_gap(
+                gid=f"gap-date-unknown-{point.get('id', '?')}", gap_type="missing_data", method="publication_date_unknown",
+                desc="Source publication date is unknown; freshness cannot be verified from the requested evidence policy",
+                evidence=point.get("source_url", ""), task=f"Find a source with a publication or update date for {point.get('label', '')}",
+                severity="major" if policy == "strict_multi_source" else "minor", related_ids=[point.get("id", "")],
+            ))
+    if policy == "strict_multi_source":
+        for category, domains in domains_by_dimension.items():
+            if len(domains) < 2:
+                gaps.append(_make_gap(
+                    gid=f"gap-policy-domain-{category}", gap_type="missing_data", method="multi_source_policy",
+                    desc=f"{category} evidence has fewer than two independent source domains",
+                    evidence=str(sorted(domains)), task=f"Find a second independent source for {category}",
+                    severity="major", related_ids=[],
+                ))
+    return gaps
+
+
 # ── G4: Dimension Coverage (§3.6.1) ──
 
 
-def check_dimension_coverage(analysis: dict, target_products: list[str]) -> list[dict]:
+def check_dimension_coverage(analysis: dict, target_products: list[str], brief: dict | None = None) -> list[dict]:
     """G4: Check that every target product × mandatory category has ≥1 data point."""
     matrix = analysis.get("comparison_matrix", {})
     cells = matrix.get("cells", [])
     dimensions = set(matrix.get("dimensions", []))
+    if brief and brief.get("dimensions"):
+        dimensions = {"功能" if item.get("id") == "features" else "定价" if item.get("id") == "pricing" else "用户" if item.get("id") == "users" else "市场" if item.get("id") == "market" else "技术" for item in brief["dimensions"]}
 
     covered = set()
     for c in cells:

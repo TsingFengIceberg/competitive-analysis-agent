@@ -63,7 +63,7 @@ class TestCompetitionStateFields:
         """25 custom fields (v4: +orchestration_result, +complexity) + inherited messages = 26 total annotations."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 24, f"Expected 24 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 26, f"Expected 26 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:

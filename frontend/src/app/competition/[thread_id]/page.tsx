@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 
 import type { CompetitionPromptMessage } from "@/components/competition/competition-query-input";
-import type { Persona, ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
+import type { AnalysisBrief, Persona, ReportData, ReportHistoryItem, TokenEntry } from "@/components/competition/api-client";
 import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
@@ -110,6 +110,9 @@ export default function CompetitionPage() {
       setStatus("idle");
       setThreadId(null);
       setReportData(null);
+      setAnalysisBrief(null);
+      setBriefError(null);
+      setBriefPending(false);
       setPhaseMap(new Map());
       setUserMessages([]);
       setTokenUsage([]);
@@ -185,6 +188,9 @@ export default function CompetitionPage() {
   }, [threadId]);
 
   const [status, setStatus] = useState<string>("idle");
+  const [analysisBrief, setAnalysisBrief] = useState<AnalysisBrief | null>(null);
+  const [briefPending, setBriefPending] = useState(false);
+  const [briefError, setBriefError] = useState<string | null>(null);
   const [phaseMap, setPhaseMap] = useState<Map<string, PhaseState>>(new Map());
   const [tick, setTick] = useState(0); // live timer trigger
   const [streamingContent, setStreamingContent] = useState<Record<string, string>>({});
@@ -480,7 +486,7 @@ export default function CompetitionPage() {
 
     setQuery(text);
     setUserMessages([{ text, timestamp: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }), generation: 0 }]);
-    setStatus("running");
+    setStatus("submitting");
     setPhaseMap(new Map());
     setStreamingContent({});
     setReportData(null);
@@ -496,6 +502,8 @@ export default function CompetitionPage() {
         persona,
         industry,
       });
+      setAnalysisBrief(res.analysis_brief);
+      setStatus(res.status);
       setThreadId(res.thread_id);
       window.history.replaceState(null, "", `/competition/${res.thread_id}`);
       // Notify sidebar to refresh history list immediately
@@ -505,6 +513,27 @@ export default function CompetitionPage() {
       console.error("Analysis start failed:", err);
     }
   }, [persona, industry, api]);
+
+  const handleBriefChange = useCallback((next: AnalysisBrief) => {
+    setAnalysisBrief(next);
+    setBriefError(null);
+  }, []);
+
+  const handleBriefConfirm = useCallback(async () => {
+    if (!threadId || !analysisBrief) return;
+    setBriefPending(true);
+    setBriefError(null);
+    try {
+      const response = await api.confirmAnalysis(threadId, analysisBrief.revision, analysisBrief);
+      setAnalysisBrief(response.analysis_brief);
+      setStatus(response.status);
+      window.dispatchEvent(new CustomEvent("competition:refresh-history"));
+    } catch (error) {
+      setBriefError(error instanceof Error ? error.message : "确认失败，请稍后重试");
+    } finally {
+      setBriefPending(false);
+    }
+  }, [analysisBrief, api, threadId]);
 
   const handleCancel = useCallback(async () => {
     if (!threadId) return;
@@ -568,6 +597,7 @@ export default function CompetitionPage() {
           return;
         }
         const report = await res.json();
+        if (report.analysis_brief) setAnalysisBrief(report.analysis_brief as AnalysisBrief);
         if (report.report_data) {
           setReportData(report.report_data);
         }
@@ -915,6 +945,12 @@ export default function CompetitionPage() {
                   onViewTrace={displayReport ? handleViewTrace : undefined}
                   onViewBranchTree={historyEntries.length > 0 ? handleViewBranchTree : undefined}
                   onEdit={displayReport ? handleEdit : undefined}
+                  analysisBrief={analysisBrief}
+                  briefPending={briefPending}
+                  briefError={briefError}
+                  onBriefChange={handleBriefChange}
+                  onBriefConfirm={handleBriefConfirm}
+                  onBriefCancel={handleCancel}
                 />
               </div>
             </div>
@@ -944,12 +980,12 @@ export default function CompetitionPage() {
                 <div className="w-full max-w-(--container-width-md)">
                   <CompetitionQueryInput
                     status={status === "running" ? "streaming" : "ready"}
-                    disabled={status === "running"}
+                    disabled={status === "running" || status === "submitting" || status === "awaiting_confirmation"}
                     industry={industry}
                     onIndustryChange={setIndustry}
                     onSubmit={handleConversationSubmit}
                     onStop={handleStop}
-                    analysisRunning={status === "running"}
+                    analysisRunning={status === "running" || status === "submitting" || status === "awaiting_confirmation"}
                     placeholder={queryInputPlaceholder}
                   />
                 </div>

@@ -37,6 +37,10 @@ class CompetitionState(AgentState):
     """"pm" | "entrepreneur" | "both" — drives Writer dual-perspective output."""
     industry: NotRequired[str | None]
     """"saas" | "devtools" | "ai" | "database" | "hardware" | "gaming" | "general" — §17 industry selection."""
+    analysis_brief: NotRequired[dict | None]
+    """Effective pre-analysis scope contract; server-owned after confirmation."""
+    product_resolution: NotRequired[list[dict] | None]
+    """Requested/resolved product mapping for auditable canonicalization."""
     # ── Orchestrator Output `[v4 新增]` ──
     orchestration_result: NotRequired[dict | None]
     """OrchestrationResult: intent parsing + dimension weights + schema tailoring + pipeline routing."""

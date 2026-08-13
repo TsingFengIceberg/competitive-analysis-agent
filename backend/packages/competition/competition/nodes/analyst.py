@@ -20,6 +20,7 @@ CATEGORY_DIMENSION_MAP = {
     "pricing": "定价",
     "users": "用户",
     "market": "市场",
+    "technology": "技术",
 }
 
 
@@ -145,13 +146,24 @@ def _build_analyst_task(state: dict) -> str:
     dim_weight_hint = ""
     if dim_weights:
         parts = [f"  {dw['dimension']}={dw['weight']:.0%} ({dw.get('reason', '')})" for dw in dim_weights[:5]]
-        dim_weight_hint = f"\nDIMENSION PRIORITIES (from Orchestrator):\n" + "\n".join(parts) + "\n"
+        dim_weight_hint = "\nDIMENSION PRIORITIES (from Orchestrator):\n" + "\n".join(parts) + "\n"
 
     categories_present = {dp.get("category", "") for dp in collected if isinstance(dp, dict)}
-    dimensions = list(MANDATORY_DIMENSIONS)
-    for cat, dim in CATEGORY_DIMENSION_MAP.items():
-        if cat in categories_present and dim not in dimensions:
-            dimensions.append(dim)
+    brief = state.get("analysis_brief") or {}
+    if brief.get("dimensions"):
+        dimensions = [CATEGORY_DIMENSION_MAP.get(item.get("id"), item.get("id", "")) for item in brief["dimensions"]]
+        dimensions = [dim for dim in dimensions if dim]
+        dim_weight_hint += (
+            f"\nBRIEF SCOPE: market={brief.get('market_scope', 'Global / unspecified')}; "
+            f"time={(brief.get('time_range') or {}).get('label', '最近12个月')}; "
+            f"audience={brief.get('audience', 'product')}; "
+            f"output focus={', '.join(brief.get('output_focus') or [])}\n"
+        )
+    else:
+        dimensions = list(MANDATORY_DIMENSIONS)
+        for cat, dim in CATEGORY_DIMENSION_MAP.items():
+            if cat in categories_present and dim not in dimensions:
+                dimensions.append(dim)
 
     # Industry dimensions (Layer 2 of §3.20)
     from competition.industry import get_industry_profile
@@ -421,7 +433,7 @@ def _empty_analysis_result(state: dict) -> dict:
     return {
         "comparison_matrix": {
             "products": state.get("target_products", []),
-            "dimensions": [],
+            "dimensions": _brief_dimensions(state),
             "cells": [],
             "summary": "Analysis failed to produce results",
         },
@@ -430,6 +442,12 @@ def _empty_analysis_result(state: dict) -> dict:
         "forecast": None,
         "visualization_paths": [],
     }
+
+
+def _brief_dimensions(state: dict) -> list[str]:
+    labels = {"features": "功能", "pricing": "定价", "users": "用户", "market": "市场", "technology": "技术"}
+    brief = state.get("analysis_brief") or {}
+    return [labels.get(item.get("id"), item.get("id", "")) for item in brief.get("dimensions", []) if item.get("id")] if brief else []
 
 
 # ── Self-Check (§3.5.5) ──

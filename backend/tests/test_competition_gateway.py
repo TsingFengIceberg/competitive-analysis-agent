@@ -97,7 +97,8 @@ class TestGetReport:
         response = await client.get(f"/api/competition/report/{thread_id}")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] in ("running", "completed", "failed")
+        assert data["status"] == "awaiting_confirmation"
+        assert data["analysis_brief"]["target_products"] == ["A"]
 
 
 class TestStream:
@@ -114,20 +115,70 @@ class TestStream:
             "query": "test", "target_products": ["A"],
         })
         thread_id = create.json()["thread_id"]
-        competition_router._emit_event(
-            thread_id,
-            "end",
-            {"status": "completed"},
-        )
-
         request = Request({"type": "http", "headers": []})
-        response = await competition_router.stream(thread_id, request)
-        assert response.media_type == "text/event-stream"
+        with pytest.raises(Exception) as exc_info:
+            await competition_router.stream(thread_id, request)
+        assert getattr(exc_info.value, "status_code", None) == 409
 
-        frames = list(competition_router._stream_events_sync(thread_id))
-        assert "event: metadata" in frames[0]
-        assert "event: values" in frames[1]
-        assert "event: end" in frames[2]
+    @pytest.mark.asyncio
+    async def test_confirm_starts_same_thread(self, client, monkeypatch):
+        import app.competition_router as competition_router
+
+        submitted = []
+        monkeypatch.setattr(
+            competition_router,
+            "_start_analysis_worker",
+            lambda *args, **kwargs: submitted.append((args, kwargs)),
+        )
+        create = await client.post("/api/competition/analyze", json={
+            "query": "最好的 AI 编程工具有哪些？",
+        })
+        assert create.json()["status"] == "awaiting_confirmation"
+        thread_id = create.json()["thread_id"]
+        brief = create.json()["analysis_brief"]
+        brief["target_products"] = ["Cursor", "Copilot"]
+        response = await client.post(f"/api/competition/{thread_id}/confirm", json={
+            "expected_revision": brief["revision"],
+            "brief": brief,
+        })
+        assert response.status_code == 200
+        assert response.json()["thread_id"] == thread_id
+        assert response.json()["status"] == "running"
+        assert len(submitted) == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_confirmation_is_idempotent(self, client, monkeypatch):
+        import app.competition_router as competition_router
+        starts = []
+        monkeypatch.setattr(competition_router, "_start_analysis_worker", lambda *args, **kwargs: starts.append(args))
+        create = await client.post("/api/competition/analyze", json={"query": "最好的 AI 工具有哪些？"})
+        thread_id = create.json()["thread_id"]
+        brief = create.json()["analysis_brief"]
+        brief["target_products"] = ["A", "B"]
+        payload = {"expected_revision": brief["revision"], "brief": brief}
+        first = await client.post(f"/api/competition/{thread_id}/confirm", json=payload)
+        second = await client.post(f"/api/competition/{thread_id}/confirm", json=payload)
+        assert first.status_code == second.status_code == 200
+        assert len(starts) == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_confirmation_is_rejected(self, client):
+        create = await client.post("/api/competition/analyze", json={"query": "最好的 AI 工具有哪些？"})
+        thread_id = create.json()["thread_id"]
+        brief = create.json()["analysis_brief"]
+        brief["target_products"] = ["A", "B"]
+        response = await client.post(f"/api/competition/{thread_id}/confirm", json={"expected_revision": 99, "brief": brief})
+        assert response.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_cancel_waiting_persists_interrupted(self, client):
+        create = await client.post("/api/competition/analyze", json={"query": "最好的 AI 工具有哪些？"})
+        thread_id = create.json()["thread_id"]
+        response = await client.post(f"/api/competition/{thread_id}/cancel")
+        assert response.status_code == 200
+        assert response.json()["status"] == "interrupted"
+        report = await client.get(f"/api/competition/report/{thread_id}")
+        assert report.json()["status"] == "interrupted"
 
     def test_full_live_queue_drops_old_frame_instead_of_failing(self):
         import queue

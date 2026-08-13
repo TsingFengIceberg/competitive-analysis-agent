@@ -244,20 +244,30 @@ def orchestrator_node(state: dict) -> dict:
 
     user_request = state.get("user_request", "")
     products = state.get("target_products") or []
+    brief = state.get("analysis_brief") or {}
 
     if not user_request:
         logger.warning("Orchestrator called with empty user_request — using defaults")
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, brief)
 
     if not products:
         logger.warning("Orchestrator called with empty target_products — ProductResolver failed, degrading")
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, brief)
 
     # ── Build task prompt ──
     system_prompt = _load_prompt()
     products_str = ", ".join(products) if products else "(none — ProductResolver failed)"
+    brief_hint = ""
+    if brief:
+        brief_hint = (
+            f"\nConfirmed Analysis Brief: market={brief.get('market_scope', 'Global / unspecified')}; "
+            f"time={(brief.get('time_range') or {}).get('label', '最近12个月')}; "
+            f"dimensions={[item.get('id') for item in brief.get('dimensions', [])]}; "
+            f"complexity={brief.get('complexity', 'standard')}; "
+            f"output_focus={brief.get('output_focus') or []}. Treat these as hard constraints.\n"
+        )
 
     # Industry context (Layer 2 of §3.20)
     from competition.industry import get_industry_profile
@@ -273,7 +283,7 @@ def orchestrator_node(state: dict) -> dict:
     task = (
         f"User query: {user_request}\n\n"
         f"Verified products: {products_str}"
-        f"{industry_hint}\n\n"
+        f"{industry_hint}{brief_hint}\n"
         "Analyze the query intent and output a strategy routing instruction as a single JSON object "
         "following the format in your system prompt. "
         "Do NOT wrap in markdown code blocks — output raw JSON only."
@@ -292,12 +302,12 @@ def orchestrator_node(state: dict) -> dict:
     except Exception:
         logger.exception("Orchestrator LLM call failed — degrading to default pipeline")
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, brief)
 
     if not raw:
         logger.warning("Orchestrator returned empty content — degrading to default pipeline")
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, brief)
 
     # ── Parse & validate ──
     parsed = _parse_orchestrator_output(raw)
@@ -318,11 +328,22 @@ def orchestrator_node(state: dict) -> dict:
         orch.complexity, orch.schema_profile, orch.summary,
     )
 
-    return _build_return(orch)
+    return _build_return(orch, brief)
 
 
-def _build_return(orch: OrchestrationResult) -> dict:
+def _build_return(orch: OrchestrationResult, brief: dict | None = None) -> dict:
     """Build the partial state return dict."""
+    if brief:
+        dimensions = brief.get("dimensions") or []
+        orch.complexity = brief.get("complexity", orch.complexity)
+        orch.schema_profile = "deep" if orch.complexity == "deep" else "baseline"
+        from competition.schema import DimensionWeight
+        orch.dimension_weights = [
+            DimensionWeight(dimension=item.get("id", ""), weight=item.get("weight", 0), reason="confirmed Analysis Brief")
+            for item in dimensions if item.get("id")
+        ]
+        orch.emphasized_aspects = list(brief.get("output_focus") or [])[:3]
+        orch.complexity_reason = "constrained by confirmed Analysis Brief"
     return {
         "orchestration_result": orch.model_dump(),
         "complexity": orch.complexity,

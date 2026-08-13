@@ -175,6 +175,14 @@ class TestBuildCollectorTask:
         assert "enterprise pricing" in task
         assert "TARGETED RE-COLLECTION" in task
 
+    def test_brief_limits_categories(self):
+        task = _build_collector_task({
+            "user_request": "compare", "target_products": ["A", "B"],
+            "analysis_brief": {"dimensions": [{"id": "technology"}]},
+        })
+        assert "technology" in task
+        assert "pricing" not in task
+
 
 # ═══════════════════════════════════════════════════════════════
 # Data Point Parsing
@@ -257,6 +265,14 @@ class TestBuildAnalystTask:
             "collected_data": [],
         })
         assert "X" in task
+
+    def test_brief_limits_dimensions(self):
+        task = _build_analyst_task({
+            "user_request": "compare", "target_products": ["A", "B"],
+            "analysis_brief": {"dimensions": [{"id": "technology"}]},
+        })
+        assert "技术" in task
+        assert "功能, 定价, 用户" not in task
 
 
 class TestBuildAnalysisResult:
@@ -379,6 +395,7 @@ from competition.nodes.reviewer import (  # noqa: E402
     _filter_loop_gaps,
     _generate_notes,
     _measure_improvement,
+    check_brief_evidence_policy,
     check_data_freshness,
     check_dimension_coverage,
     check_multi_source_consistency,
@@ -433,6 +450,13 @@ class TestG3DataFreshness:
         ], max_age_days=180)
         assert len(gaps) == 0
 
+    def test_strict_policy_requires_independent_domains(self):
+        gaps = check_brief_evidence_policy(
+            [{"id": "dp-1", "category": "pricing", "source_url": "https://a.example/x", "source_type": "official"}],
+            {"evidence_policy": "strict_multi_source", "dimensions": [{"id": "pricing"}], "time_range": {"mode": "last_12_months"}},
+        )
+        assert any("fewer than two" in gap["description"] for gap in gaps)
+
     def test_stale_data_generates_gap(self):
         gaps = check_data_freshness([
             {"id": "dp-1", "label": "Old data", "collected_at": "2020-01-01T00:00:00Z"},
@@ -443,6 +467,28 @@ class TestG3DataFreshness:
     def test_no_timestamp_skipped(self):
         gaps = check_data_freshness([{"id": "dp-1", "label": "X", "collected_at": ""}])
         assert len(gaps) == 0
+
+    def test_publication_date_takes_precedence(self):
+        gaps = check_data_freshness([{
+            "id": "dp-1", "label": "Updated", "collected_at": "2026-08-12T00:00:00Z",
+            "published_at": "2020-01-01T00:00:00Z",
+        }], max_age_days=180)
+        assert gaps and gaps[0]["type"] == "outdated"
+
+    def test_brief_policy_does_not_treat_collection_time_as_publication_date(self):
+        points = [{
+            "id": "dp-1", "label": "Undated source", "category": "pricing",
+            "source_url": "https://vendor.example/pricing", "source_type": "official",
+            "collected_at": "2020-01-01T00:00:00Z",
+        }]
+        gaps = check_data_freshness(points, max_age_days=180, use_collection_fallback=False)
+        assert gaps == []
+        from competition.nodes.reviewer import check_brief_evidence_policy
+        policy_gaps = check_brief_evidence_policy(
+            points,
+            {"evidence_policy": "official_preferred", "dimensions": [{"id": "pricing"}], "time_range": {"mode": "last_12_months"}},
+        )
+        assert any(gap["check_method"] == "publication_date_unknown" for gap in policy_gaps)
 
 
 class TestG4DimensionCoverage:
@@ -473,6 +519,11 @@ class TestG4DimensionCoverage:
         gaps = check_dimension_coverage(analysis, ["A"])
         assert len(gaps) == 1
         assert "Features" in gaps[0]["description"]
+
+    def test_brief_dimension_catalog_controls_coverage(self):
+        analysis = {"comparison_matrix": {"dimensions": ["功能", "定价"], "cells": [{"product": "A", "dimension": "功能"}]}}
+        gaps = check_dimension_coverage(analysis, ["A"], {"dimensions": [{"id": "features"}]})
+        assert gaps == []
 
 
 class TestG5SourceDiversity:
@@ -951,7 +1002,7 @@ class TestErrorHandlerNode:
         assert len(issues) >= 1  # existing + new
 
     def test_empty_error(self):
-        result = error_handler_node({"error": "", "collected_data": []})
+        error_handler_node({"error": "", "collected_data": []})
 # Rework intent routing (§5.7 / R16)
 # ═══════════════════════════════════════════════════════════════
 

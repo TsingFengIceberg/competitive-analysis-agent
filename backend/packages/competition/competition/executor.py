@@ -329,6 +329,8 @@ def execute_agent(
     max_tokens: int = 4096,
     agent_name: str = "",
     disable_thinking: bool = False,
+    timeout_seconds: int = 300,
+    max_retries: int = 2,
 ) -> tuple[str | None, int]:
     """Execute a single LLM call, returning (content, token_count).
 
@@ -378,8 +380,8 @@ def execute_agent(
             "api_key": api_key,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "timeout": 300,
-            "max_retries": 2,
+            "timeout": timeout_seconds,
+            "max_retries": max_retries,
         }
         if disable_thinking:
             llm_kwargs["model_kwargs"] = {"thinking": {"type": "disabled"}}
@@ -439,7 +441,7 @@ def execute_agent(
             # retry via raw HTTP which properly extracts reasoning_content.
             if not content:
                 logger.info("Streaming returned empty content — retrying via raw HTTP for %s", agent_name)
-                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
+                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking, timeout_seconds)
                 # Stream the fallback content through the callback so SSE clients
                 # receive it (the streaming loop above produced nothing).
                 if content and cb is not None:
@@ -456,7 +458,7 @@ def execute_agent(
             # If LangChain dropped the content (thinking model), retry via raw HTTP
             if not content:
                 logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
-                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking)
+                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking, timeout_seconds)
 
         logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
         global _total_tokens_used
@@ -525,6 +527,7 @@ def _raw_chat_completion(
     model: str, api_base: str, api_key: str,
     messages: list, max_tokens: int, temperature: float,
     disable_thinking: bool = False,
+    timeout_seconds: int = 300,
 ) -> tuple[str, int]:
     """Raw HTTP call to OpenAI-compatible chat completions API.
 
@@ -552,7 +555,7 @@ def _raw_chat_completion(
             "Authorization": f"Bearer {api_key}",
         },
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
         data = json.loads(resp.read())
 
     choice = data["choices"][0]
@@ -594,10 +597,20 @@ def execute_structured_agent(
     output_schema_desc: str = "JSON",
     agent_name: str = "",
     disable_thinking: bool = False,
+    timeout_seconds: int = 300,
+    max_retries: int = 2,
     **kwargs,
 ) -> tuple[dict | list | str | None, int]:
     """Execute LLM call and attempt to parse the output as JSON. Returns (result, token_count)."""
-    raw, tokens = execute_agent(system_prompt, task, agent_name=agent_name, disable_thinking=disable_thinking, **kwargs)
+    raw, tokens = execute_agent(
+        system_prompt,
+        task,
+        agent_name=agent_name,
+        disable_thinking=disable_thinking,
+        timeout_seconds=timeout_seconds,
+        max_retries=max_retries,
+        **kwargs,
+    )
     if raw is None:
         return (None, tokens)
 

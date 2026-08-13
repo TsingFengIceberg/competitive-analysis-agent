@@ -87,6 +87,13 @@ competition:
       # temperature:      模型温度
 
       # 意图解析 — 单次调用，轻量模型即可
+      brief_builder:
+        provider: "doubao"
+        model: "your-doubao-model-or-endpoint-id"
+        timeout_seconds: 30
+        temperature: 0.0
+        max_tokens: 700
+
       orchestrator:
         provider: "doubao"
         model: "your-doubao-model-or-endpoint-id"
@@ -162,6 +169,13 @@ competition:
         tavily: true
         ddg: true
         jina: false
+
+      brief_builder:
+        provider: "deepseek"
+        model: "your-deepseek-lite-model"
+        timeout_seconds: 30
+        temperature: 0.0
+        max_tokens: 700
 
       orchestrator:
         provider: "deepseek"

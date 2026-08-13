@@ -69,7 +69,6 @@ def collector_node(state: dict) -> dict:
     gaps = state.get("knowledge_gaps") or []
     if gaps and existing_data:
         # Determine which (product, category) pairs are being re-collected
-        import re as _re
         gapped_pairs: set[tuple[str, str]] = set()
         for g in gaps:
             task_text = g.get("target_collect_task", "")
@@ -120,22 +119,35 @@ def _build_collector_task(state: dict) -> str:
 
     products_str = ", ".join(target_products) if target_products else "(from user request)"
 
+    brief = state.get("analysis_brief") or {}
+    selected = [item.get("id") for item in brief.get("dimensions", []) if item.get("id")]
+    categories = selected or ["features", "pricing", "users", "market"]
+    market_scope = brief.get("market_scope", "Global / unspecified")
+    time_range = brief.get("time_range", {}).get("label", "最近12个月")
+    evidence_policy = brief.get("evidence_policy", "balanced")
+    output_focus = ", ".join(brief.get("output_focus") or []) or "关键差异与可执行建议"
+    category_details = (
+        "  - features: product capabilities, differentiators, limitations\n"
+        "  - pricing: tiers, prices, billing cycles, free tiers\n"
+        "  - users: target segments, satisfaction scores, reviews\n"
+        "  - market: market share, growth trends, funding, valuation"
+        if not brief else
+        chr(10).join(f"  - {category}: collect evidence for this dimension" for category in categories)
+    )
     task = f"""Search for competitive intelligence data on: {products_str}
 
 User request: {user_request}
 
 For each product, collect data points covering these categories:
-  - features: product capabilities, differentiators, limitations
-  - pricing: tiers, prices, billing cycles, free tiers
-  - users: target segments, satisfaction scores, reviews
-  - market: market share, growth trends, funding, valuation
+Selected categories (do not add unselected categories): {', '.join(categories)}
+{category_details}
+Scope constraints: market={market_scope}; time={time_range}; evidence={evidence_policy}; output focus={output_focus}
 
 Search strategy (§3.4.7):
   - Chinese queries → use volcengine_web_search first
   - English queries → use tavily_search / brave_search first
-  - Official info (pricing, features) → firecrawl / jina_reader first
-  - User reviews → G2 / ProductHunt / Reddit first
-  - Tech depth → GitHub API first
+  - Prefer authoritative sources for selected dimensions
+  - Use review sources for user evidence and GitHub/API sources for technology evidence
 
 Output format: a JSON array of objects, each with:
   id, product, category, label, value, confidence (0.0-1.0),
@@ -160,6 +172,15 @@ def _build_targeted_rework_task(state: dict, gaps: list[dict]) -> str:
     """Build a bounded-rework task: only re-collect what the gaps specify."""
     products = state.get("target_products", [])
     products_str = ", ".join(products) if products else "(unknown)"
+    brief = state.get("analysis_brief") or {}
+    scope_hint = ""
+    if brief:
+        scope_hint = (
+            f"\nBrief scope remains binding: market={brief.get('market_scope', 'Global / unspecified')}; "
+            f"time={(brief.get('time_range') or {}).get('label', '最近12个月')}; "
+            f"evidence={brief.get('evidence_policy', 'balanced')}; "
+            f"dimensions={[item.get('id') for item in brief.get('dimensions', [])]}\n"
+        )
 
     gap_lines = []
     for g in gaps[:10]:
@@ -169,6 +190,7 @@ def _build_targeted_rework_task(state: dict, gaps: list[dict]) -> str:
 
     return f"""TARGETED RE-COLLECTION — only collect data for the specific gaps below.
 Original products: {products_str}
+{scope_hint}
 
 Gap list (do NOT re-collect everything — only fill these gaps):
 {chr(10).join(gap_lines)}
@@ -520,7 +542,9 @@ def _run_searches(state: dict) -> str:
 
     # v4: If dimension_weights are available, adjust categories searched
     # Higher weight → include that dimension in the search explicitly
-    queries = build_search_queries(target_products, complexity=complexity)
+    brief = state.get("analysis_brief") or {}
+    selected_categories = [item.get("id") for item in brief.get("dimensions", []) if item.get("id")]
+    queries = build_search_queries(target_products, categories=selected_categories or None, complexity=complexity)
 
     # Industry keyword injection (Layer 2 of §3.20)
     from competition.industry import get_industry_profile
@@ -638,6 +662,7 @@ def _get_search_info() -> dict:
 def _persist_search_results(results) -> None:
     """Save full fetched page text to content_store for downstream evidence verification."""
     import hashlib
+
     from competition.db import save_content
 
     count = 0

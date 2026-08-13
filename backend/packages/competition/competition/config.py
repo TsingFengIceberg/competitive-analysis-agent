@@ -94,6 +94,17 @@ class OrchestratorConfig(AgentConfig):
     tools: list[str] = Field(default_factory=list, description="No tools — pure intent parsing")
 
 
+class BriefBuilderConfig(AgentConfig):
+    """Single bounded call for pre-analysis scope clarification."""
+
+    timeout_seconds: int = Field(default=30, ge=5, le=120)
+    max_turns: int = Field(default=1, ge=1, le=1)
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=700, ge=100, le=1200)
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+
+
 class HitlConfig(BaseModel):
     """HITL Gate configuration — §5.2."""
 
@@ -177,6 +188,7 @@ class CompetitionConfig(BaseModel):
     """
 
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
+    brief_builder: BriefBuilderConfig = Field(default_factory=BriefBuilderConfig)
     collector: CollectorConfig = Field(default_factory=CollectorConfig)
     analyst: AnalystConfig = Field(default_factory=AnalystConfig)
     reviewer: ReviewerConfig = Field(default_factory=ReviewerConfig)

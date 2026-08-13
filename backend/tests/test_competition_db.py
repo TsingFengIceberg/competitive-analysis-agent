@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from competition.brief import brief_from_request, validate_confirmation_brief
 from competition.db import (
     CREDIBILITY_DELTA,
-    upsert_analysis,
     DEFAULT_CREDIBILITY_SCORE,
+    claim_analysis_start,
     get_all_credibilities,
+    get_analysis,
     get_baseline,
     get_credibility,
     init_db,
@@ -18,6 +21,7 @@ from competition.db import (
     record_analysis,
     set_baseline,
     update_credibility,
+    upsert_analysis,
 )
 
 
@@ -63,7 +67,10 @@ def conn():
             report_data TEXT,
             token_usage TEXT,
             title TEXT,
-            pinned INTEGER DEFAULT 0
+            pinned INTEGER DEFAULT 0,
+            analysis_brief TEXT,
+            confirmation_source TEXT,
+            confirmed_at TEXT
         );
     """)
     c.commit()
@@ -158,6 +165,69 @@ class TestAnalysisHistory:
         history = list_history(conn)
         # deep_mode was True (1)
         assert history[0]["thread_id"] == "t-deep"
+
+    def test_brief_round_trip_and_list(self, conn):
+        brief = brief_from_request("Cursor vs Copilot")
+        upsert_analysis(
+            "thread-brief", status="awaiting_confirmation", query="Cursor vs Copilot",
+            products=brief.target_products, persona="pm", analysis_brief=brief.model_dump(), conn=conn,
+        )
+        record = get_analysis("thread-brief", conn)
+        assert record["analysis_brief"]["target_products"] == ["Cursor", "Copilot"]
+        assert list_history(conn)[0]["analysis_brief"]["dimensions"]
+
+    def test_legacy_null_brief_is_readable(self, conn):
+        upsert_analysis("legacy", status="completed", query="old", products=["A"], conn=conn)
+        assert list_history(conn)[0]["analysis_brief"] is None
+
+    def test_record_analysis_preserves_existing_brief(self, conn):
+        brief = brief_from_request("Cursor vs Copilot")
+        upsert_analysis("recorded", status="running", query="Cursor vs Copilot", products=brief.target_products,
+                        analysis_brief=brief.model_dump(), conn=conn)
+        record_analysis("recorded", "Cursor vs Copilot", brief.target_products, "pm", False, [], "", {},
+                        report_data={"title": "done"}, conn=conn)
+        assert get_analysis("recorded", conn)["analysis_brief"]["target_products"] == ["Cursor", "Copilot"]
+
+    def test_claim_and_idempotent_replay(self, conn):
+        draft = brief_from_request("最好的 AI 编程工具有哪些？")
+        upsert_analysis(
+            "claim", status="awaiting_confirmation", query="best tools",
+            products=draft.target_products, analysis_brief=draft.model_dump(), conn=conn,
+        )
+        confirmed = validate_confirmation_brief(draft.model_copy(update={"target_products": ["Cursor", "Copilot"]}))
+        claimed = claim_analysis_start("claim", draft.revision, confirmed.model_dump(), conn=conn)
+        assert claimed["result"] == "claimed"
+        replay = claim_analysis_start("claim", 999, confirmed.model_dump(), conn=conn)
+        assert replay["result"] == "idempotent"
+
+    def test_claim_conflict_after_start(self, conn):
+        draft = brief_from_request("Cursor vs Copilot")
+        upsert_analysis("conflict", status="awaiting_confirmation", analysis_brief=draft.model_dump(), conn=conn)
+        confirmed = validate_confirmation_brief(draft)
+        assert claim_analysis_start("conflict", draft.revision, confirmed.model_dump(), conn=conn)["result"] == "claimed"
+        different = validate_confirmation_brief(draft.model_copy(update={"target_products": ["Cursor", "Windsurf"]}))
+        result = claim_analysis_start("conflict", draft.revision, different.model_dump(), conn=conn)
+        assert result["result"] == "conflict"
+
+    def test_concurrent_claim_has_one_winner(self, tmp_path):
+        db_path = tmp_path / "claim.db"
+        setup = init_db(db_path)
+        draft = brief_from_request("Cursor vs Copilot")
+        upsert_analysis("race", status="awaiting_confirmation", analysis_brief=draft.model_dump(), conn=setup)
+        setup.close()
+        confirmed = validate_confirmation_brief(draft)
+
+        def attempt(_):
+            local = init_db(db_path)
+            try:
+                return claim_analysis_start("race", draft.revision, confirmed.model_dump(), conn=local)["result"]
+            finally:
+                local.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, range(2)))
+        assert results.count("claimed") == 1
+        assert results.count("idempotent") == 1
 
 
 class TestInitDb:

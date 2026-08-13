@@ -79,11 +79,13 @@ def writer_node(state: dict) -> dict:
         hitl_action=hitl_action,
         hitl_focus=hitl_focus,
         hitl_comment=whatif_comment_raw,
+        brief=state.get("analysis_brief") or {},
     )
     forecast = analysis.get("forecast")
     extra_fields = analysis.get("extra_fields") or {}
     dynamic_blocks = analysis.get("dynamic_blocks") or []
     metrics = _compute_report_metrics(collected, verdict, traceability)
+    brief = state.get("analysis_brief") or {}
 
     report_data = {
         "persona": persona,
@@ -97,6 +99,16 @@ def writer_node(state: dict) -> dict:
         "metrics": metrics,
         "extra_fields": extra_fields,
         "dynamic_blocks": dynamic_blocks,
+        "analysis_scope": {
+            "objective": brief.get("objective"),
+            "market_scope": brief.get("market_scope"),
+            "time_range": brief.get("time_range"),
+            "dimensions": brief.get("dimensions"),
+            "audience": brief.get("audience"),
+            "evidence_policy": brief.get("evidence_policy"),
+            "output_focus": brief.get("output_focus"),
+            "confirmation_source": brief.get("confirmation_source"),
+        } if brief else None,
     }
 
     # Build ReviewPackage for HITL (§3.13.5)
@@ -818,6 +830,7 @@ def _apply_narrative_generation(
     sections: list[dict], analysis: dict, products: list[str], persona: str,
     traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str, hitl_focus: list[str] | None,
     hitl_comment: str,
+    brief: dict | None = None,
 ) -> None:
     """Make one optional structured Writer call and apply fields independently."""
     if not analysis or not any(analysis.get(key) for key in ("comparison_matrix", "swot", "trends", "forecast", "dynamic_blocks")):
@@ -829,8 +842,11 @@ def _apply_narrative_generation(
         guidance = ""
         if hitl_action == "rewrite":
             guidance = f"\n重写重点: {', '.join(hitl_focus or []) or '调整表达视角'}\n用户意见: {hitl_comment or '请提升可操作性'}"
+        brief = brief or {}
         task = (
             f"视角: {persona_label}\n竞品: {', '.join(products)}\n"
+            f"市场: {brief.get('market_scope', '未指定')}\n"
+            f"输出重点: {', '.join(brief.get('output_focus') or []) or '关键差异与可执行建议'}\n"
             f"允许引用编号: {sorted(traceability, key=lambda x: int(x) if x.isdigit() else x)}{guidance}\n"
             f"证据摘要:\n{json.dumps(_narrative_digest(analysis, citation_index), ensure_ascii=False, indent=2)}\n\n"
             "只使用上述事实，不得编造事实或引用编号。返回严格 JSON 对象，字段为 executive_summary（150-250字中文字符串）和 recommendations（字符串数组）。"

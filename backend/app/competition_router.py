@@ -53,13 +53,15 @@ class AnalyzeRequest(BaseModel):
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
     context_report: dict | None = Field(default=None, description="Previous report data to use as analysis context")
+    confirmation_mode: str = Field(default="auto", description="auto | always | skip")
 
 
 class AnalyzeResponse(BaseModel):
     """Response after starting an analysis."""
 
     thread_id: str
-    status: str = "running"  # "running" | "completed" | "failed"
+    status: str = "running"  # "running" | "awaiting_confirmation" | "completed" | "failed"
+    analysis_brief: dict | None = None
 
 
 class ReportResponse(BaseModel):
@@ -76,6 +78,14 @@ class ReportResponse(BaseModel):
     token_usage: list[dict] = []
     created_at: str | None = None
     phases: list[dict] = []
+    analysis_brief: dict | None = None
+
+
+class ConfirmAnalysisRequest(BaseModel):
+    """Editable Analysis Brief submitted to start a waiting thread."""
+
+    expected_revision: int = Field(..., ge=1)
+    brief: dict
 
 
 class StreamEvent(BaseModel):
@@ -151,6 +161,7 @@ _cancel_flags: dict[str, bool] = {}  # thread_id → cancelled (cooperative canc
 
 # ── SSE streaming (§19) ──
 import queue as _queue_mod
+
 _stream_queues: dict[str, _queue_mod.Queue] = {}
 _event_counters: dict[str, int] = {}  # thread_id → monotonic event id
 _event_buffers: dict[str, list[tuple[int, str]]] = {}  # thread_id → [(id, formatted_sse_line)]
@@ -509,7 +520,14 @@ def _llm_extract_candidates(query: str) -> list[str]:
 
 
 
-def _verify_products_via_search(candidates: list[str], strictness: int = 1, query_hint: str = "") -> list[str]:
+def _verify_products_via_search(
+    candidates: list[str],
+    strictness: int = 1,
+    query_hint: str = "",
+    *,
+    return_audit: bool = False,
+    preserve_membership: bool = False,
+) -> list[str] | tuple[list[str], list[dict]]:
     """Verify & correct product names: search for ground truth, then LLM judges.
 
     Step 2-3 of the resolution pipeline:
@@ -523,7 +541,8 @@ def _verify_products_via_search(candidates: list[str], strictness: int = 1, quer
     try:
         from competition.tools.search import search as web_search
     except ImportError:
-        return candidates
+        audit = [{"requested_name": name, "resolved_name": name, "confidence": "low"} for name in candidates]
+        return (list(candidates), audit) if return_audit else candidates
 
     # ── Step 2: Search each candidate (parallel, collect titles only, no judgment) ──
     # Strategy: dual queries per candidate:
@@ -599,32 +618,43 @@ def _verify_products_via_search(candidates: list[str], strictness: int = 1, quer
                 logger.warning("Search task failed for '%s'", futures[future], exc_info=True)
 
     if not search_titles:
-        return []
+        audit = [{"requested_name": name, "resolved_name": name, "confidence": "low"} for name in candidates]
+        result = list(candidates) if preserve_membership else []
+        return (result, audit) if return_audit else result
 
     # ── Step 3: LLM judges all candidates at once ──
     resolved = _llm_judge_and_correct(search_titles, query_hint)
 
     # Merge: LLM output drives, fall back to originals for anything missing
     result: list[str] = []
+    audit: list[dict] = []
+    accepted_names: set[str] = set()
     for name in candidates:
         if name in resolved:
-            corrected = resolved[name]
+            decision = resolved[name]
+            corrected = decision["resolved"]
+            confidence = decision["confidence"]
+            if preserve_membership and (confidence != "high" or corrected.casefold() in accepted_names):
+                corrected = name
             if corrected != name:
                 logger.info("LLM judge: '%s' → '%s'", name, corrected)
             else:
                 logger.info("LLM judge: '%s' confirmed", name)
             result.append(corrected)
+            accepted_names.add(corrected.casefold())
+            audit.append({"requested_name": name, "resolved_name": corrected, "confidence": confidence})
         else:
             logger.info("LLM judge: '%s' not in response — keeping original", name)
             result.append(name)
+            audit.append({"requested_name": name, "resolved_name": name, "confidence": "low"})
 
-    return result
+    return (result, audit) if return_audit else result
 
 
 def _llm_judge_and_correct(
     search_titles: dict[str, list[str]],
     query_hint: str = "",
-) -> dict[str, str]:
+) -> dict[str, dict[str, str]]:
     """Single LLM call: judge all candidates against search titles + query context.
 
     Replaces the old Phase 2 batch LLM + all C1/C2/C3 rules. The LLM sees:
@@ -738,7 +768,7 @@ def _llm_judge_and_correct(
             return {}
 
         # Convert to {original: resolved} mapping with validation
-        result: dict[str, str] = {}
+        result: dict[str, dict[str, str]] = {}
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
@@ -751,12 +781,13 @@ def _llm_judge_and_correct(
             if len(resolved) > 50:
                 logger.warning("LLM judge returned overly long name for '%s': '%s' — keeping original",
                              orig, resolved[:80])
-                result[orig] = orig
+                result[orig] = {"resolved": orig, "confidence": "low"}
             else:
-                result[orig] = resolved
+                normalized_confidence = confidence if confidence in {"high", "medium", "low"} else "low"
+                result[orig] = {"resolved": resolved, "confidence": normalized_confidence}
                 logger.debug("LLM judge: '%s' → '%s' [%s]", orig, resolved, confidence)
 
-        corrected = sum(1 for k, v in result.items() if v.lower() != k.lower())
+        corrected = sum(1 for k, v in result.items() if v["resolved"].lower() != k.lower())
         logger.info("LLM judge: %d/%d candidates corrected (%d tokens)",
                     corrected, len(result), tokens)
         return result
@@ -783,21 +814,33 @@ def _parse_json_safe(raw: str) -> dict | list | None:
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeResponse:
-    """Start a competitive analysis. Returns thread_id immediately.
-
-    Product resolution (LLM + search, ~2min) runs in background thread,
-    then graph execution starts automatically once products are resolved.
-    Frontend polls /report/{thread_id} for status updates.
-    """
+    """Create an analysis thread and start only after its Brief is effective."""
     import uuid
     from datetime import UTC, datetime
+
+    from competition.brief import brief_from_request_with_optional_model, detect_confirmation_mode, validate_confirmation_brief
+    from competition.db import claim_analysis_start, init_db, upsert_analysis
+    from competition.db import list_history as _db_list_history
 
     thread_id = f"comp-{uuid.uuid4().hex[:12]}"
     user_id = _get_user_id(fastapi_request)
     _associate_thread(thread_id, user_id)
 
+    mode = detect_confirmation_mode(request.query, request.confirmation_mode)
+    brief_builder = brief_from_request_with_optional_model
+    brief_future = asyncio.get_event_loop().run_in_executor(
+        None, brief_builder, request.query, request.target_products, request.industry, request.persona,
+    )
+    brief = await brief_future if brief_future is not None else brief_builder(
+        request.query, request.target_products, request.industry, request.persona,
+    )
+    if mode == "skip" and brief.readiness != "ready":
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "confirmation_mode=skip requires at least two clear products and an unambiguous scope", "analysis_brief": brief.model_dump()},
+        )
+
     # Persist to DB on creation (§18)
-    from competition.db import upsert_analysis, init_db, list_history as _db_list_history
     # Generate initial title: "新建分析 {N}"
     conn = init_db()
     existing_count = len(_db_list_history(conn, limit=1000))
@@ -806,11 +849,12 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
 
     # Store entry immediately — frontend can start polling right away
     _store[thread_id] = {
-        "status": "running",
+        "status": "awaiting_confirmation",
         "state": {
             "messages": [],
             "user_request": request.query,
-            "target_products": request.target_products or [],
+            "target_products": brief.target_products,
+            "analysis_brief": brief.model_dump(),
             "persona": request.persona,
             "industry": request.industry,
             "collected_data": [],
@@ -818,24 +862,87 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
         },
         "created_at": datetime.now(UTC).isoformat(),
         "query": request.query,
-        "products": [],
+        "products": brief.target_products,
         "title": initial_title,
     }
 
     upsert_analysis(
-        thread_id=thread_id, status="running", user_id=user_id,
-        query=request.query, products=request.target_products or [],
+        thread_id=thread_id, status="awaiting_confirmation", user_id=user_id,
+        query=request.query, products=brief.target_products,
         industry=request.industry, persona=request.persona,
-        title=initial_title,
+        title=initial_title, analysis_brief=brief.model_dump(),
     )
 
-    # Resolve products + run graph entirely in background thread
-    # (sync LLM + search calls take ~2min and would block the event loop)
-    asyncio.get_event_loop().run_in_executor(
-        None, _resolve_and_run_graph, thread_id, request.query, request.target_products, user_id,
-    )
+    if mode == "always" or brief.readiness != "ready":
+        return AnalyzeResponse(thread_id=thread_id, status="awaiting_confirmation", analysis_brief=brief.model_dump())
 
-    return AnalyzeResponse(thread_id=thread_id, status="running")
+    confirmed = validate_confirmation_brief(brief).model_copy(update={
+        "confirmation_source": "bypass" if mode == "skip" else "auto",
+    })
+    result = claim_analysis_start(
+        thread_id, brief.revision, confirmed.model_dump(),
+        confirmation_source="bypass" if mode == "skip" else "auto",
+    )
+    if result.get("result") != "claimed":
+        raise HTTPException(status_code=409, detail="Unable to claim analysis start")
+    _start_analysis_worker(thread_id, request.query, confirmed.model_dump(), user_id)
+
+    return AnalyzeResponse(thread_id=thread_id, status="running", analysis_brief=confirmed.model_dump())
+
+
+def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, user_id: str = "default") -> None:
+    """Submit exactly one resolver/graph worker after the DB claim."""
+    entry = _store.get(thread_id)
+    if entry is not None:
+        entry["status"] = "running"
+        entry.setdefault("state", {})["analysis_brief"] = analysis_brief
+        entry["state"]["target_products"] = analysis_brief.get("target_products", [])
+    try:
+        asyncio.get_event_loop().run_in_executor(
+            None, _resolve_and_run_graph, thread_id, query,
+            analysis_brief.get("target_products", []), user_id, analysis_brief,
+        )
+    except Exception as exc:
+        from competition.db import restore_analysis_to_waiting
+        restore_analysis_to_waiting(thread_id, error=f"Worker submission failed: {exc}")
+        if entry is not None:
+            entry["status"] = "awaiting_confirmation"
+        raise HTTPException(status_code=503, detail="Analysis worker could not be started") from exc
+
+
+@router.post("/{thread_id}/confirm", response_model=AnalyzeResponse)
+async def confirm_analysis(thread_id: str, body: ConfirmAnalysisRequest) -> AnalyzeResponse:
+    """Validate and atomically start a waiting Analysis Brief."""
+    from competition.brief import validate_confirmation_brief
+    from competition.db import claim_analysis_start, init_db
+
+    entry = _store.get(thread_id)
+    if entry is None:
+        entry = _restore_state_from_db(thread_id)
+        if entry is not None:
+            _store[thread_id] = entry
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    try:
+        confirmed = validate_confirmation_brief(body.brief)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    conn = init_db()
+    try:
+        result = claim_analysis_start(thread_id, body.expected_revision, confirmed.model_dump(), conn=conn)
+    finally:
+        conn.close()
+    if result.get("result") == "not_found":
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+    if result.get("result") == "conflict":
+        raise HTTPException(status_code=409, detail={"message": "Brief revision or lifecycle conflict", "analysis_brief": result.get("brief")})
+    if result.get("result") == "idempotent":
+        return AnalyzeResponse(thread_id=thread_id, status=result.get("status", "running"), analysis_brief=result.get("brief"))
+
+    _start_analysis_worker(thread_id, result.get("query", entry.get("query", "")), result["brief"], result.get("user_id", "default"))
+    return AnalyzeResponse(thread_id=thread_id, status="running", analysis_brief=result["brief"])
 
 
 @router.post("/{thread_id}/cancel")
@@ -847,7 +954,25 @@ async def cancel_analysis(thread_id: str) -> dict:
     """
     entry = _store.get(thread_id)
     if entry is None:
+        entry = _restore_state_from_db(thread_id)
+        if entry is not None:
+            _store[thread_id] = entry
+    if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+    if entry.get("status") == "awaiting_confirmation":
+        entry["status"] = "interrupted"
+        entry.setdefault("state", {})["error"] = "用户手动终止分析"
+        try:
+            from competition.db import upsert_analysis
+            upsert_analysis(
+                thread_id=thread_id, status="interrupted",
+                user_id=_thread_owners.get(thread_id, "default"),
+                query=entry.get("query", ""), products=entry.get("products", []),
+            )
+        except Exception:
+            logger.exception("Failed to persist awaiting cancellation for %s", thread_id)
+        return {"thread_id": thread_id, "status": "interrupted", "message": "Analysis cancelled before confirmation"}
 
     if entry.get("status") != "running":
         return {"thread_id": thread_id, "status": entry["status"], "message": "Analysis is not running"}
@@ -909,6 +1034,7 @@ async def get_report(thread_id: str) -> ReportResponse:
             token_usage=db_record.get("token_usage", []),
             created_at=db_record.get("created_at"),
             phases=_load_phases(thread_id),
+            analysis_brief=db_record.get("analysis_brief"),
         )
 
     status = entry.get("status", "unknown")
@@ -930,6 +1056,7 @@ async def get_report(thread_id: str) -> ReportResponse:
         token_usage=token_usage_list,
         created_at=entry.get("created_at"),
         phases=_load_phases(thread_id),
+        analysis_brief=entry.get("state", {}).get("analysis_brief"),
     )
 
 
@@ -1194,10 +1321,14 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
             "report_data": report_data,
             "target_products": target_products,
             "user_request": db_record.get("query", ""),
+            "persona": db_record.get("persona") or "pm",
+            "industry": db_record.get("industry") or "general",
             "orchestration_result": {},
             "collected_data": [],
             "analysis_result": {},
             "review_verdict": {},
+            "analysis_brief": db_record.get("analysis_brief"),
+            "product_resolution": None,
         }
 
         # Load per-phase structured outputs into the state
@@ -1236,6 +1367,7 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
             "status": db_record.get("status", "completed"),
             "created_at": db_record.get("created_at", ""),
             "token_usage": db_record.get("token_usage") if isinstance(db_record.get("token_usage"), list) else _json.loads(db_record.get("token_usage") or "[]"),
+            "analysis_brief": db_record.get("analysis_brief"),
         }
         logger.info("Restored state for %s from DB (v=%d phases)", thread_id[:12], len(phases))
         return entry
@@ -1370,7 +1502,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         }
 
         # Set up streaming callback so re-execution phase content is captured
-        from competition.executor import set_stream_callback, clear_stream_callback
+        from competition.executor import clear_stream_callback, set_stream_callback
         _re_content: dict[str, str] = {}  # agent_name → accumulated text
 
         def _re_stream(agent_name: str, chunk_text: str) -> None:
@@ -1727,6 +1859,8 @@ async def stream(thread_id: str, fastapi_request: Request):
             _store[thread_id] = entry
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+    if entry.get("status") == "awaiting_confirmation":
+        raise HTTPException(status_code=409, detail="Analysis is awaiting Brief confirmation")
 
     last_event_id = fastapi_request.headers.get("Last-Event-ID")
 
@@ -1763,6 +1897,18 @@ async def list_history(limit: int = Query(default=10, le=50), fastapi_request: R
     # Return most recent first, limited
     history.sort(key=lambda h: h.get("created_at", ""), reverse=True)
     history = history[:limit]
+    try:
+        from competition.db import init_db
+        from competition.db import list_history as db_list_history
+        conn = init_db()
+        persisted = db_list_history(conn, limit=limit, user_id=user_id)
+        conn.close()
+        by_id = {item["thread_id"]: item for item in persisted}
+        for item in history:
+            by_id[item["thread_id"]] = {**by_id.get(item["thread_id"], {}), **item}
+        history = sorted(by_id.values(), key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
+    except Exception:
+        logger.exception("Failed to merge persisted competition history")
     return {"history": history, "total": len(history), "user_id": user_id}
 
 
@@ -1775,7 +1921,8 @@ async def current_user(fastapi_request: Request):
     email = None
     if user_id != "default":
         try:
-            import os as _os, sqlite3 as _sqlite
+            import os as _os
+            import sqlite3 as _sqlite
             auth_db = _os.path.join(_os.path.dirname(__file__), "..", "..", ".ci-agent", "auth.db")
             if _os.path.exists(auth_db):
                 ac = _sqlite.connect(auth_db)
@@ -1897,7 +2044,7 @@ async def delete_db_report(thread_id: str):
 async def pin_db_report(thread_id: str, pinned: bool = True):
     """Pin or unpin a saved report (pinned reports sort first and cannot be deleted)."""
     try:
-        from competition.db import pin_analysis, init_db
+        from competition.db import init_db, pin_analysis
 
         conn = init_db()
         updated = pin_analysis(thread_id, pinned, conn=conn)
@@ -1920,7 +2067,7 @@ class RenameRequest(BaseModel):
 async def rename_db_report(thread_id: str, body: RenameRequest):
     """Rename a saved report."""
     try:
-        from competition.db import upsert_analysis, get_analysis, init_db
+        from competition.db import get_analysis, init_db, upsert_analysis
 
         conn = init_db()
         record = get_analysis(thread_id, conn=conn)
@@ -2033,7 +2180,13 @@ def _finalize_cancelled(thread_id: str) -> None:
     _emit_event(thread_id, "end", {"status": "interrupted", "message": "分析已终止"})
 
 
-def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[str], user_id: str = "default") -> None:
+def _resolve_and_run_graph(
+    thread_id: str,
+    query: str,
+    explicit_products: list[str],
+    user_id: str = "default",
+    analysis_brief: dict | None = None,
+) -> None:
     """ProductResolver (pre-graph) → Orchestrator (graph entry).
 
     Phase 1 (pre-graph): ProductResolver — LLM extract + search verify + LLM correct
@@ -2056,7 +2209,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
     set_user_context(user_id)
 
     # Set cancel checker so LLM calls during product resolution can be interrupted
-    from competition.executor import set_cancel_checker, clear_cancel_checker
+    from competition.executor import clear_cancel_checker, set_cancel_checker
     set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
 
     try:
@@ -2075,15 +2228,29 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
 
         products: list[str] = []
 
-        if explicit_products:
-            for p in explicit_products:
+        effective_brief = analysis_brief or (_store.get(thread_id, {}).get("state", {}).get("analysis_brief"))
+        fixed_products = list((effective_brief or {}).get("target_products") or explicit_products)
+        if fixed_products:
+            for p in fixed_products:
                 p = p.strip()
                 if p and p not in products:
                     products.append(p)
 
+        product_audit = [
+            {"requested_name": product, "resolved_name": product, "confidence": "low"}
+            for product in products
+        ]
         if products:
             # Verify/correct explicit products via search + LLM judge
-            products = _verify_products_via_search(products, 1, query)
+            # A confirmed Brief fixes membership; keep user order and spelling
+            # when verification cannot establish a high-confidence correction.
+            if effective_brief:
+                # Verification may collect evidence and suggest corrections, but
+                # the confirmed Brief owns membership, order, and user spelling.
+                verified = _verify_products_via_search(
+                    products, 1, query, return_audit=True, preserve_membership=True,
+                )
+                products, product_audit = verified
 
         if not products:
             # No explicit products — extract from query via LLM + search
@@ -2134,7 +2301,10 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
             _store[thread_id]["products"] = products
             _store[thread_id]["status"] = "running"
             _store[thread_id]["state"]["target_products"] = products
-            _store[thread_id]["state"]["complexity"] = "standard"
+            _store[thread_id]["state"]["product_resolution"] = product_audit
+            _store[thread_id]["state"]["complexity"] = (effective_brief or {}).get("complexity", "standard")
+            if effective_brief:
+                _store[thread_id]["state"]["analysis_brief"] = effective_brief
 
         # Auto-generate title from resolved products
         try:
@@ -2149,7 +2319,7 @@ def _resolve_and_run_graph(thread_id: str, query: str, explicit_products: list[s
                 title = ""
             if title:
                 from competition.db import upsert_analysis as _ua
-                _ua(thread_id=thread_id, title=title, status="running")
+                _ua(thread_id=thread_id, title=title, status="running", products=products)
                 _store[thread_id]["title"] = title
                 _emit_event(thread_id, "title", {"title": title, "thread_id": thread_id})
         except Exception:
@@ -2214,8 +2384,7 @@ def _run_graph_sync(thread_id: str) -> None:
         # ── Set up SSE streaming callback (§19) ──
         # Each LLM call inside nodes will stream token chunks to the frontend
         # via this callback, matching the standard messages-tuple SSE format.
-        from competition.executor import set_stream_callback, clear_stream_callback
-        from competition.executor import set_cancel_checker, clear_cancel_checker
+        from competition.executor import clear_cancel_checker, clear_stream_callback, set_cancel_checker, set_stream_callback
 
         _chunk_seq = 0
         _phase_content: dict[str, str] = {}  # agent_name → accumulated streaming text
@@ -2386,7 +2555,7 @@ def _run_graph_sync(thread_id: str) -> None:
         # ── Feishu: auto-export doc + notification ──
         try:
             from competition.feishu_doc import export_report_to_doc, is_doc_export_enabled
-            from competition.feishu_notify import notify_analysis_complete, is_notify_enabled
+            from competition.feishu_notify import is_notify_enabled, notify_analysis_complete
 
             st = _store[thread_id].get("state", {})
             rd = st.get("report_data")

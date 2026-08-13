@@ -3,9 +3,10 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useState, useRef, useEffect, memo, useMemo } from "react";
 
-import type { ReportData, ReportHistoryItem } from "@/components/competition/api-client";
+import type { AnalysisBrief, ReportData, ReportHistoryItem } from "@/components/competition/api-client";
 
 import CompetitionReportCard from "./competition-report-card";
+import AnalysisBriefCard from "./analysis-brief-card";
 
 // ── Phase state (matches page.tsx) ──
 
@@ -65,6 +66,12 @@ interface Props {
   onViewTrace?: () => void;
   onViewBranchTree?: () => void;
   onEdit?: () => void;
+  analysisBrief?: AnalysisBrief | null;
+  briefPending?: boolean;
+  briefError?: string | null;
+  onBriefChange?: (brief: AnalysisBrief) => void;
+  onBriefConfirm?: () => void;
+  onBriefCancel?: () => void;
 }
 
 function fmtTime(sec: number): string {
@@ -90,6 +97,7 @@ export default function CompetitionChatArea({
   historyEntries, viewingHistory,
   onExpandReport, onApprove, onReanalyze, onExportMD, onExportJSON,
   onNavigateVersion, onViewTrace, onViewBranchTree, onEdit,
+  analysisBrief, briefPending, briefError, onBriefChange, onBriefConfirm, onBriefCancel,
 }: Props) {
   const isRunning = status === "running";
 
@@ -163,6 +171,17 @@ export default function CompetitionChatArea({
   return (
     <div ref={scrollRef} className="flex-1 min-h-0 w-full min-w-0 overflow-y-auto overflow-x-hidden">
       <div className="mx-auto w-full max-w-(--container-width-md) min-w-0 flex flex-col gap-5 p-4">
+        {analysisBrief && status === "awaiting_confirmation" && (
+          <AnalysisBriefCard
+            brief={analysisBrief}
+            pending={briefPending}
+            error={briefError}
+            onChange={onBriefChange}
+            onConfirm={onBriefConfirm}
+            onCancel={onBriefCancel}
+          />
+        )}
+        {analysisBrief && status !== "awaiting_confirmation" && status !== "idle" && status !== "submitting" && <AnalysisBriefCard brief={analysisBrief} readOnly />}
         {/* Phases + cards interleaved by generation */}
         {[...generations.entries()].map(([gen, { phases: genPhases, card }]) => (
           <Fragment key={gen}>

@@ -22,6 +22,48 @@ function csrfHeaders(): Record<string, string> {
 // ── API Types ──
 
 export type Persona = "pm" | "entrepreneur";
+export type AnalysisStatus = "submitting" | "awaiting_confirmation" | "running" | "completed" | "failed" | "interrupted" | "approved" | "error";
+export type BriefDimensionId = "features" | "pricing" | "users" | "market" | "technology";
+
+export interface BriefDimension {
+  id: BriefDimensionId;
+  label: string;
+  weight: number;
+}
+
+export interface BriefTimeRange {
+  mode: "latest" | "last_12_months" | "custom" | "all_available";
+  label: string;
+  start: string | null;
+  end: string | null;
+}
+
+export interface BriefAmbiguity {
+  field: string;
+  question: string;
+  required: boolean;
+}
+
+export interface AnalysisBrief {
+  version: 1;
+  revision: number;
+  objective: string;
+  target_products: string[];
+  audience: "product" | "strategy" | "procurement" | "executive" | "technical" | "general";
+  market_scope: string;
+  time_range: BriefTimeRange;
+  dimensions: BriefDimension[];
+  complexity: "quick" | "standard" | "deep";
+  evidence_policy: "balanced" | "official_preferred" | "strict_multi_source";
+  output_focus: string[];
+  assumptions: string[];
+  inferred_fields: string[];
+  readiness: "ready" | "needs_confirmation";
+  ambiguities: BriefAmbiguity[];
+  confidence: number;
+  confirmation_source: "auto" | "bypass" | "user" | null;
+  confirmed_at: string | null;
+}
 
 export interface AnalyzeRequest {
   query: string;
@@ -30,11 +72,13 @@ export interface AnalyzeRequest {
   industry?: string;  // §17: Industry selection — saas|devtools|ai|database|hardware|gaming|general
   context_report?: Record<string, unknown> | null;
   uploaded_files?: string[] | null;
+  confirmation_mode?: "auto" | "always" | "skip";
 }
 
 export interface AnalyzeResponse {
   thread_id: string;
-  status: "running" | "completed" | "failed";
+  status: AnalysisStatus;
+  analysis_brief: AnalysisBrief | null;
 }
 
 export interface ReportResponse {
@@ -49,6 +93,7 @@ export interface ReportResponse {
   token_usage: TokenEntry[];
   created_at: string | null;
   phases?: PhaseHistoryEntry[];
+  analysis_brief: AnalysisBrief | null;
 }
 
 export interface PhaseHistoryEntry {
@@ -135,6 +180,7 @@ export interface ReportData {
   quality_summary: Record<string, unknown>;
   forecast: unknown;
   metrics: Record<string, number>;
+  analysis_scope?: Record<string, unknown> | null;
 }
 
 export interface ReportSection {
@@ -283,6 +329,24 @@ export function useCompetitionAPI() {
     return res.json();
   }, []);
 
+  const confirmAnalysis = useCallback(async (threadId: string, expectedRevision: number, brief: AnalysisBrief): Promise<AnalyzeResponse> => {
+    const res = await fetch(`${API_BASE}/${threadId}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify({ expected_revision: expectedRevision, brief }),
+      credentials: "include",
+    });
+    if (!res.ok) {
+      let detail = `Confirmation failed: ${res.status}`;
+      try {
+        const payload = await res.json();
+        detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail ?? payload);
+      } catch { /* use status fallback */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  }, []);
+
   const pollReport = useCallback(async (threadId: string): Promise<ReportResponse> => {
     const res = await fetch(`${API_BASE}/report/${threadId}`);
     if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
@@ -350,5 +414,5 @@ export function useCompetitionAPI() {
     return res.json();
   }, []);
 
-  return { loading, startAnalysis, cancelAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getTrace, getCheckpointState };
+  return { loading, startAnalysis, confirmAnalysis, cancelAnalysis, pollReport, pollDagState, pollMessageFlow, pollAgentDetails, pollTraceability, submitDecision, pollReportHistory, getTimeline, getTrace, getCheckpointState };
 }

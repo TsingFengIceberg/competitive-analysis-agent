@@ -845,7 +845,6 @@ def _doubao_search(query: str, max_results: int, api_key: str, api_base: str) ->
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
-                "Authorization": f"Bearer {api_key}",
             },
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -958,6 +957,9 @@ _CATEGORY_QUERY_TEMPLATES = {
     ],
     "market": [
         "{product} market share growth trends",
+    ],
+    "technology": [
+        "{product} technology integrations API architecture",
     ],
 }
 

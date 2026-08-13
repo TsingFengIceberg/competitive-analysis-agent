@@ -19,7 +19,91 @@ import json
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pre-analysis Brief (P1.1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+BRIEF_DIMENSION_LABELS: dict[str, str] = {
+    "features": "功能与体验",
+    "pricing": "定价与商业模式",
+    "users": "用户与使用场景",
+    "market": "市场与竞争格局",
+    "technology": "技术与集成能力",
+}
+
+
+class BriefDimension(BaseModel):
+    """One selected, bounded dimension in an Analysis Brief."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: Literal["features", "pricing", "users", "market", "technology"]
+    label: str = ""
+    weight: float = Field(default=0.2, gt=0.0, le=1.0)
+
+
+class BriefTimeRange(BaseModel):
+    """Time scope for source collection."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["latest", "last_12_months", "custom", "all_available"] = "last_12_months"
+    label: str = "最近12个月"
+    start: str | None = None
+    end: str | None = None
+
+
+class BriefAmbiguity(BaseModel):
+    """A bounded clarification question shown by the frontend."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    field: str
+    question: str = Field(..., max_length=300)
+    required: bool = True
+
+
+class AnalysisBrief(BaseModel):
+    """Versioned pre-analysis contract shared by API, graph, and report."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    version: Literal[1] = 1
+    revision: int = Field(default=1, ge=1)
+    objective: str = Field(default="竞品分析", min_length=1, max_length=500)
+    target_products: list[str] = Field(default_factory=list, max_length=10)
+    audience: Literal["product", "strategy", "procurement", "executive", "technical", "general"] = "product"
+    market_scope: str = Field(default="Global / unspecified", min_length=1, max_length=120)
+    time_range: BriefTimeRange = Field(default_factory=BriefTimeRange)
+    dimensions: list[BriefDimension] = Field(default_factory=list, min_length=1, max_length=5)
+    complexity: Literal["quick", "standard", "deep"] = "standard"
+    evidence_policy: Literal["balanced", "official_preferred", "strict_multi_source"] = "official_preferred"
+    output_focus: list[str] = Field(default_factory=lambda: ["关键差异", "可执行建议"], max_length=8)
+    assumptions: list[str] = Field(default_factory=list, max_length=8)
+    inferred_fields: list[str] = Field(default_factory=list, max_length=8)
+    readiness: Literal["ready", "needs_confirmation"] = "needs_confirmation"
+    ambiguities: list[BriefAmbiguity] = Field(default_factory=list, max_length=8)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confirmation_source: Literal["auto", "bypass", "user"] | None = None
+    confirmed_at: str | None = None
+
+    def editable_payload(self) -> dict:
+        """Return only client-editable fields for canonical comparison."""
+        return {
+            "objective": self.objective,
+            "target_products": self.target_products,
+            "audience": self.audience,
+            "market_scope": self.market_scope,
+            "time_range": self.time_range.model_dump(),
+            "dimensions": [d.model_dump() for d in self.dimensions],
+            "complexity": self.complexity,
+            "evidence_policy": self.evidence_policy,
+            "output_focus": self.output_focus,
+        }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Layer 1: 竞品知识 Schema（开题材料 §2 课题介绍）
@@ -137,7 +221,7 @@ class CollectedDataPoint(BaseModel):
 
     id: str = Field(..., description="Unique ID: dp-{timestamp}-{seq}")
     product: str = Field(..., description="Target product name")
-    category: Literal["features", "pricing", "users", "market"] = Field(
+    category: Literal["features", "pricing", "users", "market", "technology"] = Field(
         ..., description="Data category"
     )
     label: str = Field(..., description="One-line description, e.g. 'Cursor Pro 月费'")
@@ -151,6 +235,7 @@ class CollectedDataPoint(BaseModel):
         ..., description="Source classification"
     )
     collected_at: str = Field(..., description="ISO 8601 timestamp")
+    published_at: str | None = Field(default=None, description="Source publication/update time when available")
 
 
 # ── Edge ②: Analyst → Reviewer (§3.13.3) ──
@@ -428,6 +513,10 @@ class ReportData(BaseModel):
         default_factory=list,
         description="Domain-adaptive blocks from AnalysisResult (§ v4 动态 Schema). "
         "Rendered per block_type by frontend.",
+    )
+    analysis_scope: dict[str, Any] | None = Field(
+        default=None,
+        description="Compact Analysis Brief scope metadata for auditability",
     )
 
 
