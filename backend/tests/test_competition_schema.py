@@ -308,6 +308,27 @@ class TestReportData:
         section = ReportSection(id="sec-whatif", title="What-if", content_type="what-if-form")
         assert section.content_type == "what-if-form"
 
+    def test_structured_dynamic_table_and_chart_sections_validate(self):
+        rd = ReportData(
+            products=["A"],
+            sections=[
+                ReportSection(id="dynamic-block-0", title="表", content="表格 [1]", content_type="table",
+                              source_ids=["1"], chart_path={"headers": ["指标"], "rows": [["1"]]}),
+                ReportSection(id="dynamic-block-1", title="图", content="图表 [1]", content_type="chart",
+                              source_ids=["1"], chart_path={"chart": "bar", "labels": ["A"], "series": {"值": [1]}}),
+            ],
+            dynamic_blocks=[
+                {"block_type": "kv_list", "title": "指标", "data": {"x": 1}},
+                {"block_type": "comparison_table", "title": "表", "data": {"headers": ["指标"], "rows": [["1"]]}},
+                {"block_type": "stat_chart", "title": "图", "data": {"chart": "bar", "labels": ["A"], "series": {"值": [1]}}},
+                {"block_type": "insight_text", "title": "洞察", "data": {"content": "结论"}},
+            ],
+            traceability_map={"1": {"url": "a.example"}},
+        )
+        assert rd.sections[0].chart_path["headers"] == ["指标"]
+        assert rd.sections[1].chart_path["chart"] == "bar"
+        assert len(rd.dynamic_blocks) == 4
+
 
 class TestForecastResult:
     def test_forecast(self):

@@ -404,7 +404,7 @@ class ReportSection(BaseModel):
     content: str = Field(default="", description="Markdown text rendered by frontend engine")
     content_type: Literal["text", "table", "chart", "what-if-form"] = "text"
     source_ids: list[str] = Field(default_factory=list)
-    chart_path: str | None = None
+    chart_path: dict[str, Any] | None = None
     subsections: list[ReportSection] | None = None
 
 

@@ -577,6 +577,7 @@ from competition.nodes.writer import (  # noqa: E402
     _build_traceability_map,
     _compute_report_metrics,
     _extract_key_findings,
+    writer_node,
     writer_self_check,
 )
 
@@ -637,6 +638,55 @@ class TestBuildSections:
         swot = next(s for s in sections if s["id"] == "sec-swot")
         assert "Fast" in swot["content"]
 
+    def test_citations_follow_collected_order_and_ignore_unknown_ids(self):
+        sections = _build_sections(
+            {
+                "comparison_matrix": {
+                    "products": ["A"], "dimensions": ["Price"],
+                    "cells": [{"product": "A", "dimension": "Price", "rating": 5,
+                               "evidence": "official", "source_data_point_ids": ["dp-2", "missing", "dp-2"]}],
+                    "summary": "A is well-priced",
+                },
+            },
+            {"quality_summary": {}}, ["A"], None, None, "", [
+                {"id": "dp-1", "source_url": "one.example"},
+                {"id": "dp-2", "source_url": "two.example"},
+            ], {"total_data_points": 2},
+        )
+        matrix = next(s for s in sections if s["id"] == "sec-comparison-matrix")
+        assert "[2]" in matrix["content"]
+        assert "[1]" not in matrix["content"]
+        assert matrix["source_ids"] == ["2"]
+
+    def test_dynamic_blocks_and_legacy_appendix(self):
+        blocks = [
+            {"block_type": "kv_list", "title": "指标", "data": {"x": 1}, "source_data_point_ids": ["dp-1"]},
+            {"block_type": "comparison_table", "title": "表", "data": {"headers": ["A"], "rows": [["1"]]}, "source_data_point_ids": ["dp-1"]},
+            {"block_type": "stat_chart", "title": "图", "data": {"chart": "bar", "labels": ["A"], "series": {"x": [1]}}, "source_data_point_ids": ["dp-1"]},
+            {"block_type": "insight_text", "title": "洞察", "data": {"content": "结论"}, "source_data_point_ids": ["dp-1"]},
+        ]
+        sections = _build_sections(
+            {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"},
+             "dynamic_blocks": blocks,
+             "extra_fields": {"legacy": {"value": "old", "source_data_point_ids": ["dp-1"]}}},
+            {"quality_summary": {}}, ["A"], None, None, "", [{"id": "dp-1", "source_url": "a.example"}], {"total_data_points": 1},
+        )
+        dynamic = [s for s in sections if s["id"].startswith("dynamic-block-")]
+        assert [s["id"] for s in dynamic] == ["dynamic-block-0", "dynamic-block-1", "dynamic-block-2", "dynamic-block-3"]
+        assert dynamic[1]["chart_path"] == {"headers": ["A"], "rows": [["1"]]}
+        assert dynamic[2]["chart_path"]["chart"] == "bar"
+        assert all(s["source_ids"] == ["1"] for s in dynamic)
+        assert not any(s["id"] == "appendix-extra-fields" for s in sections)
+
+        legacy_sections = _build_sections(
+            {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "x"},
+             "extra_fields": {"legacy": {"value": "old", "source_data_point_ids": ["dp-1"]}}},
+            {"quality_summary": {}}, ["A"], None, None, "", [{"id": "dp-1", "source_url": "a.example"}], {"total_data_points": 1},
+        )
+        appendix = next(s for s in legacy_sections if s["id"] == "appendix-extra-fields")
+        assert "old" in appendix["content"]
+        assert appendix["source_ids"] == ["1"]
+
 
 class TestBuildTraceabilityMap:
     def test_empty(self):
@@ -695,6 +745,45 @@ class TestWriterSelfCheck:
             "traceability_map": {},
         }, ["Cursor"])
         assert any("W3" in i for i in issues)
+
+    def test_unresolved_citation_marker(self):
+        issues = writer_self_check({
+            "sections": [{"id": "sec-swot", "content": "claim [99]", "source_ids": ["99"]}],
+            "traceability_map": {"1": {"url": "a.com"}},
+        }, [])
+        assert any("[99]" in issue for issue in issues)
+
+
+class TestWriterNarrative:
+    def test_single_structured_call_updates_both_sections(self, monkeypatch):
+        calls = []
+
+        def fake_structured(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"executive_summary": "新的摘要 [2]", "recommendations": ["优先行动 [1]"]}, 12
+
+        monkeypatch.setattr("competition.executor.execute_structured_agent", fake_structured)
+        result = writer_node({
+            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "矩阵结论"}},
+            "review_verdict": {"quality_summary": {}}, "target_products": ["A"], "persona": "entrepreneur",
+            "collected_data": [{"id": "dp-1", "source_url": "a.example"}, {"id": "dp-2", "source_url": "b.example"}],
+        })
+        assert len(calls) == 1
+        assert result["report_data"]["persona"] == "entrepreneur"
+        sections = result["report_data"]["sections"]
+        assert next(s for s in sections if s["id"] == "sec-executive-summary")["content"] == "新的摘要 [2]"
+        assert "优先行动 [1]" in next(s for s in sections if s["id"] == "sec-recommendations")["content"]
+
+    def test_malformed_structured_response_keeps_fallback(self, monkeypatch):
+        monkeypatch.setattr("competition.executor.execute_structured_agent", lambda *args, **kwargs: {"executive_summary": "bad [999]", "recommendations": [{"bad": 1}]})
+        result = writer_node({
+            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "矩阵结论"}},
+            "review_verdict": {"quality_summary": {}}, "target_products": ["A"],
+            "collected_data": [{"id": "dp-1", "source_url": "a.example"}],
+        })
+        sections = result["report_data"]["sections"]
+        assert "矩阵结论" in next(s for s in sections if s["id"] == "sec-executive-summary")["content"]
+        assert "[LLM" not in str(sections)
 
 
 class TestComputeMetrics:
