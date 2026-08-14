@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -27,6 +28,7 @@ DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 # Global token counter for competition analysis session
 _total_tokens_used = 0
 _agent_tokens: dict[str, int] = {}
+_token_lock = threading.Lock()
 
 # Thread-local storage for SSE streaming callback (§19)
 # Simpler than contextvars — the entire graph runs on one executor thread,
@@ -57,6 +59,11 @@ def set_thread_context(thread_id: str) -> None:
 def clear_thread_context() -> None:
     """Clear the analysis context."""
     _tl.thread_id = None
+
+
+def get_thread_context() -> str | None:
+    """Return the current request thread ID, if one is installed."""
+    return getattr(_tl, "thread_id", None)
 
 
 def set_user_context(user_id: str, user_settings: dict | None = None) -> None:
@@ -209,14 +216,104 @@ def clear_cancel_checker() -> None:
     _tl.cancel_checker = None
 
 
+def is_cancelled() -> bool:
+    """Return whether the current execution context requested cancellation."""
+    checker = getattr(_tl, "cancel_checker", None)
+    try:
+        return bool(checker and checker())
+    except Exception:
+        logger.debug("Cancellation checker failed", exc_info=True)
+        return False
+
+
+def set_progress_callback(cb: Callable[[dict], None] | None) -> None:
+    """Set a structured progress callback for the current execution context."""
+    _tl.progress_callback = cb
+
+
+def clear_progress_callback() -> None:
+    """Remove the structured progress callback."""
+    _tl.progress_callback = None
+
+
+def emit_progress(payload: dict) -> None:
+    """Emit bounded structured progress without allowing callbacks to fail work."""
+    cb = getattr(_tl, "progress_callback", None)
+    if cb is None:
+        return
+    try:
+        cb(payload)
+    except Exception:
+        logger.debug("Structured progress callback failed", exc_info=True)
+
+
+@dataclass(frozen=True)
+class ExecutorContextSnapshot:
+    """Execution hooks copied into one parallel worker.
+
+    The raw token stream callback is intentionally not included. Parallel
+    Writer calls would otherwise interleave chunks from independent sections.
+    """
+
+    copied_context: contextvars.Context
+    thread_id: str | None
+    cancel_checker: Callable[[], bool] | None
+    progress_callback: Callable[[dict], None] | None
+
+
+def capture_executor_context() -> ExecutorContextSnapshot:
+    """Capture parent ContextVars and thread-local hooks for one worker."""
+    return ExecutorContextSnapshot(
+        copied_context=contextvars.copy_context(),
+        thread_id=getattr(_tl, "thread_id", None),
+        cancel_checker=getattr(_tl, "cancel_checker", None),
+        progress_callback=getattr(_tl, "progress_callback", None),
+    )
+
+
+def run_in_executor_context(snapshot: ExecutorContextSnapshot, fn: Callable[[], object]):
+    """Run a callable with an isolated copy of the parent execution context."""
+
+    def _run_with_hooks():
+        previous = {
+            "thread_id": getattr(_tl, "thread_id", None),
+            "cancel_checker": getattr(_tl, "cancel_checker", None),
+            "progress_callback": getattr(_tl, "progress_callback", None),
+            "stream_callback": getattr(_tl, "stream_callback", None),
+        }
+        _tl.thread_id = snapshot.thread_id
+        _tl.cancel_checker = snapshot.cancel_checker
+        _tl.progress_callback = snapshot.progress_callback
+        # Do not mix independent section output in the parent SSE stream.
+        _tl.stream_callback = None
+        try:
+            return fn()
+        finally:
+            for name, value in previous.items():
+                setattr(_tl, name, value)
+
+    return snapshot.copied_context.run(_run_with_hooks)
+
+
 def get_total_tokens() -> int:
     """Return cumulative tokens used across all LLM calls in this process."""
-    return _total_tokens_used
+    with _token_lock:
+        return _total_tokens_used
 
 
 def get_agent_tokens() -> dict[str, int]:
     """Return per-agent token breakdown for this process."""
-    return dict(_agent_tokens)
+    with _token_lock:
+        return dict(_agent_tokens)
+
+
+def _record_token_usage(agent_name: str, usage: int) -> None:
+    """Atomically account for a completed LLM call."""
+    global _total_tokens_used
+    with _token_lock:
+        _total_tokens_used += usage
+        if agent_name:
+            _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + usage
 
 
 def _sanitize_stream_chunk(text: str) -> str:
@@ -374,6 +471,7 @@ def execute_agent(
     disable_thinking: bool = False,
     timeout_seconds: int = 300,
     max_retries: int = 2,
+    allow_empty_content_fallback: bool = True,
 ) -> tuple[str | None, int]:
     """Execute a single LLM call, returning (content, token_count).
 
@@ -497,7 +595,7 @@ def execute_agent(
             # Fallback: if streaming produced empty content (thinking models may
             # put output in reasoning_content, inaccessible via streaming chunks),
             # retry via raw HTTP which properly extracts reasoning_content.
-            if not content:
+            if not content and allow_empty_content_fallback:
                 logger.info("Streaming returned empty content — retrying via raw HTTP for %s", agent_name)
                 content, usage = _raw_chat_completion(
                     model, api_base, api_key, messages, max_tokens, temperature,
@@ -517,7 +615,7 @@ def execute_agent(
             usage = _extract_usage(response)
 
             # If LangChain dropped the content (thinking model), retry via raw HTTP
-            if not content:
+            if not content and allow_empty_content_fallback:
                 logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
                 content, usage = _raw_chat_completion(
                     model, api_base, api_key, messages, max_tokens, temperature,
@@ -525,10 +623,7 @@ def execute_agent(
                 )
 
         logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
-        global _total_tokens_used
-        _total_tokens_used += usage
-        if agent_name:
-            _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + usage
+        _record_token_usage(agent_name, usage)
         return (str(content) if content else None, usage)
 
     except Exception as e:

@@ -206,6 +206,167 @@ class TestStream:
             competition_router._event_buffers.pop(thread_id, None)
             competition_router._event_counters.pop(thread_id, None)
 
+    def test_reanalysis_forwards_bounded_writer_progress_and_clears_hooks(self, monkeypatch):
+        import app.competition_router as competition_router
+        import competition.executor as executor_module
+        import competition.nodes.writer as writer_module
+
+        thread_id = "comp-test-reanalysis-progress"
+        events = []
+        saved_phases = []
+        monkeypatch.setitem(competition_router._store, thread_id, {
+            "status": "running",
+            "state": {"user_request": "test", "hitl_decision": {}},
+            "query": "test",
+            "products": ["A"],
+        })
+        monkeypatch.setattr(competition_router, "_emit_event", lambda tid, event, payload, **kwargs: events.append((event, payload)))
+        monkeypatch.setattr(competition_router, "_add_token_entry", lambda *_args: None)
+        monkeypatch.setattr(competition_router, "_current_db_version", lambda *_args: None)
+        monkeypatch.setattr(competition_router._history_store, "insert", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("competition.db.save_phase", lambda **kwargs: saved_phases.append(kwargs))
+
+        def fake_writer(state):
+            executor_module.emit_progress({
+                "phase": "writer",
+                "task_key": "industry:sec-industry-benchmark",
+                "section_id": "sec-industry-benchmark",
+                "status": "success",
+                "completed": 1,
+                "total": 1,
+                "message": "报告章节生成进度：1/1",
+                "secret": "must not escape",
+            })
+            return {"report_data": {"sections": []}}
+
+        monkeypatch.setattr(writer_module, "writer_node", fake_writer)
+        competition_router._reanalyze_sync(thread_id, "rewrite")
+
+        progress = [payload for event, payload in events if event == "progress" and payload.get("phase") == "writer"]
+        assert progress == [{
+            "phase": "writer",
+            "task_key": "industry:sec-industry-benchmark",
+            "section_id": "sec-industry-benchmark",
+            "status": "success",
+            "completed": 1,
+            "total": 1,
+            "message": "报告章节生成进度：1/1",
+        }]
+        assert any(event == "node_end" and payload["node"] == "writer_r1" for event, payload in events)
+        assert any(event == "end" and payload["status"] == "completed" for event, payload in events)
+        assert saved_phases and saved_phases[0]["status"] == "completed"
+        assert getattr(executor_module._tl, "stream_callback", None) is None
+        assert getattr(executor_module._tl, "cancel_checker", None) is None
+        assert getattr(executor_module._tl, "progress_callback", None) is None
+        competition_router._store.pop(thread_id, None)
+
+    def test_cancelled_reanalysis_does_not_mark_completed_or_save_version(self, monkeypatch):
+        import app.competition_router as competition_router
+        import competition.executor as executor_module
+        import competition.nodes.writer as writer_module
+
+        thread_id = "comp-test-reanalysis-cancel"
+        events = []
+        inserted_versions = []
+        monkeypatch.setitem(competition_router._store, thread_id, {
+            "status": "running",
+            "state": {"user_request": "test", "hitl_decision": {}},
+            "query": "test",
+            "products": ["A"],
+        })
+        monkeypatch.setattr(competition_router, "_emit_event", lambda tid, event, payload, **kwargs: events.append((event, payload)))
+        monkeypatch.setattr(competition_router, "_add_token_entry", lambda *_args: pytest.fail("cancelled run must not add token entry"))
+        monkeypatch.setattr(competition_router, "_current_db_version", lambda *_args: None)
+        monkeypatch.setattr(competition_router._history_store, "insert", lambda *args, **kwargs: inserted_versions.append(args))
+        monkeypatch.setattr("competition.db.save_phase", lambda **kwargs: None)
+
+        def fake_writer(state):
+            competition_router._cancel_flags[thread_id] = True
+            competition_router._store[thread_id]["status"] = "interrupted"
+            return {"report_data": {"sections": [{"id": "should-not-persist"}]}}
+
+        monkeypatch.setattr(writer_module, "writer_node", fake_writer)
+        competition_router._reanalyze_sync(thread_id, "rewrite")
+
+        assert competition_router._store[thread_id]["status"] == "interrupted"
+        assert not any(event == "end" and payload.get("status") == "completed" for event, payload in events)
+        assert not inserted_versions
+        assert thread_id not in competition_router._cancel_flags
+        assert getattr(executor_module._tl, "stream_callback", None) is None
+        assert getattr(executor_module._tl, "cancel_checker", None) is None
+        assert getattr(executor_module._tl, "progress_callback", None) is None
+        competition_router._store.pop(thread_id, None)
+
+    def test_initial_graph_forwards_writer_progress_and_cleans_hooks(self, monkeypatch):
+        import app.competition_router as competition_router
+        import competition.executor as executor_module
+        import competition.graph as graph_module
+        import competition.nodes.writer as writer_module
+
+        thread_id = "comp-test-initial-progress"
+        events = []
+        saved_phases = []
+        monkeypatch.setitem(competition_router._store, thread_id, {
+            "status": "running",
+            "state": {
+                "messages": [],
+                "user_request": "test",
+                "target_products": ["A"],
+                "collected_data": [],
+                "survey_responses": [],
+            },
+            "query": "test",
+            "products": ["A"],
+            "generation_id": "generation-test",
+        })
+        monkeypatch.setattr(competition_router, "_emit_event", lambda tid, event, payload, **kwargs: events.append((event, payload)))
+        monkeypatch.setattr(competition_router, "_add_token_entry", lambda *_args: None)
+        monkeypatch.setattr(competition_router, "_current_db_version", lambda *_args: None)
+        monkeypatch.setattr(competition_router._history_store, "insert", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("competition.db.save_phase", lambda **kwargs: saved_phases.append(kwargs))
+        monkeypatch.setattr("competition.db.upsert_analysis", lambda **kwargs: None)
+
+        def fake_writer(state):
+            executor_module.emit_progress({
+                "phase": "writer",
+                "task_key": "narrative",
+                "status": "success",
+                "completed": 1,
+                "total": 1,
+                "message": "报告章节生成进度：1/1",
+                "prompt": "must not escape",
+            })
+            return {"report_data": {"sections": []}}
+
+        monkeypatch.setattr(writer_module, "writer_node", fake_writer)
+
+        class FakeGraph:
+            def stream(self, initial_state, _config, stream_mode):
+                assert stream_mode == ["values"]
+                result = graph_module._NODE_IMPLEMENTATIONS["writer"](dict(initial_state))
+                yield {"report_data": result["report_data"]}
+
+        monkeypatch.setattr(competition_router, "_replay_saver", object())
+        monkeypatch.setattr("competition.graph.build_competition_graph", lambda **kwargs: FakeGraph())
+        competition_router._run_graph_sync(thread_id)
+
+        progress = [payload for event, payload in events if event == "progress" and payload.get("phase") == "writer"]
+        assert progress == [{
+            "phase": "writer",
+            "task_key": "narrative",
+            "status": "success",
+            "completed": 1,
+            "total": 1,
+            "message": "报告章节生成进度：1/1",
+        }]
+        assert any(event == "node_end" and payload["node"] == "writer" for event, payload in events)
+        assert any(event == "end" and payload["status"] == "completed" for event, payload in events)
+        assert saved_phases and saved_phases[0]["phase_key"] == "writer"
+        assert getattr(executor_module._tl, "stream_callback", None) is None
+        assert getattr(executor_module._tl, "cancel_checker", None) is None
+        assert getattr(executor_module._tl, "progress_callback", None) is None
+        competition_router._store.pop(thread_id, None)
+
 
 class TestHistory:
     @pytest.mark.asyncio

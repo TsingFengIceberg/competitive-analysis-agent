@@ -497,6 +497,7 @@ export default function CompetitionPage() {
         target_products: [],  // LLM extracts products from query
         persona,
         industry,
+        confirmation_mode: "always",
       });
       setAnalysisBrief(res.analysis_brief);
       setStatus(res.status);

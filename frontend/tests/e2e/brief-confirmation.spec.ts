@@ -24,7 +24,10 @@ const draftBrief = {
 test.describe("Analysis Brief confirmation", () => {
   test.beforeEach(async ({ page }) => {
     await page.route("**/api/competition/me", (route) => route.fulfill({ json: { authenticated: true, config_mode: "file" } }));
-    await page.route("**/api/competition/analyze", (route) => route.fulfill({ json: { thread_id: "comp-e2e", status: "awaiting_confirmation", analysis_brief: draftBrief } }));
+    await page.route("**/api/competition/analyze", async (route) => {
+      expect(route.request().postDataJSON().confirmation_mode).toBe("always");
+      await route.fulfill({ json: { thread_id: "comp-e2e", status: "awaiting_confirmation", analysis_brief: draftBrief } });
+    });
     await page.route("**/api/competition/report/comp-e2e", (route) => route.fulfill({ json: { thread_id: "comp-e2e", status: "awaiting_confirmation", query: "最好的 AI 编程工具有哪些？", title: "新建分析 1", report_data: null, analysis_brief: draftBrief, phases: [], token_usage: [], history_count: 0 } }));
     await page.route("**/api/competition/comp-e2e/confirm", async (route) => {
       const payload = route.request().postDataJSON();
@@ -36,7 +39,9 @@ test.describe("Analysis Brief confirmation", () => {
   });
 
   test("edits the same thread and starts only after confirmation", async ({ page }) => {
+    const hydrated = page.waitForResponse("**/api/competition/me");
     await page.goto("/competition/new");
+    await hydrated;
     await page.getByPlaceholder(/输入竞品分析请求/).fill("最好的 AI 编程工具有哪些？");
     await page.getByRole("button", { name: "发送" }).click();
     await expect(page.getByRole("heading", { name: "请确认分析范围" })).toBeVisible();
@@ -47,7 +52,9 @@ test.describe("Analysis Brief confirmation", () => {
 
   test("renders the editor on a narrow viewport", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
+    const hydrated = page.waitForResponse("**/api/competition/me");
     await page.goto("/competition/new");
+    await hydrated;
     await page.getByPlaceholder(/输入竞品分析请求/).fill("最好的 AI 编程工具有哪些？");
     await page.getByRole("button", { name: "发送" }).click();
     await expect(page.getByRole("heading", { name: "请确认分析范围" })).toBeVisible();

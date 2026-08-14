@@ -8,11 +8,46 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+WRITER_MAX_PARALLEL_PER_REPORT = 3
+WRITER_MAX_PARALLEL_PROCESS = 6
+WRITER_SLOT_WAIT_SECONDS = 10
+WRITER_SECTION_TIMEOUT_SECONDS = 120
+WRITER_NARRATIVE_MAX_TOKENS = 800
+WRITER_INDUSTRY_MAX_TOKENS = 600
+_writer_process_slots = threading.BoundedSemaphore(WRITER_MAX_PARALLEL_PROCESS)
+
+
+@dataclass(frozen=True)
+class _WriterTaskSpec:
+    key: str
+    kind: str
+    order: int
+    label: str
+    section_id: str | None
+    max_tokens: int
+    runner: Callable[[], tuple[Any, int]]
+
+
+@dataclass(frozen=True)
+class _WriterTaskResult:
+    key: str
+    kind: str
+    order: int
+    section_id: str | None
+    status: str
+    payload: Any
+    tokens: int = 0
+    elapsed_ms: int = 0
 
 # Report section structure (§3.7.3) — baseline always 6 sections
 REQUIRED_SECTIONS = [
@@ -66,26 +101,36 @@ def writer_node(state: dict) -> dict:
     schema_mode = _get_schema_mode(state)
     sections = _build_sections(analysis, verdict, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
 
-    # Industry fixed sections (Layer 2 of §3.20)
-    industry_sections = _build_industry_sections(state, analysis)
-    if industry_sections:
-        sections.extend(industry_sections)
-        logger.info("Added %d industry sections for '%s'", len(industry_sections), state.get("industry", "general"))
-
     traceability = _build_traceability_map(collected)
     persona = state.get("persona") if state.get("persona") in ("pm", "entrepreneur") else "pm"
-    _apply_narrative_generation(
-        sections, analysis, target_products, persona, traceability, _citation_index(collected),
+    brief = state.get("analysis_brief") or {}
+    task_specs = _build_writer_task_specs(
+        state=state,
+        analysis=analysis,
+        products=target_products,
+        persona=persona,
+        traceability=traceability,
+        citation_index=_citation_index(collected),
         hitl_action=hitl_action,
         hitl_focus=hitl_focus,
         hitl_comment=whatif_comment_raw,
-        brief=state.get("analysis_brief") or {},
+        brief=brief,
+    )
+    task_results = _run_writer_tasks(task_specs)
+
+    industry_sections = _merge_industry_sections(task_specs, task_results)
+    if industry_sections:
+        sections.extend(industry_sections)
+        logger.info("Added %d industry sections for '%s'", len(industry_sections), state.get("industry", "general"))
+    _apply_narrative_result(
+        sections,
+        task_results.get("narrative"),
+        {str(key) for key in traceability},
     )
     forecast = analysis.get("forecast")
     extra_fields = analysis.get("extra_fields") or {}
     dynamic_blocks = analysis.get("dynamic_blocks") or []
     metrics = _compute_report_metrics(collected, verdict, traceability)
-    brief = state.get("analysis_brief") or {}
     quality_gate = _build_quality_gate(
         brief=brief,
         target_products=target_products,
@@ -375,71 +420,283 @@ def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: l
     return sections
 
 
-def _build_industry_sections(state: dict, analysis: dict) -> list[dict]:
-    """Generate Layer 2 industry-specific fixed sections (§3.20)."""
+def _has_narrative_context(analysis: dict) -> bool:
+    return bool(analysis and any(
+        analysis.get(key)
+        for key in ("comparison_matrix", "swot", "trends", "forecast", "dynamic_blocks")
+    ))
+
+
+def _build_industry_section_specs(state: dict) -> list[dict[str, Any]]:
+    """Build ordered, model-independent specs for industry fixed sections."""
     from competition.industry import get_industry_profile
 
-    industry = state.get("industry", "general")
-    if industry == "general":
-        return []
-
-    profile = get_industry_profile(industry)
-    fixed_ids = profile.get("fixed_sections", [])
+    profile = get_industry_profile(state.get("industry", "general"))
     titles = profile.get("section_titles", {})
+    bias = profile.get("prompt_bias", "")
+    specs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for order, section_id in enumerate(profile.get("fixed_sections", []) or []):
+        section_id = str(section_id)
+        if not section_id or section_id in seen:
+            logger.warning("Skipping duplicate or empty industry section ID: %s", section_id)
+            continue
+        seen.add(section_id)
+        specs.append({
+            "section_id": section_id,
+            "title": str(titles.get(section_id, section_id)),
+            "prompt_bias": str(bias),
+            "order": order,
+        })
+    return specs
+
+
+def _industry_fallback_content(title: str) -> str:
+    return f"_{title}：当前没有足够的行业专属证据，无法生成可靠结论。_"
+
+
+def _build_writer_task_specs(
+    *,
+    state: dict,
+    analysis: dict,
+    products: list[str],
+    persona: str,
+    traceability: dict[str, dict],
+    citation_index: dict[str, str],
+    hitl_action: str,
+    hitl_focus: list[str] | None,
+    hitl_comment: str,
+    brief: dict,
+) -> list[_WriterTaskSpec]:
+    """Build independent Writer tasks without mutating report sections."""
+    specs: list[_WriterTaskSpec] = []
+    if _has_narrative_context(analysis):
+        specs.append(_WriterTaskSpec(
+            key="narrative",
+            kind="narrative",
+            order=0,
+            label="摘要与建议",
+            section_id=None,
+            max_tokens=WRITER_NARRATIVE_MAX_TOKENS,
+            runner=lambda: _generate_narrative_patch(
+                analysis, products, persona, traceability, citation_index,
+                hitl_action=hitl_action,
+                hitl_focus=hitl_focus,
+                hitl_comment=hitl_comment,
+                brief=brief,
+            ),
+        ))
+
+    for spec in _build_industry_section_specs(state):
+        specs.append(_WriterTaskSpec(
+            key=f"industry:{spec['section_id']}",
+            kind="industry",
+            order=int(spec["order"]),
+            label=str(spec["title"]),
+            section_id=str(spec["section_id"]),
+            max_tokens=WRITER_INDUSTRY_MAX_TOKENS,
+            runner=lambda spec=spec: _generate_industry_section_result(state, analysis, spec),
+        ))
+    return specs
+
+
+def _writer_is_cancelled() -> bool:
+    from competition.executor import is_cancelled
+
+    return is_cancelled()
+
+
+def _run_one_writer_task(spec: _WriterTaskSpec) -> _WriterTaskResult:
+    from competition.executor import emit_progress
+
+    started = time.monotonic()
+    if _writer_is_cancelled():
+        return _WriterTaskResult(spec.key, spec.kind, spec.order, spec.section_id, "cancelled", None)
+
+    acquired = _writer_process_slots.acquire(timeout=WRITER_SLOT_WAIT_SECONDS)
+    if not acquired:
+        logger.warning("Writer task saturated: %s", spec.key)
+        return _WriterTaskResult(spec.key, spec.kind, spec.order, spec.section_id, "saturated", None)
+
+    try:
+        emit_progress({
+            "phase": "writer",
+            "task_key": spec.key,
+            "section_id": spec.section_id,
+            "status": "running",
+            "message": f"正在生成报告章节：{spec.label}",
+        })
+        if _writer_is_cancelled():
+            status = "cancelled"
+            payload, tokens = None, 0
+        else:
+            try:
+                payload, tokens = spec.runner()
+                status = "cancelled" if _writer_is_cancelled() else ("success" if payload is not None else "fallback")
+            except Exception as exc:
+                logger.warning("Writer task failed [%s]: %s", spec.key, type(exc).__name__)
+                payload, tokens, status = None, 0, "fallback"
+        return _WriterTaskResult(
+            spec.key,
+            spec.kind,
+            spec.order,
+            spec.section_id,
+            status,
+            payload,
+            max(int(tokens or 0), 0),
+            round((time.monotonic() - started) * 1000),
+        )
+    finally:
+        _writer_process_slots.release()
+
+
+def _run_writer_tasks(task_specs: list[_WriterTaskSpec]) -> dict[str, _WriterTaskResult]:
+    """Run Writer model tasks with bounded concurrency and stable result keys."""
+    if not task_specs:
+        return {}
+
+    from competition.executor import (
+        capture_executor_context,
+        emit_progress,
+        run_in_executor_context,
+    )
+
+    started = time.monotonic()
+    results: dict[str, _WriterTaskResult] = {}
+    completed = 0
+
+    def record_result(result: _WriterTaskResult) -> None:
+        nonlocal completed
+        results[result.key] = result
+        completed += 1
+        emit_progress({
+            "phase": "writer",
+            "task_key": result.key,
+            "section_id": result.section_id,
+            "status": result.status,
+            "completed": completed,
+            "total": len(task_specs),
+            "message": f"报告章节生成进度：{completed}/{len(task_specs)}",
+        })
+
+    if len(task_specs) == 1:
+        record_result(_run_one_writer_task(task_specs[0]))
+    else:
+        max_workers = min(WRITER_MAX_PARALLEL_PER_REPORT, len(task_specs))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="writer-section") as pool:
+            futures = {
+                pool.submit(
+                    run_in_executor_context,
+                    capture_executor_context(),
+                    lambda spec=spec: _run_one_writer_task(spec),
+                ): spec
+                for spec in task_specs
+            }
+            for future in as_completed(futures):
+                if _writer_is_cancelled():
+                    for pending in futures:
+                        if not pending.done():
+                            pending.cancel()
+                spec = futures[future]
+                try:
+                    record_result(future.result())
+                except CancelledError:
+                    record_result(_WriterTaskResult(
+                        spec.key, spec.kind, spec.order, spec.section_id, "cancelled", None,
+                    ))
+                except Exception as exc:
+                    logger.warning("Writer worker crashed [%s]: %s", spec.key, type(exc).__name__)
+                    record_result(_WriterTaskResult(
+                        spec.key, spec.kind, spec.order, spec.section_id,
+                        "cancelled" if _writer_is_cancelled() else "fallback", None,
+                    ))
+
+    status_counts: dict[str, int] = {}
+    token_total = 0
+    for result in results.values():
+        status_counts[result.status] = status_counts.get(result.status, 0) + 1
+        token_total += result.tokens
+    logger.info(
+        "Writer parallel tasks: total=%d statuses=%s tokens=%d elapsed_ms=%d",
+        len(task_specs), status_counts, token_total, round((time.monotonic() - started) * 1000),
+    )
+    return results
+
+
+def _merge_industry_sections(
+    task_specs: list[_WriterTaskSpec],
+    results: dict[str, _WriterTaskResult],
+) -> list[dict]:
     sections: list[dict] = []
-
-    for i, sec_id in enumerate(fixed_ids):
-        title = titles.get(sec_id, sec_id)
-        bias = profile.get("prompt_bias", "")
-
-        # Generate content via LLM based on industry-specific prompt
-        content = _generate_industry_section_content(state, analysis, sec_id, bias)
+    for spec in sorted((item for item in task_specs if item.kind == "industry"), key=lambda item: item.order):
+        result = results.get(spec.key)
+        content = (
+            result.payload.strip()
+            if result and result.status == "success" and isinstance(result.payload, str) and result.payload.strip()
+            else _industry_fallback_content(spec.label)
+        )
         sections.append({
-            "id": sec_id,
-            "title": title,
+            "id": spec.section_id,
+            "title": spec.label,
             "content": content,
             "content_type": "text",
             "source_ids": [],
             "chart_path": None,
             "subsections": None,
         })
-
     return sections
 
 
+def _generate_industry_section_result(
+    state: dict,
+    analysis: dict,
+    spec: dict[str, Any],
+) -> tuple[str | None, int]:
+    """Generate one industry section without mutating shared Writer state."""
+    from competition.executor import execute_agent
+
+    products = state.get("target_products", [])
+    user_request = state.get("user_request", "")
+    data_summary = "".join(
+        f"- {dp.get('product', '?')} | {dp.get('category', '?')} | {dp.get('label', '?')} | {dp.get('value', '?')}\n"
+        for dp in (state.get("collected_data") or [])[:10]
+        if isinstance(dp, dict)
+    )
+    task = (
+        f"Query: {user_request}\n"
+        f"Products: {', '.join(products) if products else 'unknown'}\n"
+        f"Industry focus: {spec['prompt_bias']}\n\n"
+        f"Collected data:\n{data_summary}\n\n"
+        f"Generate a concise analysis section (3-5 paragraphs) for the industry-specific "
+        f"section '{spec['section_id']}'. Focus on quantitative comparisons and cite data points. "
+        "Output markdown text only, no JSON."
+    )
+    system = (
+        "You are a competitive analysis writer specializing in industry-specific analysis. "
+        "Write concise, data-driven sections. Cite specific data points."
+    )
+    raw, tokens = execute_agent(
+        system,
+        task,
+        temperature=0.3,
+        max_tokens=WRITER_INDUSTRY_MAX_TOKENS,
+        agent_name="Writer",
+        disable_thinking=True,
+        timeout_seconds=WRITER_SECTION_TIMEOUT_SECONDS,
+        max_retries=0,
+        allow_empty_content_fallback=False,
+    )
+    return (raw.strip() if isinstance(raw, str) and raw.strip() else None, tokens)
+
+
 def _generate_industry_section_content(state: dict, analysis: dict, section_id: str, prompt_bias: str) -> str:
-    """Generate an industry-specific section via lightweight LLM call."""
-    try:
-        from competition.executor import execute_agent
-
-        products = state.get("target_products", [])
-        user_request = state.get("user_request", "")
-
-        data_summary = ""
-        collected = state.get("collected_data") or []
-        for dp in collected[:10]:
-            if isinstance(dp, dict):
-                data_summary += f"- {dp.get('product', '?')} | {dp.get('category', '?')} | {dp.get('label', '?')} | {dp.get('value', '?')}\n"
-
-        task = (
-            f"Query: {user_request}\n"
-            f"Products: {', '.join(products) if products else 'unknown'}\n"
-            f"Industry focus: {prompt_bias}\n\n"
-            f"Collected data:\n{data_summary}\n\n"
-            f"Generate a concise analysis section (3-5 paragraphs) for the industry-specific "
-            f"section '{section_id}'. Focus on quantitative comparisons and cite data points. "
-            f"Output markdown text only, no JSON."
-        )
-        system = (
-            "You are a competitive analysis writer specializing in industry-specific analysis. "
-            "Write concise, data-driven sections. Cite specific data points."
-        )
-
-        raw, _ = execute_agent(system, task, temperature=0.3, max_tokens=600, agent_name="IndustrySectionWriter")
-        return raw.strip() if raw else f"_Industry section '{section_id}' — insufficient data to generate._"
-    except Exception:
-        logger.exception("Industry section generation failed for %s", section_id)
-        return f"_Industry section '{section_id}' — generation failed._"
+    """Compatibility wrapper for one industry section's deterministic fallback."""
+    raw, _ = _generate_industry_section_result(
+        state,
+        analysis,
+        {"section_id": section_id, "prompt_bias": prompt_bias},
+    )
+    return raw or _industry_fallback_content(section_id)
 
 
 def _render_dynamic_blocks(blocks: list[dict], _src_ref: Callable[[list[str]], str], citation_index: dict[str, str] | None = None) -> list[dict]:
@@ -1114,15 +1371,14 @@ def _valid_narrative_text(value: Any, valid_keys: set[str]) -> str | None:
     return text
 
 
-def _apply_narrative_generation(
-    sections: list[dict], analysis: dict, products: list[str], persona: str,
-    traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str, hitl_focus: list[str] | None,
-    hitl_comment: str,
-    brief: dict | None = None,
-) -> None:
-    """Make one optional structured Writer call and apply fields independently."""
-    if not analysis or not any(analysis.get(key) for key in ("comparison_matrix", "swot", "trends", "forecast", "dynamic_blocks")):
-        return
+def _generate_narrative_patch(
+    analysis: dict, products: list[str], persona: str,
+    traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str,
+    hitl_focus: list[str] | None, hitl_comment: str, brief: dict | None = None,
+) -> tuple[dict[str, Any] | None, int]:
+    """Generate a validated narrative patch without mutating report sections."""
+    if not _has_narrative_context(analysis):
+        return None, 0
     try:
         from competition.executor import execute_structured_agent
 
@@ -1139,34 +1395,83 @@ def _apply_narrative_generation(
             f"证据摘要:\n{json.dumps(_narrative_digest(analysis, citation_index), ensure_ascii=False, indent=2)}\n\n"
             "只使用上述事实，不得编造事实或引用编号。返回严格 JSON 对象，字段为 executive_summary（150-250字中文字符串）和 recommendations（字符串数组）。"
         )
-        result, _ = execute_structured_agent(
+        response = execute_structured_agent(
             "你是竞品分析报告 Writer，负责把已有证据整理成可执行叙事。",
             task,
             output_schema_desc='{"executive_summary": string, "recommendations": string[]}',
-            agent_name="Writer", temperature=0.3, max_tokens=800, disable_thinking=True,
+            agent_name="Writer",
+            temperature=0.3,
+            max_tokens=WRITER_NARRATIVE_MAX_TOKENS,
+            disable_thinking=True,
+            timeout_seconds=WRITER_SECTION_TIMEOUT_SECONDS,
+            max_retries=0,
+            allow_empty_content_fallback=False,
         )
-    except Exception:
-        logger.exception("Writer structured narrative generation failed")
-        return
+        if isinstance(response, tuple) and len(response) == 2:
+            result, tokens = response
+        else:
+            result, tokens = response, 0
+    except Exception as exc:
+        logger.warning("Writer structured narrative generation failed: %s", type(exc).__name__)
+        return None, 0
+
     if not isinstance(result, dict):
-        return
+        return None, max(int(tokens or 0), 0)
     valid_keys = {str(key) for key in traceability}
+    patch: dict[str, Any] = {}
     summary = _valid_narrative_text(result.get("executive_summary"), valid_keys)
+    if summary:
+        patch["executive_summary"] = summary
+    recommendations = result.get("recommendations")
+    if isinstance(recommendations, list):
+        lines = [item.strip() for item in recommendations if isinstance(item, str)]
+        if (lines and len(lines) == len(recommendations)
+                and all(item and _valid_narrative_text(item, valid_keys) for item in lines)):
+            patch["recommendations"] = "\n".join(f"- {item}" for item in lines)
+    return (patch or None), max(int(tokens or 0), 0)
+
+
+def _apply_narrative_result(
+    sections: list[dict],
+    result: _WriterTaskResult | None,
+    valid_keys: set[str],
+) -> None:
+    """Apply a validated narrative result on the parent Writer thread."""
+    if result is None or result.status != "success" or not isinstance(result.payload, dict):
+        return
+    summary = _valid_narrative_text(result.payload.get("executive_summary"), valid_keys)
     if summary:
         section = next((s for s in sections if s.get("id") == "sec-executive-summary"), None)
         if section:
             section["content"] = summary
             section["source_ids"] = list(dict.fromkeys(re.findall(r"\[(\d+)\]", summary)))
-    recommendations = result.get("recommendations")
-    if isinstance(recommendations, list):
-        lines = [item.strip() for item in recommendations if isinstance(item, str)]
-        rendered = "\n".join(f"- {item}" for item in lines)
-        if (lines and len(lines) == len(recommendations)
-                and all(item and _valid_narrative_text(item, valid_keys) for item in lines)):
-            section = next((s for s in sections if s.get("id") == "sec-recommendations"), None)
-            if section:
-                section["content"] = rendered
-                section["source_ids"] = list(dict.fromkeys(re.findall(r"\[(\d+)\]", rendered)))
+    recommendations = result.payload.get("recommendations")
+    if isinstance(recommendations, str) and recommendations.strip():
+        section = next((s for s in sections if s.get("id") == "sec-recommendations"), None)
+        if section:
+            section["content"] = recommendations
+            section["source_ids"] = list(dict.fromkeys(re.findall(r"\[(\d+)\]", recommendations)))
+
+
+def _apply_narrative_generation(
+    sections: list[dict], analysis: dict, products: list[str], persona: str,
+    traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str, hitl_focus: list[str] | None,
+    hitl_comment: str,
+    brief: dict | None = None,
+) -> None:
+    """Compatibility wrapper for one inline narrative task."""
+    patch, tokens = _generate_narrative_patch(
+        analysis, products, persona, traceability, citation_index,
+        hitl_action=hitl_action,
+        hitl_focus=hitl_focus,
+        hitl_comment=hitl_comment,
+        brief=brief,
+    )
+    _apply_narrative_result(
+        sections,
+        _WriterTaskResult("narrative", "narrative", 0, None, "success" if patch else "fallback", patch, tokens),
+        {str(key) for key in traceability},
+    )
 
 
 def _generate_whatif(comment: str, analysis: dict, products: list[str], persona: str) -> str:

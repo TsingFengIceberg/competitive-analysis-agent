@@ -1501,6 +1501,17 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
     """
     import logging
     logger = logging.getLogger(__name__)
+    class _ReanalysisCancelled(Exception):
+        """Internal signal used to stop a re-execution without marking it done."""
+
+    from competition.executor import (
+        clear_cancel_checker,
+        clear_progress_callback,
+        clear_stream_callback,
+        set_cancel_checker,
+        set_progress_callback,
+        set_stream_callback,
+    )
 
     try:
         entry = _store.get(thread_id)
@@ -1540,7 +1551,6 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         }
 
         # Set up streaming callback so re-execution phase content is captured
-        from competition.executor import clear_stream_callback, set_stream_callback
         _re_content: dict[str, str] = {}  # agent_name → accumulated text
 
         def _re_stream(agent_name: str, chunk_text: str) -> None:
@@ -1555,12 +1565,31 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             if chunk_text and chunk_text != "\x00THINK\x00":
                 _re_content[agent_name] = _re_content.get(agent_name, "") + chunk_text
 
+        def _re_progress(payload: dict) -> None:
+            allowed = {
+                key: payload[key]
+                for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message")
+                if key in payload
+            }
+            _emit_event(thread_id, "progress", allowed)
+
         _chunk_seq = 0
         set_stream_callback(_re_stream)
+        set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
+        set_progress_callback(_re_progress)
+
+        def _stop_if_cancelled() -> None:
+            if not _cancel_flags.get(thread_id, False):
+                return
+            _cancel_flags.pop(thread_id, None)
+            if _store.get(thread_id, {}).get("status") != "interrupted":
+                _finalize_cancelled(thread_id)
+            raise _ReanalysisCancelled
 
         def _run_re_node(node_key: str, node_fn, st: dict) -> None:
             """Execute one re-execution node and emit SSE phase events."""
             nonlocal _re_content
+            _stop_if_cancelled()
             _, icon, display_label = _RE_NODES[node_key]
             phase_key = f"{node_key}{suffix}"
             start_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
@@ -1579,6 +1608,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             except Exception:
                 logger.exception("%s node failed", node_key)
                 result = {}
+            _stop_if_cancelled()
             st.update(result)
             tokens_after = get_total_tokens()
             delta_tokens = max(tokens_after - tokens_before, 0)
@@ -1617,8 +1647,11 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             )
             _re_content.clear()
 
+        _stop_if_cancelled()
+
         # Change status so frontend SSE reconnects
         _store[thread_id]["status"] = "running"
+        _stop_if_cancelled()
         _store[thread_id]["state"] = state
 
         if action == "rewrite":
@@ -1660,7 +1693,6 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
         # Emit completion so frontend stops the re-execution SSE stream
         _emit_event(thread_id, "end", {"status": "completed"})
-        clear_stream_callback()
 
         # Save new report as a version after reanalysis completes
         new_report = state.get("report_data")
@@ -1675,16 +1707,18 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             )
             logger.info("Saved post-%s report v%d for %s",
                         action, _current_db_version(thread_id), thread_id[:12])
+    except _ReanalysisCancelled:
+        logger.info("Reanalysis %s cancelled", thread_id)
     except Exception as e:
         logger.exception("Reanalysis %s failed: %s", thread_id, e)
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
         _emit_event(thread_id, "error", {"error": str(e)[:200], "status": "failed"})
-        try:
-            clear_stream_callback()
-        except Exception:
-            pass
+    finally:
+        clear_stream_callback()
+        clear_cancel_checker()
+        clear_progress_callback()
 
 
 def _save_to_db(thread_id: str, entry: dict) -> None:
@@ -2433,7 +2467,14 @@ def _run_graph_sync(thread_id: str) -> None:
         # ── Set up SSE streaming callback (§19) ──
         # Each LLM call inside nodes will stream token chunks to the frontend
         # via this callback, matching the standard messages-tuple SSE format.
-        from competition.executor import clear_cancel_checker, clear_stream_callback, set_cancel_checker, set_stream_callback
+        from competition.executor import (
+            clear_cancel_checker,
+            clear_progress_callback,
+            clear_stream_callback,
+            set_cancel_checker,
+            set_progress_callback,
+            set_stream_callback,
+        )
 
         _chunk_seq = 0
         _phase_content: dict[str, str] = {}  # agent_name → accumulated streaming text
@@ -2479,8 +2520,17 @@ def _run_graph_sync(thread_id: str) -> None:
                 }])
             _stream_chunk(agent_name, chunk_text)
 
+        def _writer_progress(payload: dict) -> None:
+            allowed = {
+                key: payload[key]
+                for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message")
+                if key in payload
+            }
+            _emit_event(thread_id, "progress", allowed)
+
         set_stream_callback(_stream_chunk_labeled)
         set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
+        set_progress_callback(_writer_progress)
 
         # Stream execution — updates store + DB on each node completion (§18)
         event_num = 0
@@ -2499,6 +2549,7 @@ def _run_graph_sync(thread_id: str) -> None:
                 _finalize_cancelled(thread_id)
                 clear_stream_callback()
                 clear_cancel_checker()
+                clear_progress_callback()
                 return
 
             if isinstance(event, tuple):
@@ -2581,6 +2632,7 @@ def _run_graph_sync(thread_id: str) -> None:
         _emit_event(thread_id, "end", {"status": "completed"})
         clear_stream_callback()
         clear_cancel_checker()
+        clear_progress_callback()
 
         _add_token_entry(thread_id, "初始分析")
         _store[thread_id]["status"] = "completed"
@@ -2632,6 +2684,7 @@ def _run_graph_sync(thread_id: str) -> None:
         logger.exception("Analysis %s failed: %s", thread_id, e)
         clear_stream_callback()
         clear_cancel_checker()
+        clear_progress_callback()
         _emit_event(thread_id, "error", {"error": str(e)[:200], "status": "failed"})
         if thread_id in _store:
             _store[thread_id]["status"] = "failed"
