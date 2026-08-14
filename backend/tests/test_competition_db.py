@@ -16,9 +16,11 @@ from competition.db import (
     get_analysis,
     get_baseline,
     get_credibility,
+    get_phases,
     init_db,
     list_history,
     record_analysis,
+    save_phase,
     set_baseline,
     update_credibility,
     upsert_analysis,
@@ -245,6 +247,16 @@ class TestInitDb:
         assert "source_credibility" in table_names
         assert "product_baseline" in table_names
         assert "analysis_history" in table_names
+        conn.close()
+
+    def test_phase_generation_id_round_trip(self, tmp_path):
+        db_path = tmp_path / "phases.db"
+        conn = init_db(db_path)
+        save_phase("thread", "writer", label="报告生成", generation_id="generation-1", conn=conn)
+        rows = get_phases("thread", conn=conn)
+        assert rows[0]["generation_id"] == "generation-1"
+        column_names = {row[1] for row in conn.execute("PRAGMA table_info(phase_history)")}
+        assert "generation_id" in column_names
         conn.close()
 
 

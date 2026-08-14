@@ -83,6 +83,7 @@ interface Props {
   hitlVisible: boolean;
   status: string;
   threadIdForApi: string | null;
+  onCitationSelect?: (citationId: string) => void;
 }
 
 function escapeAttr(s: string): string {
@@ -197,6 +198,7 @@ export default function CompetitionReportPanel({
   diffVersions, diffViewMode, setDiffViewMode, setDiffVersions, setSelectedForDiff,
   dbLoadedThreadId, hitlVisible, status,
   threadIdForApi,
+  onCitationSelect,
 }: Props) {
   const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
   const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
@@ -204,11 +206,11 @@ export default function CompetitionReportPanel({
   const preprocessContent = useCallback((content: string): string => {
     return content.replace(/\[(\d+)\]/g, (_, id) => {
       const trace = displayReport?.traceability_map?.[id];
-      const url = typeof trace === "object" ? trace.url : String(trace ?? "");
+      const url = typeof trace === "object" && /^https?:\/\//i.test(trace.url) ? trace.url : "";
       if (url) {
-        return `<sup class="ref-link" data-trace-id="${id}" data-trace-url="${url}" data-trace-snippet="${escapeAttr(typeof trace === "object" ? (trace.snippet ?? "") : "")}" data-trace-confidence="${typeof trace === "object" ? (trace.confidence ?? "") : ""}" data-trace-verified="${typeof trace === "object" ? (trace.verified ?? "") : ""}" data-trace-timestamp="${typeof trace === "object" ? (trace.timestamp ?? "") : ""}" data-trace-credibility-tier="${typeof trace === "object" ? (trace.credibility_tier ?? "") : ""}"><a href="${url}" target="_blank" rel="noopener">[${id}]</a></sup>`;
+        return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}"><a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">[${id}]</a></sup>`;
       }
-      return `<sup class="ref-link" data-trace-id="${id}">[${id}]</sup>`;
+      return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}">[${id}]</sup>`;
     });
   }, [displayReport]);
 
@@ -216,20 +218,26 @@ export default function CompetitionReportPanel({
     const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
     if (!target) { setHoveredSource(null); setSourcePos(null); return; }
     const traceId = target.dataset.traceId;
-    const traceUrl = target.dataset.traceUrl;
+    const trace = traceId ? displayReport?.traceability_map?.[traceId] : undefined;
+    const source = trace && typeof trace === "object" ? trace : null;
+    const traceUrl = source && /^https?:\/\//i.test(source.url) ? source.url : "";
     if (!traceId || !traceUrl) return;
     const rect = target.getBoundingClientRect();
-    setHoveredSource({ id: traceId, url: traceUrl, snippet: target.dataset.traceSnippet ?? undefined,
-      confidence: target.dataset.traceConfidence ? parseFloat(target.dataset.traceConfidence) : undefined,
-      verified: target.dataset.traceVerified === "" ? undefined : target.dataset.traceVerified === "true",
-      timestamp: target.dataset.traceTimestamp ?? undefined,
-      credibility_tier: target.dataset.traceCredibilityTier ?? undefined });
+    setHoveredSource({ id: traceId, url: traceUrl, snippet: source?.snippet,
+      confidence: source?.confidence, verified: source?.verified,
+      timestamp: source?.timestamp, credibility_tier: source?.credibility_tier });
     setSourcePos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX });
-  }, []);
+  }, [displayReport]);
+
+  const handleReportClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
+    const traceId = target?.dataset.traceId;
+    if (traceId) onCitationSelect?.(traceId);
+  }, [onCitationSelect]);
 
   const renderMarkdownInline = (content: string): React.ReactNode => (
-    <div className="prose prose-sm max-w-none text-inherit leading-inherit prose-p:my-0 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-strong:text-foreground prose-em:not-italic prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
-      onMouseOver={handleReportHover} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
+      <div className="prose prose-sm max-w-none text-inherit leading-inherit prose-p:my-0 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-strong:text-foreground prose-em:not-italic prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
+      onMouseOver={handleReportHover} onClick={handleReportClick} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]}>{preprocessContent(preprocessSourceLine(content))}</ReactMarkdown>
     </div>
   );
@@ -369,7 +377,7 @@ export default function CompetitionReportPanel({
           </div>
         ) : (
           <div className="prose prose-sm max-w-none text-sm leading-6 text-foreground prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:mt-4 prose-headings:mb-2 prose-headings:font-semibold prose-strong:text-foreground prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_th]:border [&_th]:bg-muted/70 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_td]:border [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:break-words [&_td]:[overflow-wrap:anywhere] [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
-            onMouseOver={handleReportHover} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
+            onMouseOver={handleReportHover} onClick={handleReportClick} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]}>{preprocessContent(preprocessSourceLine(section.content))}</ReactMarkdown>
           </div>
         )}

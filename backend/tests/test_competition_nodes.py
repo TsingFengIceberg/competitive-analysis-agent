@@ -622,6 +622,7 @@ class TestGenerateNotes:
 # ═══════════════════════════════════════════════════════════════
 
 from competition.nodes.writer import (  # noqa: E402
+    _build_quality_gate,
     _build_review_package,
     _build_sections,
     _build_title,
@@ -641,6 +642,42 @@ class TestBuildTitle:
         title = _build_title(["Cursor", "Copilot"])
         assert "Cursor" in title
         assert "Copilot" in title
+
+
+class TestQualityGate:
+    def test_blocking_coverage_and_claim_diagnostics_are_deterministic(self):
+        collected = [
+            {"id": "dp-1", "product": "A", "category": "features", "source_url": "https://a.example/x", "source_type": "official", "collected_at": "2026-08-14T00:00:00Z", "published_at": "2026-08-10"},
+        ]
+        analysis = {
+            "comparison_matrix": {
+                "dimensions": ["features", "pricing"],
+                "cells": [{"product": "A", "dimension": "features", "source_data_point_ids": ["dp-1"]}],
+            },
+            "swot": {},
+        }
+        gate = _build_quality_gate(
+            brief={"evidence_policy": "strict_multi_source", "dimensions": [{"id": "features", "label": "功能"}, {"id": "pricing", "label": "定价"}]},
+            target_products=["A", "B"], collected=collected, analysis=analysis,
+            verdict={"gaps": [], "round": 1, "quality_summary": {}},
+            sections=[{"id": "sec-comparison-matrix", "source_ids": ["1"]}],
+            traceability=_build_traceability_map(collected),
+        )
+        assert gate["schema_version"] == 1
+        assert gate["status"] == "blocked"
+        assert gate["blocking_count"] >= 1
+        assert gate["claims"]["single_source"] == 1
+        assert any(issue["type"] == "missing_data" for issue in gate["issues"])
+
+    def test_reviewer_severity_is_preserved(self):
+        gate = _build_quality_gate(
+            brief={}, target_products=[], collected=[], analysis={"comparison_matrix": {}, "swot": {}},
+            verdict={"gaps": [{"gap_id": "g1", "severity": "critical", "type": "fact_error", "description": "bad", "target_collect_task": "fix"}], "quality_summary": {}},
+            sections=[], traceability={},
+        )
+        issue = next(item for item in gate["issues"] if item["id"] == "reviewer-g1")
+        assert issue["level"] == "blocking"
+        assert issue["severity"] == "critical"
 
 
 class TestBuildSections:
@@ -846,6 +883,17 @@ class TestComputeMetrics:
         )
         assert metrics["coverage"] == 1.0
         assert metrics["improvement_ratio"] == 0.5
+
+
+def test_traceability_map_keeps_legacy_fields_and_adds_source_metadata():
+    trace = _build_traceability_map([{
+        "id": "dp-1", "product": "A", "category": "pricing", "label": "Pro",
+        "value": "$20", "source_url": "https://a.example/pricing", "source_type": "official",
+        "collected_at": "2026-08-14T00:00:00Z", "published_at": "2026-08-10", "confidence": 0.9,
+    }])
+    assert trace["1"]["timestamp"] == trace["1"]["collected_at"]
+    assert trace["1"]["data_point_id"] == "dp-1"
+    assert trace["1"]["publication_date_status"] == "known"
 
 
 # ═══════════════════════════════════════════════════════════════

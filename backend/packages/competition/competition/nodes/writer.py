@@ -86,6 +86,15 @@ def writer_node(state: dict) -> dict:
     dynamic_blocks = analysis.get("dynamic_blocks") or []
     metrics = _compute_report_metrics(collected, verdict, traceability)
     brief = state.get("analysis_brief") or {}
+    quality_gate = _build_quality_gate(
+        brief=brief,
+        target_products=target_products,
+        collected=collected,
+        analysis=analysis,
+        verdict=verdict,
+        sections=sections,
+        traceability=traceability,
+    )
 
     report_data = {
         "persona": persona,
@@ -109,6 +118,7 @@ def writer_node(state: dict) -> dict:
             "output_focus": brief.get("output_focus"),
             "confirmation_source": brief.get("confirmation_source"),
         } if brief else None,
+        "quality_gate": quality_gate,
     }
 
     # Build ReviewPackage for HITL (§3.13.5)
@@ -549,7 +559,7 @@ def _render_comparison_table(rows: list[dict], products: list[str], dimensions: 
 
 
 def _build_traceability_map(collected: list[dict]) -> dict:
-    """Build claim_id → {url, timestamp, confidence, credibility_tier} mapping."""
+    """Build citation-id mapping while retaining compatibility fields and source metadata."""
     from urllib.parse import urlparse
 
     # Try to load domain credibility scores for tier assignment
@@ -559,8 +569,12 @@ def _build_traceability_map(collected: list[dict]) -> dict:
         conn = init_db()
         rows = get_all_credibilities(conn)
         conn.close()
-        for r in rows:
-            domain_scores[r.get("source_domain", "")] = r.get("score", 0.5)
+        if isinstance(rows, dict):
+            domain_scores.update({str(domain): float(score) for domain, score in rows.items()})
+        else:
+            for r in rows:
+                if isinstance(r, dict):
+                    domain_scores[r.get("source_domain", "")] = r.get("score", 0.5)
     except Exception:
         pass
 
@@ -581,9 +595,283 @@ def _build_traceability_map(collected: list[dict]) -> dict:
                 "url": url,
                 "timestamp": dp.get("collected_at", ""),
                 "confidence": dp.get("confidence", 0.0),
+                "title": dp.get("title", "") or dp.get("label", ""),
+                "snippet": dp.get("snippet", "") or str(dp.get("value", ""))[:300],
+                "verified": bool(dp.get("verified", False)),
                 "credibility_tier": _tier(score),
+                "data_point_id": dp.get("id", ""),
+                "product": dp.get("product", ""),
+                "category": dp.get("category", ""),
+                "label": dp.get("label", ""),
+                "source_type": dp.get("source_type", ""),
+                "collected_at": dp.get("collected_at", ""),
+                "published_at": dp.get("published_at"),
+                "publication_date_status": _publication_date_status(dp.get("published_at"), None),
             }
     return trace
+
+
+def _publication_date_status(published_at: Any, time_range: dict | None) -> str:
+    """Classify publication date without confusing it with collection time."""
+    if not published_at:
+        return "unknown"
+    try:
+        value = datetime.fromisoformat(str(published_at).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return "unknown"
+    if not time_range or time_range.get("mode") in (None, "latest", "all_available"):
+        return "known"
+    try:
+        start = datetime.fromisoformat(str(time_range.get("start"))).date() if time_range.get("start") else None
+        end = datetime.fromisoformat(str(time_range.get("end"))).date() if time_range.get("end") else None
+    except (TypeError, ValueError):
+        return "known"
+    if start and value < start or end and value > end:
+        return "outside_range"
+    return "known"
+
+
+def _build_quality_gate(
+    *,
+    brief: dict,
+    target_products: list[str],
+    collected: list[dict],
+    analysis: dict,
+    verdict: dict,
+    sections: list[dict],
+    traceability: dict,
+) -> dict:
+    """Build a deterministic, report-version quality snapshot.
+
+    This intentionally uses only already-produced graph outputs. It must remain
+    cheap, reproducible, and safe when older or partially populated state is
+    passed through Writer.
+    """
+    policy = str(brief.get("evidence_policy") or "balanced")
+    if policy not in {"balanced", "official_preferred", "strict_multi_source"}:
+        policy = "balanced"
+    point_by_id = {str(dp.get("id")): dp for dp in collected if isinstance(dp, dict) and dp.get("id")}
+    citation_by_point = {
+        str(entry.get("data_point_id")): citation_id
+        for citation_id, entry in traceability.items()
+        if isinstance(entry, dict) and entry.get("data_point_id")
+    }
+    section_source_map = {
+        str(section.get("id")): {str(value) for value in section.get("source_ids", []) or []}
+        for section in sections if isinstance(section, dict)
+    }
+
+    issues: list[dict] = []
+    issue_keys: set[tuple] = set()
+
+    def add_issue(issue: dict) -> str:
+        key = (
+            issue.get("check_method", ""),
+            tuple(sorted(issue.get("product_names", []))),
+            tuple(sorted(issue.get("dimension_ids", []))),
+            tuple(sorted(issue.get("data_point_ids", []))),
+            issue.get("description", ""),
+        )
+        if issue.get("id", "").startswith("reviewer-"):
+            key = ("reviewer", issue["id"])
+        if key in issue_keys:
+            return next((item["id"] for item in issues if item.get("id") == issue.get("id")), issue.get("id", "issue"))
+        issue_keys.add(key)
+        issues.append(issue)
+        return issue.get("id", "issue")
+
+    def section_ids_for(data_point_ids: list[str], method: str) -> list[str]:
+        if "comparison" in method or "dimension" in method or method == "coverage":
+            return ["sec-comparison-matrix"] if any(s == "sec-comparison-matrix" for s in section_source_map) else ["sec-comparison"]
+        if "swot" in method:
+            return ["sec-swot"]
+        citations = {citation_by_point.get(str(point_id)) for point_id in data_point_ids}
+        citations.discard(None)
+        return [sid for sid, source_ids in section_source_map.items() if citations.intersection(source_ids)]
+
+    # Reviewer gaps remain authoritative: their severity is never weakened.
+    for gap in verdict.get("gaps", []) or []:
+        if not isinstance(gap, dict):
+            continue
+        severity = str(gap.get("severity") or "major")
+        severity = severity if severity in {"critical", "major", "minor"} else "major"
+        data_point_ids = [str(value) for value in gap.get("related_data_point_ids", []) or []]
+        issue_id = f"reviewer-{gap.get('gap_id') or len(issues) + 1}"
+        add_issue({
+            "id": issue_id,
+            "level": "blocking" if severity in {"critical", "major"} else "warning",
+            "severity": severity,
+            "type": str(gap.get("type") or "reviewer_gap"),
+            "check_method": str(gap.get("check_method") or gap.get("method") or "reviewer"),
+            "description": str(gap.get("description") or "Reviewer identified an unresolved issue"),
+            "remediation": str(gap.get("target_collect_task") or gap.get("task") or "补充证据并重新审查"),
+            "product_names": list(dict.fromkeys(str(point_by_id[item].get("product")) for item in data_point_ids if item in point_by_id)),
+            "data_point_ids": data_point_ids,
+            "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
+            "section_ids": section_ids_for(data_point_ids, str(gap.get("check_method") or gap.get("method") or "reviewer")),
+        })
+
+    # Some legacy/recovery states expose fact_errors separately from `gaps`.
+    # Preserve those as blocking diagnostics instead of silently treating them
+    # as an informational Reviewer note.
+    for index, fact_error in enumerate(verdict.get("fact_errors", []) or [], start=1):
+        if not isinstance(fact_error, dict):
+            continue
+        data_point_ids = [str(value) for value in fact_error.get("related_data_point_ids", []) or []]
+        add_issue({
+            "id": f"reviewer-fact-error-{index}", "level": "blocking", "severity": "critical",
+            "type": "fact_error", "check_method": str(fact_error.get("check_method") or "fact_error"),
+            "description": str(fact_error.get("description") or fact_error.get("error") or "Reviewer reported a fact error"),
+            "remediation": str(fact_error.get("target_collect_task") or "核对事实并补充可核验来源"),
+            "data_point_ids": data_point_ids,
+            "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
+            "section_ids": section_ids_for(data_point_ids, "fact_error"),
+        })
+
+    selected_dimensions = brief.get("dimensions") if isinstance(brief.get("dimensions"), list) else []
+    matrix = analysis.get("comparison_matrix") if isinstance(analysis.get("comparison_matrix"), dict) else {}
+    matrix_dimensions = matrix.get("dimensions") if isinstance(matrix.get("dimensions"), list) else []
+    if not selected_dimensions:
+        selected_dimensions = [{"id": str(dim), "label": str(dim)} for dim in matrix_dimensions]
+    dimensions: list[dict] = []
+    for dim_item in selected_dimensions:
+        if isinstance(dim_item, dict):
+            dim_id = str(dim_item.get("id") or dim_item.get("dimension") or "unknown")
+            label = str(dim_item.get("label") or dim_id)
+        else:
+            dim_id, label = str(dim_item), str(dim_item)
+        dim_points = [dp for dp in collected if isinstance(dp, dict) and str(dp.get("category")) == dim_id]
+        covered = list(dict.fromkeys(str(dp.get("product")) for dp in dim_points if dp.get("product") in target_products))
+        matrix_covered = {
+            str(cell.get("product"))
+            for cell in matrix.get("cells", []) or []
+            if isinstance(cell, dict)
+            and str(cell.get("dimension")) == dim_id
+            and cell.get("rating") is not None
+            and str(cell.get("evidence_source", "")) != "insufficient"
+            and cell.get("product") in target_products
+        }
+        # A selected product/dimension is covered only when the final matrix
+        # has a usable cell. Raw collected data alone cannot make a missing
+        # analysis cell appear complete.
+        missing = [product for product in target_products if product not in matrix_covered]
+        covered = [product for product in target_products if product in matrix_covered]
+        status = "blocked" if missing else ("pass" if dim_points else "warning")
+        issue_ids: list[str] = []
+        for product in missing:
+            issue_ids.append(add_issue({
+                "id": f"coverage-{dim_id}-{len(issue_ids) + 1}",
+                "level": "blocking",
+                "severity": "major",
+                "type": "missing_data",
+                "check_method": "dimension_coverage",
+                "description": f"未找到产品 {product} 在 {label} 维度的有效数据",
+                "remediation": f"为 {product} 补采 {label} 维度的可核验来源",
+                "dimension_ids": [dim_id],
+                "product_names": [product],
+                "section_ids": section_ids_for([], "dimension_coverage"),
+            }))
+        dimensions.append({
+            "dimension_id": dim_id, "label": label, "selected": True,
+            "products_total": len(target_products), "products_covered": covered,
+            "missing_products": missing, "data_point_count": len(dim_points),
+            "source_domain_count": len({str(dp.get("source_url", "")).split("/")[2] for dp in dim_points if "://" in str(dp.get("source_url", ""))}),
+            "coverage_ratio": len(covered) / max(len(target_products), 1),
+            "status": status, "issue_ids": issue_ids,
+        })
+
+    # Source diagnostics. `timestamp` remains collection time; publication dates
+    # are parsed independently and never inferred from collection time.
+    source_counts = {key: 0 for key in ("official", "strong", "moderate", "weak")}
+    unknown_dates = outside_range = 0
+    time_range = brief.get("time_range") if isinstance(brief.get("time_range"), dict) else None
+    for citation_id, entry in traceability.items():
+        tier = str(entry.get("credibility_tier") or "moderate")
+        source_type = str(entry.get("source_type") or "")
+        if source_type == "official":
+            source_counts["official"] += 1
+        if tier in source_counts:
+            source_counts[tier] += 1
+        status = _publication_date_status(entry.get("published_at"), time_range)
+        entry["publication_date_status"] = status
+        if status == "unknown":
+            unknown_dates += 1
+        elif status == "outside_range":
+            outside_range += 1
+        if tier == "weak":
+            add_issue({
+                "id": f"weak-source-{citation_id}", "level": "warning", "severity": "minor",
+                "type": "weak_source", "check_method": "source_credibility",
+                "description": f"来源 [{citation_id}] 的域名可信度较低",
+                "remediation": "优先补充官方或高可信来源进行交叉验证",
+                "citation_ids": [str(citation_id)], "section_ids": section_ids_for(
+                    [str(entry.get("data_point_id"))], "source_credibility"
+                ),
+            })
+
+    if policy != "balanced":
+        for citation_id, entry in traceability.items():
+            if not entry.get("published_at"):
+                add_issue({
+                    "id": f"publication-date-{citation_id}", "level": "warning", "severity": "minor",
+                    "type": "publication_date_unknown", "check_method": "publication_date",
+                    "description": f"来源 [{citation_id}] 缺少公开发布时间",
+                    "remediation": "核对来源页面的发布时间或补充带日期的来源",
+                    "citation_ids": [str(citation_id)], "section_ids": section_ids_for(
+                        [str(entry.get("data_point_id"))], "publication_date"
+                    ),
+                })
+
+    # Claims: comparison cells and SWOT entries are the current bounded claim set.
+    claim_total = claim_multi = claim_single = claim_unsupported = 0
+    cells = matrix.get("cells") if isinstance(matrix.get("cells"), list) else []
+    claim_items: list[tuple[dict, str, str]] = [(item, "comparison_claim", "comparison") for item in cells if isinstance(item, dict)]
+    swot = analysis.get("swot") if isinstance(analysis.get("swot"), dict) else {}
+    for product, swot_data in swot.items():
+        for item in (swot_data.get("items", []) if isinstance(swot_data, dict) else []):
+            if isinstance(item, dict):
+                claim_items.append((item, "swot_claim", "swot"))
+    for index, (claim, method, kind) in enumerate(claim_items, start=1):
+        claim_total += 1
+        ids = [str(value) for value in claim.get("source_data_point_ids", []) or []]
+        domains = {str(point_by_id[item].get("source_url", "")).split("/")[2] for item in ids if item in point_by_id and "://" in str(point_by_id[item].get("source_url", ""))}
+        if len(domains) >= 2:
+            claim_multi += 1
+        elif len(domains) == 1:
+            claim_single += 1
+        else:
+            claim_unsupported += 1
+        deficiency = "unsupported_claim" if not domains else ("single_source" if len(domains) == 1 else "")
+        if deficiency:
+            level = "blocking" if policy == "strict_multi_source" and deficiency == "single_source" else "warning"
+            issue_id = add_issue({
+                "id": f"{kind}-{deficiency}-{index}", "level": level,
+                "severity": "major" if level == "blocking" else "minor", "type": deficiency,
+                "check_method": method, "description": "声明缺少两个独立来源的交叉支持" if deficiency == "single_source" else "声明没有可追溯来源",
+                "remediation": "补充不同域名的独立来源并重新审查" if deficiency == "single_source" else "为该声明补充数据点引用",
+                "product_names": [str(claim.get("product"))] if claim.get("product") else [],
+                "dimension_ids": [str(claim.get("dimension"))] if claim.get("dimension") else [],
+                "data_point_ids": ids, "citation_ids": [citation_by_point[item] for item in ids if item in citation_by_point],
+                "section_ids": section_ids_for(ids, kind),
+            })
+
+    blocking_count = sum(1 for issue in issues if issue.get("level") == "blocking")
+    warning_count = sum(1 for issue in issues if issue.get("level") == "warning")
+    status = "blocked" if blocking_count else ("warning" if warning_count else "pass")
+    quality = verdict.get("quality_summary") if isinstance(verdict.get("quality_summary"), dict) else {}
+    return {
+        "schema_version": 1, "status": status, "generated_at": datetime.now(UTC).isoformat(),
+        "policy": policy, "blocking_count": blocking_count, "warning_count": warning_count,
+        "dimensions": dimensions,
+        "sources": {"total": len(traceability), **source_counts, "unknown_publication_date": unknown_dates, "outside_requested_range": outside_range},
+        "claims": {"total": claim_total, "multi_source": claim_multi, "single_source": claim_single, "unsupported": claim_unsupported},
+        "issues": issues,
+        "rework": {
+            "review_round": int(verdict.get("round") or 0), "reviewer_notes": str(verdict.get("reviewer_notes") or ""),
+            "improvement_ratio": quality.get("improvement_ratio"), "repair_delta": quality.get("repair_delta"),
+            "current_round_metrics": quality.get("round_metrics"), "previous_round_metrics": quality.get("round_metrics_prev"),
+        },
+    }
 
 
 def _build_review_package(report_data: dict, collected: list[dict], quality: dict) -> dict:

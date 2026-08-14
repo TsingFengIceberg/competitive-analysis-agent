@@ -29,6 +29,7 @@ from competition.schema import (
     HitlDecision,
     PricingModel,
     PricingTier,
+    QualityGateSnapshot,
     QualitySummary,
     ReportData,
     ReportSection,
@@ -302,6 +303,16 @@ class TestReportData:
         assert rd.persona == "pm"
         assert len(rd.sections) == 2
         assert rd.traceability_map["dp-001"]["url"] == "cursor.com"
+
+    def test_legacy_report_without_quality_gate_is_unknown_compatible(self):
+        rd = ReportData(title="旧报告")
+        assert rd.quality_gate is None
+
+    def test_quality_gate_validates_status_and_bounds(self):
+        gate = QualityGateSnapshot(status="blocked", blocking_count=1, warning_count=2)
+        assert gate.status == "blocked"
+        with pytest.raises(PydanticValidationError):
+            QualityGateSnapshot(blocking_count=-1)
 
     def test_what_if_section_type(self):
         """§3.7.2: content_type supports 'what-if-form' for embedded forecast input."""

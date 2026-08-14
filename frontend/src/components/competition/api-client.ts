@@ -107,6 +107,7 @@ export interface PhaseHistoryEntry {
   content: Record<string, string>;
   details: Record<string, unknown>[];
   version: number;
+  generation_id?: string | null;
 }
 
 // Process viewer (R9/R10)
@@ -127,6 +128,10 @@ export interface PhaseTraceEntry {
 
 export interface GenerationTrace {
   version: number;
+  generation_id?: string | null;
+  report_version?: number | null;
+  parent_report_version?: number | null;
+  association?: "exact" | "legacy_inferred" | "unresolved";
   action: string;
   label: string;
   phases: PhaseTraceEntry[];
@@ -176,11 +181,63 @@ export interface ReportData {
       snippet?: string;
       verified?: boolean;
       credibility_tier?: string;  // "strong" | "moderate" | "weak"
+      data_point_id?: string;
+      product?: string;
+      category?: string;
+      label?: string;
+      source_type?: string;
+      collected_at?: string;
+      published_at?: string | null;
+      publication_date_status?: "known" | "unknown" | "outside_range" | "outdated";
     }>;
   quality_summary: Record<string, unknown>;
   forecast: unknown;
   metrics: Record<string, number>;
   analysis_scope?: Record<string, unknown> | null;
+  quality_gate?: QualityGateSnapshot | null;
+}
+
+export interface DimensionCoverage {
+  dimension_id: string;
+  label: string;
+  selected: boolean;
+  products_total: number;
+  products_covered: string[];
+  missing_products: string[];
+  data_point_count: number;
+  source_domain_count: number;
+  coverage_ratio: number;
+  status: "pass" | "warning" | "blocked";
+  issue_ids: string[];
+}
+
+export interface QualityGateIssue {
+  id: string;
+  level: "blocking" | "warning";
+  severity: "critical" | "major" | "minor";
+  type: string;
+  check_method: string;
+  description: string;
+  remediation: string;
+  dimension_ids: string[];
+  product_names: string[];
+  data_point_ids: string[];
+  citation_ids: string[];
+  section_ids: string[];
+}
+
+export interface QualityGateSnapshot {
+  schema_version: 1;
+  status: "pass" | "warning" | "blocked";
+  generated_at: string;
+  policy: "balanced" | "official_preferred" | "strict_multi_source";
+  blocking_count: number;
+  warning_count: number;
+  dimensions: DimensionCoverage[];
+  sources: { total: number; official: number; strong: number; moderate: number; weak: number; unknown_publication_date: number; outside_requested_range: number };
+  claims: { total: number; multi_source: number; single_source: number; unsupported: number };
+  issues: QualityGateIssue[];
+  rework: { review_round: number; reviewer_notes: string; improvement_ratio: number | null; repair_delta: number | null; current_round_metrics: Record<string, unknown> | null; previous_round_metrics: Record<string, unknown> | null };
 }
 
 export interface ReportSection {

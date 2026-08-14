@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -236,64 +238,85 @@ def _resolve_model(agent_name: str) -> str:
     return model
 
 
+@dataclass(frozen=True)
+class ResolvedProviderContext:
+    """Provider details used internally without changing the tuple API."""
+
+    provider_name: str = ""
+    model: str = ""
+    api_base: str = ""
+    api_key: str = field(default="", repr=False)
+
+
+def _empty_provider_context() -> ResolvedProviderContext:
+    return ResolvedProviderContext()
+
+
 def _resolve_provider(agent_name: str) -> tuple[str, str, str]:
     """Resolve (model, api_base, api_key) for an agent.
 
     In DB mode (default): reads from user_settings.config_groups + provider_keys/bases.
     In file mode (CI_AGENT_CONFIG_MODE=file): reads from config.yaml + .env.
     """
+    context = _resolve_provider_context(agent_name)
+    return context.model, context.api_base, context.api_key
+
+
+def _resolve_provider_context(agent_name: str) -> ResolvedProviderContext:
+    """Resolve provider identity and credentials for internal capability checks."""
     from competition.config_mode import is_file_mode
 
     if not agent_name:
-        return "", "", ""
+        return _empty_provider_context()
 
-    # ── File mode: config.yaml + .env ──
     if is_file_mode():
-        return _resolve_provider_from_file(agent_name)
+        return _resolve_provider_from_file_context(agent_name)
 
-    # ── DB mode: user_settings only ──
     try:
         user_settings = _get_user_settings()
         config_group = _get_active_config_group()
 
         if user_settings and config_group:
             ag = agent_name.lower()
+            agent_cfg = (config_group.get("agent_configs", {}) or {}).get(ag, {})
             provider_name = str(
-                (config_group.get("agent_configs", {}) or {}).get(ag, {}).get("provider")
+                (agent_cfg.get("provider") if isinstance(agent_cfg, dict) else "")
                 or config_group.get("default_provider") or ""
             )
             if not provider_name:
-                return "", "", ""
+                return _empty_provider_context()
 
             user_keys = user_settings.get("provider_keys", {}) or {}
             api_key = (user_keys.get(provider_name) if isinstance(user_keys, dict) else "") or ""
-            if not api_key:
-                return "", "", ""
-
             bases = user_settings.get("provider_bases", {}) or {}
             api_base = (bases.get(provider_name) if isinstance(bases, dict) else "") or ""
-
             model = str(
-                (config_group.get("agent_configs", {}) or {}).get(ag, {}).get("model")
+                (agent_cfg.get("model") if isinstance(agent_cfg, dict) else "")
                 or config_group.get("default_model") or ""
             )
-
-            return model, api_base, api_key
+            return ResolvedProviderContext(provider_name, model, str(api_base), str(api_key))
     except Exception:
         pass
 
-    return "", "", ""
+    return _empty_provider_context()
 
 
 def _resolve_provider_from_file(agent_name: str) -> tuple[str, str, str]:
     """Resolve (model, api_base, api_key) from config.yaml + .env (legacy mode)."""
+    context = _resolve_provider_from_file_context(agent_name)
+    return context.model, context.api_base, context.api_key
+
+
+def _resolve_provider_from_file_context(agent_name: str) -> ResolvedProviderContext:
+    """Resolve file-mode provider details while retaining its provider name."""
     import os as _os
     default_base = _os.environ.get("DOUBAO_API_BASE", "")
     default_key = _os.environ.get("DOUBAO_API_KEY", "")
 
     try:
-        import yaml
         from pathlib import Path
+
+        import yaml
         for p in (Path("config.yaml"), Path("backend/config.yaml"),
                   Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
                   Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml"):
@@ -312,11 +335,31 @@ def _resolve_provider_from_file(agent_name: str) -> tuple[str, str, str]:
             api_key = _os.environ.get(key_env, "") or default_key
             api_base = prov.get("api_base", "") or default_base
             model = agent_cfg.get("model") or group_cfg.get("default_model") or comp.get("default_model") or ""
-            if api_key and api_base:
-                return str(model), str(api_base), str(api_key)
+            return ResolvedProviderContext(str(provider_name), str(model), str(api_base), str(api_key))
     except Exception:
         pass
-    return "", default_base, default_key
+    return ResolvedProviderContext("", "", default_base, default_key)
+
+
+def _thinking_control_payload(
+    provider_name: str,
+    api_base: str,
+    disable_thinking: bool,
+) -> dict | None:
+    """Return the vendor field only for known Ark/Doubao endpoints."""
+    if not disable_thinking:
+        return None
+
+    normalized = "".join(ch for ch in provider_name.lower() if ch.isalnum())
+    known_provider = normalized in {"doubao", "volcengine", "volcengineark", "ark"}
+    try:
+        hostname = (urlparse(api_base).hostname or "").lower().rstrip(".")
+    except ValueError:
+        hostname = ""
+    trusted_ark_host = hostname == "ark.cn-beijing.volces.com" or hostname.endswith(".volces.com")
+    if not (known_provider or trusted_ark_host):
+        return None
+    return {"thinking": {"type": "disabled"}}
 
 
 def execute_agent(
@@ -358,12 +401,14 @@ def execute_agent(
         from langchain_openai import ChatOpenAI
 
         # ── Per-agent provider resolution (config.yaml + env) ──
+        provider_name = ""
         if agent_name:
-            cfg_model, cfg_base, cfg_key = _resolve_provider(agent_name)
-            if cfg_key:
-                model = cfg_model
-                api_base = cfg_base
-                api_key = cfg_key
+            provider_context = _resolve_provider_context(agent_name)
+            provider_name = provider_context.provider_name
+            if provider_context.api_key:
+                model = provider_context.model
+                api_base = provider_context.api_base
+                api_key = provider_context.api_key
 
             # Per-agent parameter overrides from DB config_group.agent_configs
             cg = _get_active_config_group()
@@ -383,8 +428,18 @@ def execute_agent(
             "timeout": timeout_seconds,
             "max_retries": max_retries,
         }
-        if disable_thinking:
-            llm_kwargs["model_kwargs"] = {"thinking": {"type": "disabled"}}
+        thinking_payload = _thinking_control_payload(provider_name, api_base, disable_thinking)
+        if thinking_payload:
+            # `extra_body` is forwarded to the OpenAI-compatible request body;
+            # `model_kwargs` would become an unsupported client constructor arg
+            # for providers such as DeepSeek.
+            llm_kwargs["extra_body"] = thinking_payload
+        logger.debug(
+            "%sThinking control for %s: %s",
+            _thread_prefix(),
+            agent_name or "direct-call",
+            "vendor_disabled" if thinking_payload else "omit",
+        )
 
         llm = ChatOpenAI(**llm_kwargs)
 
@@ -398,7 +453,11 @@ def execute_agent(
         if cb is not None:
             # Wrap callback to strip thinking tokens before they reach SSE clients
             _raw_cb = cb
-            cb = lambda name, text: _raw_cb(name, _sanitize_stream_chunk(text))
+
+            def _sanitized_callback(name: str, text: str) -> None:
+                _raw_cb(name, _sanitize_stream_chunk(text))
+
+            cb = _sanitized_callback
         if cb is not None:
             # Emit a thinking indicator immediately so the UI doesn't look frozen.
             # Thinking models (Doubao seed) may spend 30-60s reasoning with zero
@@ -412,7 +471,6 @@ def execute_agent(
 
             # Streaming mode — yield token chunks to the callback
             full_content: list[str] = []
-            total_usage = 0
             last_chunk_usage = 0
             for chunk in llm.stream(messages):
                 # Check cancellation flag — allows responsive termination
@@ -441,7 +499,10 @@ def execute_agent(
             # retry via raw HTTP which properly extracts reasoning_content.
             if not content:
                 logger.info("Streaming returned empty content — retrying via raw HTTP for %s", agent_name)
-                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking, timeout_seconds)
+                content, usage = _raw_chat_completion(
+                    model, api_base, api_key, messages, max_tokens, temperature,
+                    disable_thinking, timeout_seconds, provider_name=provider_name,
+                )
                 # Stream the fallback content through the callback so SSE clients
                 # receive it (the streaming loop above produced nothing).
                 if content and cb is not None:
@@ -458,7 +519,10 @@ def execute_agent(
             # If LangChain dropped the content (thinking model), retry via raw HTTP
             if not content:
                 logger.info("LangChain returned empty content — retrying via raw HTTP for %s", agent_name)
-                content, usage = _raw_chat_completion(model, api_base, api_key, messages, max_tokens, temperature, disable_thinking, timeout_seconds)
+                content, usage = _raw_chat_completion(
+                    model, api_base, api_key, messages, max_tokens, temperature,
+                    disable_thinking, timeout_seconds, provider_name=provider_name,
+                )
 
         logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
         global _total_tokens_used
@@ -528,6 +592,8 @@ def _raw_chat_completion(
     messages: list, max_tokens: int, temperature: float,
     disable_thinking: bool = False,
     timeout_seconds: int = 300,
+    *,
+    provider_name: str = "",
 ) -> tuple[str, int]:
     """Raw HTTP call to OpenAI-compatible chat completions API.
 
@@ -542,8 +608,9 @@ def _raw_chat_completion(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    if disable_thinking:
-        payload_dict["thinking"] = {"type": "disabled"}
+    thinking_payload = _thinking_control_payload(provider_name, api_base, disable_thinking)
+    if thinking_payload:
+        payload_dict.update(thinking_payload)
 
     payload = json.dumps(payload_dict).encode()
 

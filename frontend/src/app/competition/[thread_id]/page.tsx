@@ -8,10 +8,8 @@ import type { AnalysisBrief, Persona, ReportData, ReportHistoryItem, TokenEntry 
 import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
-import CompetitionReportPanel from "@/components/competition/competition-report-panel";
-import ProcessTracePanel from "@/components/competition/process-trace-panel";
+import ResearchWorkbench from "@/components/competition/research-workbench";
 import ReportEditor from "@/components/competition/report-editor";
-import BranchTreePanel from "@/components/competition/branch-tree-panel";
 import { useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
@@ -427,9 +425,7 @@ export default function CompetitionPage() {
   const [diffVersions, setDiffVersions] = useState<[number, number] | null>(null);
   const [diffViewMode, setDiffViewMode] = useState<"side-by-side" | "summary">("side-by-side");
   const [reportPanelOpen, setReportPanelOpen] = useState(false);
-  const [tracePanelOpen, setTracePanelOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [branchTreeOpen, setBranchTreeOpen] = useState(false);
   const [userMessages, setUserMessages] = useState<{text: string; timestamp: string; generation: number}[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const titleRefreshedRef = useRef(false);
@@ -837,12 +833,8 @@ export default function CompetitionPage() {
       previousSidebarOpenRef.current = null;
     }
   }, [setReportPanelExpanded, setSidebarOpen]);
-  const handleViewTrace = useCallback(() => setTracePanelOpen(true), []);
-  const handleCloseTrace = useCallback(() => setTracePanelOpen(false), []);
   const handleEdit = useCallback(() => setEditorOpen(true), []);
   const handleCloseEdit = useCallback(() => setEditorOpen(false), []);
-  const handleViewBranchTree = useCallback(() => setBranchTreeOpen(true), []);
-  const handleCloseBranchTree = useCallback(() => setBranchTreeOpen(false), []);
 
   const handleNavigateVersion = useCallback((version: number) => {
     void handleViewHistory(version);
@@ -853,6 +845,11 @@ export default function CompetitionPage() {
 
   const handleApprove = useCallback(() => {
     if (threadId) {
+      const qualityGate = displayReport?.quality_gate;
+      if (qualityGate?.status === "blocked") {
+        const confirmed = window.confirm(`当前版本存在 ${qualityGate.blocking_count} 个阻断质量问题。仍要带风险批准吗？`);
+        if (!confirmed) return;
+      }
       api.submitDecision(threadId, {
         action: "approve", comment: "",
         target_focus: null,
@@ -860,7 +857,7 @@ export default function CompetitionPage() {
       }).catch((err) => console.error("Approve submit failed:", err));
       setHitlVisible(false);
     }
-  }, [threadId, api, viewingHistory]);
+  }, [threadId, api, viewingHistory, displayReport]);
 
   const handleReanalyze = useCallback((action: string, comment: string, cardVersion: number) => {
     if (!threadId) return;
@@ -942,8 +939,8 @@ export default function CompetitionPage() {
                   onExportMD={handleExportMD}
                   onExportJSON={handleExportJSON}
                   onNavigateVersion={handleNavigateVersion}
-                  onViewTrace={displayReport ? handleViewTrace : undefined}
-                  onViewBranchTree={historyEntries.length > 0 ? handleViewBranchTree : undefined}
+                  onViewTrace={undefined}
+                  onViewBranchTree={undefined}
                   onEdit={displayReport ? handleEdit : undefined}
                   analysisBrief={analysisBrief}
                   briefPending={briefPending}
@@ -994,12 +991,13 @@ export default function CompetitionPage() {
           </main>
         </div>
 
-        {/* Inline report panel — splits the chat area */}
+        {/* Unified research workbench */}
         {reportPanelOpen && (
           <div className="h-full min-w-0 overflow-hidden opacity-100 transition-opacity duration-300 ease-in-out">
-            <CompetitionReportPanel
+            <ResearchWorkbench
               open={reportPanelOpen}
               onClose={handleCloseReport}
+              threadId={threadId}
               displayReport={displayReport}
               historyEntries={historyEntries}
               viewingHistory={viewingHistory}
@@ -1018,26 +1016,10 @@ export default function CompetitionPage() {
               hitlVisible={hitlVisible}
               status={status}
               threadIdForApi={threadId}
+              getTrace={api.getTrace}
             />
           </div>
         )}
-
-        {/* Process trace panel (R9/R10) */}
-        <ProcessTracePanel
-          open={tracePanelOpen}
-          onClose={handleCloseTrace}
-          threadId={threadId}
-          getTrace={api.getTrace}
-        />
-
-        {/* Branch tree panel — global branch tree with current node highlight */}
-        <BranchTreePanel
-          open={branchTreeOpen}
-          onClose={handleCloseBranchTree}
-          historyEntries={historyEntries}
-          viewingHistory={viewingHistory}
-          onNavigateVersion={handleNavigateVersion}
-        />
 
         {/* Human correction editor (R6) */}
         {displayReport && (

@@ -21,7 +21,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pre-analysis Brief (P1.1)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -493,6 +492,99 @@ class ReportSection(BaseModel):
     subsections: list[ReportSection] | None = None
 
 
+class DimensionCoverage(BaseModel):
+    """Deterministic coverage summary for one selected brief dimension."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    dimension_id: str
+    label: str = ""
+    selected: bool = True
+    products_total: int = Field(default=0, ge=0)
+    products_covered: list[str] = Field(default_factory=list)
+    missing_products: list[str] = Field(default_factory=list)
+    data_point_count: int = Field(default=0, ge=0)
+    source_domain_count: int = Field(default=0, ge=0)
+    coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    status: Literal["pass", "warning", "blocked"] = "warning"
+    issue_ids: list[str] = Field(default_factory=list)
+
+
+class SourceQualitySummary(BaseModel):
+    """Source strength and publication-date diagnostics."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    total: int = Field(default=0, ge=0)
+    official: int = Field(default=0, ge=0)
+    strong: int = Field(default=0, ge=0)
+    moderate: int = Field(default=0, ge=0)
+    weak: int = Field(default=0, ge=0)
+    unknown_publication_date: int = Field(default=0, ge=0)
+    outside_requested_range: int = Field(default=0, ge=0)
+
+
+class ClaimQualitySummary(BaseModel):
+    """Coverage of claims by the number of independent supporting sources."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    total: int = Field(default=0, ge=0)
+    multi_source: int = Field(default=0, ge=0)
+    single_source: int = Field(default=0, ge=0)
+    unsupported: int = Field(default=0, ge=0)
+
+
+class QualityGateIssue(BaseModel):
+    """Actionable quality diagnostic linked to report evidence when possible."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    level: Literal["blocking", "warning"]
+    severity: Literal["critical", "major", "minor"] = "minor"
+    type: str = "quality"
+    check_method: str = ""
+    description: str = ""
+    remediation: str = ""
+    dimension_ids: list[str] = Field(default_factory=list)
+    product_names: list[str] = Field(default_factory=list)
+    data_point_ids: list[str] = Field(default_factory=list)
+    citation_ids: list[str] = Field(default_factory=list)
+    section_ids: list[str] = Field(default_factory=list)
+
+
+class ReworkQualitySummary(BaseModel):
+    """Reviewer round and before/after repair metrics."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    review_round: int = Field(default=0, ge=0)
+    reviewer_notes: str = ""
+    improvement_ratio: float | None = None
+    repair_delta: float | None = None
+    current_round_metrics: dict | None = None
+    previous_round_metrics: dict | None = None
+
+
+class QualityGateSnapshot(BaseModel):
+    """Version-specific deterministic quality gate persisted with ReportData."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: Literal[1] = 1
+    status: Literal["pass", "warning", "blocked"] = "warning"
+    generated_at: str = ""
+    policy: Literal["balanced", "official_preferred", "strict_multi_source"] = "balanced"
+    blocking_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    dimensions: list[DimensionCoverage] = Field(default_factory=list)
+    sources: SourceQualitySummary = Field(default_factory=SourceQualitySummary)
+    claims: ClaimQualitySummary = Field(default_factory=ClaimQualitySummary)
+    issues: list[QualityGateIssue] = Field(default_factory=list)
+    rework: ReworkQualitySummary = Field(default_factory=ReworkQualitySummary)
+
+
 class ReportData(BaseModel):
     """Writer output — frontend-native interactive report (§3.7.2)."""
 
@@ -517,6 +609,10 @@ class ReportData(BaseModel):
     analysis_scope: dict[str, Any] | None = Field(
         default=None,
         description="Compact Analysis Brief scope metadata for auditability",
+    )
+    quality_gate: QualityGateSnapshot | None = Field(
+        default=None,
+        description="Version-specific deterministic quality gate; absent on legacy reports",
     )
 
 

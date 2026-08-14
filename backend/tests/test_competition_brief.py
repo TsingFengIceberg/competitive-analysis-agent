@@ -114,3 +114,53 @@ def test_optional_model_call_is_bounded_and_open_ended_stays_waiting(monkeypatch
     assert calls[0]["timeout_seconds"] == 30
     assert calls[0]["max_retries"] == 0
     assert brief.readiness == "needs_confirmation"
+
+
+def test_optional_model_success_enriches_products_but_stays_unconfirmed(monkeypatch):
+    calls = []
+
+    def fake_structured(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ({"target_products": ["Cursor", "Windsurf"], "objective": "比较编程体验"}, 8)
+
+    monkeypatch.setattr("competition.executor.execute_structured_agent", fake_structured)
+    brief = brief_from_request_with_optional_model("帮我挑选目前最好用的 AI 编程工具")
+
+    assert len(calls) == 1
+    assert brief.target_products == ["Cursor", "Windsurf"]
+    assert brief.readiness == "needs_confirmation"
+    assert any(item.field == "target_products" for item in brief.ambiguities)
+
+
+@pytest.mark.parametrize("model_output", ["not-json", ["Cursor", "Copilot"], {"target_products": 123}])
+def test_optional_model_invalid_output_keeps_deterministic_fallback(monkeypatch, model_output):
+    def fake_structured(*args, **kwargs):
+        return (model_output, 4)
+
+    monkeypatch.setattr("competition.executor.execute_structured_agent", fake_structured)
+    brief = brief_from_request_with_optional_model("最好的 AI 编程工具有哪些？")
+
+    assert brief.readiness == "needs_confirmation"
+    assert brief.target_products == []
+    assert any(item.field == "target_products" for item in brief.ambiguities)
+
+
+def test_optional_model_failure_and_empty_response_are_single_call_fallbacks(monkeypatch):
+    calls = []
+
+    def failing(*args, **kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("provider timeout")
+
+    monkeypatch.setattr("competition.executor.execute_structured_agent", failing)
+    first = brief_from_request_with_optional_model("推荐最好的 AI 编程工具")
+    assert first.target_products == []
+
+    def empty(*args, **kwargs):
+        calls.append(kwargs)
+        return (None, 0)
+
+    monkeypatch.setattr("competition.executor.execute_structured_agent", empty)
+    second = brief_from_request_with_optional_model("推荐最好的 AI 编程工具")
+    assert second.target_products == []
+    assert len(calls) == 2

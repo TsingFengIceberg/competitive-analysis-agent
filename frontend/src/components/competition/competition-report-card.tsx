@@ -160,6 +160,13 @@ export default function CompetitionReportCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {rd.quality_gate ? (
+            <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline ${rd.quality_gate.status === "blocked" ? "bg-red-100 text-red-700" : rd.quality_gate.status === "warning" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+              {rd.quality_gate.status === "blocked" ? `阻断 ${rd.quality_gate.blocking_count}` : rd.quality_gate.status === "warning" ? `警告 ${rd.quality_gate.warning_count}` : "通过"}
+            </span>
+          ) : (
+            <span className="hidden rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">旧版本</span>
+          )}
           {SHOW_VERSION_DIFF && hasDiff && (
             <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 hidden sm:inline">
               vs v{prevSibling.version}
@@ -169,7 +176,7 @@ export default function CompetitionReportCard({
             onClick={() => onExpand(version)}
             className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
           >
-            展开报告
+            研究工作台
           </button>
         </div>
       </div>
@@ -302,7 +309,7 @@ export default function CompetitionReportCard({
                 onClick={onApprove}
                 className="inline-flex items-center gap-1 rounded bg-green-500 px-2.5 py-1 text-[11px] text-white hover:bg-green-600 transition-colors"
               >
-                ✅ 批准发布
+                {rd.quality_gate?.status === "blocked" ? "⚠️ 带风险批准" : "✅ 批准发布"}
               </button>
             )}
           </div>

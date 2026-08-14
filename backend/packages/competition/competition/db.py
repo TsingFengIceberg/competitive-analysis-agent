@@ -95,6 +95,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             content TEXT DEFAULT '{}',
             details TEXT DEFAULT '[]',
             version INTEGER DEFAULT 0,
+            generation_id TEXT,
             PRIMARY KEY (thread_id, phase_key)
         );
     """)
@@ -139,11 +140,16 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def _migrate_phase_history(conn: sqlite3.Connection) -> None:
-    """Add json_output column to phase_history if missing."""
-    try:
-        conn.execute("ALTER TABLE phase_history ADD COLUMN json_output TEXT DEFAULT '{}'")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    """Add optional phase output and exact generation association columns."""
+    for sql in (
+        "ALTER TABLE phase_history ADD COLUMN json_output TEXT DEFAULT '{}'",
+        "ALTER TABLE phase_history ADD COLUMN generation_id TEXT",
+    ):
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_phase_history_generation ON phase_history(thread_id, generation_id)")
 
 
 def _migrate_analysis_history(conn: sqlite3.Connection) -> None:
@@ -602,6 +608,7 @@ def save_phase(
     details: list[dict] | None = None,
     json_output: dict | None = None,
     version: int = 0,
+    generation_id: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
     """INSERT or REPLACE a phase record for persistent phase bubble content."""
@@ -610,8 +617,8 @@ def save_phase(
         conn = init_db()
     conn.execute(
         """INSERT OR REPLACE INTO phase_history
-           (thread_id, phase_key, label, icon, status, start_time, end_time, tokens, content, details, json_output, version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (thread_id, phase_key, label, icon, status, start_time, end_time, tokens, content, details, json_output, version, generation_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             thread_id, phase_key, label, icon, status,
             start_time, end_time, tokens,
@@ -619,6 +626,7 @@ def save_phase(
             json.dumps(details or [], ensure_ascii=False, default=str),
             json.dumps(json_output or {}, ensure_ascii=False, default=str),
             version,
+            generation_id,
         ),
     )
     conn.commit()
@@ -632,7 +640,7 @@ def get_phases(thread_id: str, conn: sqlite3.Connection | None = None) -> list[d
     if conn is None:
         conn = init_db()
     rows = conn.execute(
-        "SELECT phase_key, label, icon, status, start_time, end_time, tokens, content, details, json_output, version "
+        "SELECT phase_key, label, icon, status, start_time, end_time, tokens, content, details, json_output, version, generation_id "
         "FROM phase_history WHERE thread_id = ? ORDER BY start_time ASC",
         (thread_id,),
     ).fetchall()
@@ -645,7 +653,7 @@ def get_phases(thread_id: str, conn: sqlite3.Connection | None = None) -> list[d
             "content": json.loads(r[7]) if r[7] else {},
             "details": json.loads(r[8]) if r[8] else [],
             "json_output": json.loads(r[9]) if r[9] else {},
-            "version": r[10],
+            "version": r[10], "generation_id": r[11],
         }
         for r in rows
     ]

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import queue as _queue_mod
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -117,6 +118,10 @@ class GenerationTrace(BaseModel):
     """One generation unit (initial analysis or HITL re-execution)."""
 
     version: int
+    generation_id: str | None = None
+    report_version: int | None = None
+    parent_report_version: int | None = None
+    association: str = "unresolved"
     action: str
     label: str
     phases: list[PhaseTraceEntry]
@@ -160,8 +165,6 @@ _store: dict[str, dict] = {}
 _cancel_flags: dict[str, bool] = {}  # thread_id → cancelled (cooperative cancellation)
 
 # ── SSE streaming (§19) ──
-import queue as _queue_mod
-
 _stream_queues: dict[str, _queue_mod.Queue] = {}
 _event_counters: dict[str, int] = {}  # thread_id → monotonic event id
 _event_buffers: dict[str, list[tuple[int, str]]] = {}  # thread_id → [(id, formatted_sse_line)]
@@ -1087,19 +1090,27 @@ async def get_execution_trace(thread_id: str) -> dict:
     phase_rows = get_phases(thread_id, conn=conn)
     conn.close()
 
-    # Group phases by version
+    # Keep the integer grouping for the legacy DAG calculation. New rows are
+    # grouped by opaque generation_id below so report versions never drift from
+    # reanalysis rounds or forks.
     version_phases: dict[int, list[dict]] = {}
     for p in phase_rows:
         v = p.get("version", 0)
         version_phases.setdefault(v, []).append(p)
 
-    # Map version numbers to actions from history store
-    version_actions: dict[int, str] = {}
+    history_rows: list[dict] = []
     try:
-        for v in _history_store.list_by_thread(thread_id):
-            version_actions[v["version"]] = v.get("action", "initial")
+        history_rows = _history_store.list_by_thread(thread_id)
     except Exception:
         pass
+
+    version_actions = {row["version"]: row.get("action", "initial") for row in history_rows}
+    exact_reports: dict[str, dict] = {}
+    for row in history_rows:
+        metadata = row.get("metadata_json") or {}
+        generation_id = metadata.get("generation_id")
+        if generation_id:
+            exact_reports[str(generation_id)] = row
 
     action_label_map = {"initial": "初始分析", "rewrite": "重写", "reanalyze": "重分析", "replan": "重采集"}
     agent_map = {
@@ -1109,13 +1120,36 @@ async def get_execution_trace(thread_id: str) -> dict:
     }
 
     generations: list[GenerationTrace] = []
-    for version in sorted(version_phases.keys()):
-        action = version_actions.get(version, "initial")
+    grouped_phases: dict[tuple[str, str], list[dict]] = {}
+    for phase in phase_rows:
+        generation_id = phase.get("generation_id")
+        group_key = ("exact", str(generation_id)) if generation_id else ("legacy", str(phase.get("version", 0)))
+        grouped_phases.setdefault(group_key, []).append(phase)
+
+    def _legacy_association(version: int) -> tuple[int | None, str, dict | None]:
+        candidates = [row for row in history_rows if row.get("action", "initial") == version_actions.get(version, "initial")]
+        if len(candidates) == 1:
+            return candidates[0].get("version"), "legacy_inferred", candidates[0]
+        return None, "unresolved", None
+
+    for (association_kind, group_id), group_rows in sorted(grouped_phases.items(), key=lambda item: min(
+        (row.get("start_time") or "") for row in item[1]
+    )):
+        version = int(group_rows[0].get("version", 0))
+        exact_row = exact_reports.get(group_id) if association_kind == "exact" else None
+        report_version = exact_row.get("version") if exact_row else None
+        association = "exact" if exact_row else ("unresolved" if association_kind == "exact" else "legacy_inferred")
+        if not exact_row and association_kind == "legacy":
+            report_version, association, exact_row = _legacy_association(version)
+        action = (exact_row or {}).get("action") if exact_row else version_actions.get(version, "initial")
+        action = action or "initial"
         base_label = action_label_map.get(action, action)
-        label = base_label if version == 0 else f"{base_label} #{version}"
+        label = base_label if report_version in (None, 1) else f"{base_label} #{report_version}"
+        if report_version is None and association_kind == "exact":
+            label = f"{base_label}（未生成报告）"
 
         phases = []
-        for p in version_phases[version]:
+        for p in group_rows:
             agent_name = p["phase_key"]
             for prefix, name in agent_map.items():
                 if p["phase_key"].startswith(prefix):
@@ -1142,7 +1176,12 @@ async def get_execution_trace(thread_id: str) -> dict:
                 json_output=p.get("json_output"),
             ))
 
-        generations.append(GenerationTrace(version=version, action=action, label=label, phases=phases))
+        generations.append(GenerationTrace(
+            version=version, generation_id=(group_id if association_kind == "exact" else None),
+            report_version=report_version,
+            parent_report_version=(exact_row or {}).get("parent_version") if exact_row else None,
+            association=association, action=action, label=label, phases=phases,
+        ))
 
     # Build dynamic DAG from actual execution data (not hardcoded)
     # Collect all phase keys and detect feedback loops from execution history
@@ -1157,11 +1196,6 @@ async def get_execution_trace(thread_id: str) -> dict:
     # Detect feedback loops: if collector/analyst/writer ran in multiple versions, a loop happened
     collector_gens = {v for v, phases in version_phases.items()
                       if any(p["phase_key"].startswith("collector") for p in phases)}
-    analyst_gens = {v for v, phases in version_phases.items()
-                    if any(p["phase_key"].startswith("analyst") for p in phases)}
-    writer_gens = {v for v, phases in version_phases.items()
-                   if any(p["phase_key"].startswith("writer") for p in phases)}
-
     has_reviewer_feedback = len(collector_gens) > 1
     has_hitl_replan = any(a == "replan" for a in version_actions.values())
     has_hitl_reanalyze = any(a == "reanalyze" for a in version_actions.values())
@@ -1200,7 +1234,7 @@ async def get_execution_trace(thread_id: str) -> dict:
         ],
     )
 
-    current_version = max(version_phases.keys()) if version_phases else None
+    current_version = max((row.get("version") for row in history_rows), default=None)
     return TraceResponse(
         thread_id=thread_id, generations=generations, dag=dag, current_version=current_version,
     ).model_dump(by_alias=True)
@@ -1476,6 +1510,10 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
         # Extract fork parent before processing (set by submit_decision for historical fork)
         fork_parent = state.pop("_fork_parent_version", None)
+        from uuid import uuid4
+        generation_id = str(uuid4())
+        entry["generation_id"] = generation_id
+        state["generation_id"] = generation_id
 
         # Inject user feedback into user_request for reanalyze/replan
         comment = state.get("hitl_decision", {}).get("comment", "")
@@ -1575,6 +1613,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 tokens=delta_tokens, content=dict(_re_content), details=[],
                 json_output=_json_output,
                 version=round_num,
+                generation_id=generation_id,
             )
             _re_content.clear()
 
@@ -1631,7 +1670,8 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 thread_id, parent, "",
                 action,
                 {"report_data": new_report.model_dump() if hasattr(new_report, "model_dump") else new_report,
-                 "comment": state.get("hitl_decision", {}).get("comment", "")},
+                 "comment": state.get("hitl_decision", {}).get("comment", ""),
+                 "generation_id": generation_id},
             )
             logger.info("Saved post-%s report v%d for %s",
                         action, _current_db_version(thread_id), thread_id[:12])
@@ -2208,6 +2248,14 @@ def _resolve_and_run_graph(
     from competition.executor import set_user_context
     set_user_context(user_id)
 
+    # One opaque ID joins resolving/graph phases to the report version created
+    # later. Failed runs retain the ID but intentionally have no report version.
+    from uuid import uuid4
+    generation_id = str(uuid4())
+    if thread_id in _store:
+        _store[thread_id].setdefault("state", {})["generation_id"] = generation_id
+        _store[thread_id]["generation_id"] = generation_id
+
     # Set cancel checker so LLM calls during product resolution can be interrupted
     from competition.executor import clear_cancel_checker, set_cancel_checker
     set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
@@ -2294,7 +2342,7 @@ def _resolve_and_run_graph(
             tokens=0, content={}, details=[
                 {"message": "正在解析竞品名称...", "phase": "resolving"},
                 {"message": f"竞品解析完成: {', '.join(products)}", "phase": "resolved", "products": products},
-            ])
+            ], generation_id=generation_id)
 
         # Update store with verified products
         if thread_id in _store:
@@ -2358,6 +2406,7 @@ def _run_graph_sync(thread_id: str) -> None:
         entry = _store.get(thread_id)
         if not entry:
             return
+        generation_id = entry.get("generation_id") or entry.get("state", {}).get("generation_id")
 
         from competition.graph import register_nodes
         from competition.nodes.analyst import analyst_node
@@ -2471,13 +2520,16 @@ def _run_graph_sync(thread_id: str) -> None:
                     progress = f"已采集 {update['collection_summary'].get('total_data_points', 0)} 条数据"
                     node_json = {"summary": _safe_dict(update.get("collection_summary")), "data_points_count": len(update.get("collected_data") or [])}
                 elif update.get("analysis_result") and not prev_state.get("analysis_result"):
-                    current_node = "analyst"; progress = "对比矩阵+SWOT已生成"
+                    current_node = "analyst"
+                    progress = "对比矩阵+SWOT已生成"
                     node_json = _safe_dict(update.get("analysis_result"))
                 elif update.get("review_verdict") and not prev_state.get("review_verdict"):
-                    current_node = "reviewer"; progress = "质量审查完成"
+                    current_node = "reviewer"
+                    progress = "质量审查完成"
                     node_json = _safe_dict(update.get("review_verdict"))
                 elif update.get("report_data") and not prev_state.get("report_data"):
-                    current_node = "writer"; progress = "报告已生成"
+                    current_node = "writer"
+                    progress = "报告已生成"
                     node_json = _safe_dict(update.get("report_data"))
                 prev_state = update
 
@@ -2513,6 +2565,7 @@ def _run_graph_sync(thread_id: str) -> None:
                         details=[],
                         json_output=node_json,
                         version=0,
+                        generation_id=generation_id,
                     )
                     _phase_content.clear()
                     _node_start_time = _now  # next phase starts now
@@ -2548,7 +2601,8 @@ def _run_graph_sync(thread_id: str) -> None:
         if _current_db_version(thread_id) is None and _store[thread_id].get("state", {}).get("report_data"):
             rd = _store[thread_id]["state"]["report_data"]
             _history_store.insert(thread_id, None, "", "initial",
-                {"report_data": rd.model_dump() if hasattr(rd, "model_dump") else rd})
+                {"report_data": rd.model_dump() if hasattr(rd, "model_dump") else rd,
+                 "generation_id": _store[thread_id].get("generation_id") or state.get("generation_id")})
 
         logger.info("Analysis %s completed", thread_id)
 
@@ -2566,7 +2620,6 @@ def _run_graph_sync(thread_id: str) -> None:
 
                 doc_url = ""
                 if is_doc_export_enabled():
-                    sections = rd.get("sections", []) if isinstance(rd, dict) else getattr(rd, "sections", [])
                     md = _render_report_markdown({"state": {"report_data": rd}, "products": products, "title": title})
                     doc_url = export_report_to_doc(str(title), md) or ""
 
