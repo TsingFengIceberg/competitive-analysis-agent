@@ -21,8 +21,11 @@ def error_handler_node(state: dict) -> dict:
     - Degraded continue: cleared error + unresolved_issues (has partial results)
     - Graceful stop: error preserved + minimal ReportData (no results)
     """
-    error = state.get("error", "")
+    error = str(state.get("error") or "").strip()
     has_results = bool(state.get("collected_data") or state.get("analysis_result"))
+
+    if not error and not has_results:
+        error = "未采集到可用于分析的数据"
 
     if has_results:
         return _degraded_continue(error, state)

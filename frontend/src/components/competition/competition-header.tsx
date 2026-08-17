@@ -2,10 +2,7 @@
 
 import Link from "next/link";
 
-import {
-  SidebarTrigger,
-  useSidebar,
-} from "@/components/ui/sidebar";
+import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
 export function CompetitionHeader({ className }: { className?: string }) {
@@ -24,9 +21,18 @@ export function CompetitionHeader({ className }: { className?: string }) {
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2">
-          <Link href="/competition" className="ml-2 flex items-center gap-2 text-primary font-serif">
-            <img src="/logo.png" alt="CI-Agent" className="size-6 rounded-full" />
-            CI-Agent
+          <Link
+            href="/competition"
+            className="text-foreground ml-2 flex items-center gap-2"
+          >
+            <img
+              src="/logo.png"
+              alt="CI-Agent"
+              className="size-7 rounded-lg shadow-sm"
+            />
+            <span className="text-sm font-semibold tracking-tight">
+              CI-Agent
+            </span>
           </Link>
           <SidebarTrigger />
         </div>

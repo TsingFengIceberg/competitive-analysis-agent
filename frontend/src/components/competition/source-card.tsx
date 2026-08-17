@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 
 import type { ReportHistoryItem } from "@/components/competition/api-client";
+import { StatusBadge, type StatusTone } from "@/components/ui/status-badge";
 
 // ── Source hover card ──────────────────────────────────────────────
 
@@ -14,13 +16,13 @@ export interface SourceInfo {
   confidence?: number;
   verified?: boolean;
   snippet?: string;
-  credibility_tier?: string;  // "strong" | "moderate" | "weak"
+  credibility_tier?: string; // "strong" | "moderate" | "weak"
 }
 
-const TIER_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  strong:   { label: "强证据", color: "text-green-700", bg: "bg-green-100 dark:bg-green-900/30" },
-  moderate: { label: "中等证据", color: "text-amber-700", bg: "bg-amber-100 dark:bg-amber-900/30" },
-  weak:     { label: "弱证据", color: "text-red-600", bg: "bg-red-100 dark:bg-red-900/30" },
+const TIER_CONFIG: Record<string, { label: string; tone: StatusTone }> = {
+  strong: { label: "强证据", tone: "success" },
+  moderate: { label: "中等证据", tone: "warning" },
+  weak: { label: "弱证据", tone: "danger" },
 };
 
 export function SourceCard({
@@ -32,73 +34,85 @@ export function SourceCard({
   position: { top: number; left: number };
   onClose: () => void;
 }) {
-  const confidenceColor =
+  const confidenceTone: StatusTone =
     (source.confidence ?? 0) >= 0.8
-      ? "text-green-600"
+      ? "success"
       : (source.confidence ?? 0) >= 0.5
-        ? "text-amber-600"
-        : "text-red-600";
+        ? "warning"
+        : "danger";
 
   return (
     <div
-      className="fixed z-50 w-80 rounded-lg border border-border bg-card p-3 shadow-xl"
+      className="border-border bg-card fixed z-50 w-80 rounded-lg border p-3 shadow-xl"
       style={{ top: position.top, left: position.left }}
       onMouseLeave={onClose}
     >
       {/* Header */}
-      <div className="mb-2 flex items-center justify-between border-b border-border pb-1.5">
-        <span className="text-xs font-semibold text-foreground">
-          {source.verified === true && "✅ "}
-          {source.verified === false && "⚠️ "}
+      <div className="border-border mb-2 flex items-center justify-between border-b pb-1.5">
+        <span className="text-foreground text-xs font-semibold">
+          {source.verified === true && (
+            <CheckCircle2
+              className="mr-1 inline size-3.5 text-[var(--status-success)]"
+              aria-hidden="true"
+            />
+          )}
+          {source.verified === false && (
+            <AlertTriangle
+              className="mr-1 inline size-3.5 text-[var(--status-warning)]"
+              aria-hidden="true"
+            />
+          )}
           数据源
         </span>
         {source.timestamp && (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-muted-foreground text-[11px]">
             {new Date(source.timestamp).toLocaleDateString("zh-CN")}
           </span>
         )}
       </div>
 
       {/* Credibility tier badge */}
-      {source.credibility_tier && TIER_CONFIG[source.credibility_tier] && (() => {
-        const cfg = TIER_CONFIG[source.credibility_tier]!;
-        return (
-          <div className="mb-2">
-            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${cfg.bg} ${cfg.color}`}>
-              {cfg.label}
-            </span>
-          </div>
-        );
-      })()}
+      {source.credibility_tier &&
+        TIER_CONFIG[source.credibility_tier] &&
+        (() => {
+          const cfg = TIER_CONFIG[source.credibility_tier]!;
+          return (
+            <div className="mb-2">
+              <StatusBadge tone={cfg.tone} label={cfg.label} />
+            </div>
+          );
+        })()}
 
       {/* URL */}
       <a
         href={source.url}
         target="_blank"
         rel="noopener noreferrer"
-        className="mb-2 block truncate text-xs text-blue-600 underline hover:text-blue-800"
+        className="mb-2 block truncate text-xs text-[var(--status-info)] underline underline-offset-2 hover:opacity-80"
       >
         {source.title ?? source.url}
       </a>
 
       {/* Snippet */}
       {source.snippet && (
-        <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground line-clamp-3">
+        <p className="text-muted-foreground mb-2 line-clamp-3 text-[11px] leading-relaxed">
           {source.snippet}
         </p>
       )}
 
       {/* Meta bar */}
-      <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+      <div className="text-muted-foreground flex items-center gap-3 text-[11px]">
         {source.confidence != null && (
-          <span className={confidenceColor}>
-            置信度 {(source.confidence * 100).toFixed(0)}%
-          </span>
+          <StatusBadge
+            tone={confidenceTone}
+            label={`置信度 ${(source.confidence * 100).toFixed(0)}%`}
+          />
         )}
         {source.verified != null && (
-          <span className={source.verified ? "text-green-600" : "text-amber-600"}>
-            {source.verified ? "已验证" : "待验证"}
-          </span>
+          <StatusBadge
+            tone={source.verified ? "success" : "warning"}
+            label={source.verified ? "已验证" : "待验证"}
+          />
         )}
       </div>
     </div>
@@ -128,9 +142,19 @@ export function computeSectionDiff(
     const old = oldMap.get(id);
     const nw = newMap.get(id);
     if (!old && nw) {
-      diffs.push({ id, title: nw.title, status: "added", new_content: nw.content });
+      diffs.push({
+        id,
+        title: nw.title,
+        status: "added",
+        new_content: nw.content,
+      });
     } else if (old && !nw) {
-      diffs.push({ id, title: old.title, status: "removed", old_content: old.content });
+      diffs.push({
+        id,
+        title: old.title,
+        status: "removed",
+        old_content: old.content,
+      });
     } else if (old && nw && old.content !== nw.content) {
       diffs.push({
         id,
@@ -146,7 +170,24 @@ export function computeSectionDiff(
   return diffs;
 }
 
-export function VersionDiff({ oldEntry, newEntry }: { oldEntry: ReportHistoryItem; newEntry: ReportHistoryItem }) {
+function diffTone(status: SectionDiff["status"]): StatusTone {
+  if (status === "added") return "success";
+  if (status === "removed") return "danger";
+  if (status === "modified") return "warning";
+  return "neutral";
+}
+
+function diffClass(status: SectionDiff["status"]): string {
+  return `ui-diff-${status}`;
+}
+
+export function VersionDiff({
+  oldEntry,
+  newEntry,
+}: {
+  oldEntry: ReportHistoryItem;
+  newEntry: ReportHistoryItem;
+}) {
   const oldSections = oldEntry.report_data?.sections ?? [];
   const newSections = newEntry.report_data?.sections ?? [];
   const diffs = computeSectionDiff(oldSections, newSections);
@@ -161,51 +202,38 @@ export function VersionDiff({ oldEntry, newEntry }: { oldEntry: ReportHistoryIte
   return (
     <div className="space-y-1 text-xs">
       {/* Summary bar */}
-      <div className="mb-2 flex items-center gap-3 rounded bg-muted p-2 text-[11px]">
-        <span className="text-green-600">+{summary.added} 新增</span>
-        <span className="text-red-600">-{summary.removed} 移除</span>
-        <span className="text-amber-600">~{summary.modified} 修改</span>
-        <span className="text-muted-foreground">{summary.unchanged} 不变</span>
+      <div className="bg-muted mb-2 flex flex-wrap items-center gap-2 rounded p-2 text-[11px]">
+        <StatusBadge tone="success" label={`+${summary.added} 新增`} />
+        <StatusBadge tone="danger" label={`-${summary.removed} 移除`} />
+        <StatusBadge tone="warning" label={`~${summary.modified} 修改`} />
+        <StatusBadge tone="neutral" label={`${summary.unchanged} 不变`} />
       </div>
 
       {diffs.map((d) => (
-        <div
-          key={d.id}
-          className={`rounded border p-2 ${
-            d.status === "added"
-              ? "border-green-200 bg-green-50/30"
-              : d.status === "removed"
-                ? "border-red-200 bg-red-50/30"
-                : d.status === "modified"
-                  ? "border-amber-200 bg-amber-50/30"
-                  : "border-muted"
-          }`}
-        >
+        <div key={d.id} className={`rounded border p-2 ${diffClass(d.status)}`}>
           <div className="mb-1 flex items-center gap-2">
-            <span
-              className={`text-[10px] font-medium ${
-                d.status === "added"
-                  ? "text-green-600"
-                  : d.status === "removed"
-                    ? "text-red-600"
-                    : d.status === "modified"
-                      ? "text-amber-600"
-                      : "text-muted-foreground"
-              }`}
-            >
-              {d.status === "added" ? "ADDED" : d.status === "removed" ? "REMOVED" : d.status === "modified" ? "MODIFIED" : ""}
-            </span>
+            {d.status !== "unchanged" && (
+              <StatusBadge
+                tone={diffTone(d.status)}
+                label={d.status.toUpperCase()}
+                className="text-[10px]"
+              />
+            )}
             <span className="font-medium">{d.title}</span>
           </div>
           {d.status === "modified" && d.old_content && d.new_content && (
             <div className="grid grid-cols-2 gap-2 text-[11px]">
               <div>
-                <span className="text-red-600">旧:</span>
-                <span className="text-muted-foreground/70 ml-1">{d.old_content.slice(0, 100)}…</span>
+                <span className="text-[var(--status-danger)]">旧:</span>
+                <span className="text-muted-foreground/70 ml-1">
+                  {d.old_content.slice(0, 100)}…
+                </span>
               </div>
               <div>
-                <span className="text-green-600">新:</span>
-                <span className="text-muted-foreground/70 ml-1">{d.new_content.slice(0, 100)}…</span>
+                <span className="text-[var(--status-success)]">新:</span>
+                <span className="text-muted-foreground/70 ml-1">
+                  {d.new_content.slice(0, 100)}…
+                </span>
               </div>
             </div>
           )}
@@ -247,26 +275,38 @@ function lcsTable(a: string[], b: string[]): number[][] {
 }
 
 /** Backtrack LCS table to produce diff segments. */
-function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] {
+function backtrackDiff(
+  a: string[],
+  b: string[],
+  dp: number[][],
+): DiffSegment[] {
   const result: DiffSegment[] = [];
   let i = a.length;
   let j = b.length;
   const buf: string[] = [];
 
   function flushAdd() {
-    if (buf.length) { result.push({ type: "add", text: buf.join("\n") }); buf.length = 0; }
+    if (buf.length) {
+      result.push({ type: "add", text: buf.join("\n") });
+      buf.length = 0;
+    }
   }
   function flushDel() {
-    if (buf.length) { result.push({ type: "del", text: buf.join("\n") }); buf.length = 0; }
+    if (buf.length) {
+      result.push({ type: "del", text: buf.join("\n") });
+      buf.length = 0;
+    }
   }
 
   while (i > 0 || j > 0) {
     const ai = i > 0 ? a[i - 1]! : "";
     const bj = j > 0 ? b[j - 1]! : "";
     if (i > 0 && j > 0 && ai === bj) {
-      flushAdd(); flushDel();
+      flushAdd();
+      flushDel();
       buf.unshift(ai);
-      i--; j--;
+      i--;
+      j--;
     } else if (i > 0 && (j === 0 || dp[i - 1]![j]! >= dp[i]![j - 1]!)) {
       flushAdd();
       buf.unshift(ai);
@@ -279,7 +319,8 @@ function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] 
       flushAdd();
     }
   }
-  flushAdd(); flushDel();
+  flushAdd();
+  flushDel();
 
   // Now merge into proper sequence
   const merged: DiffSegment[] = [];
@@ -288,7 +329,10 @@ function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] 
     if (seg.type === "same") {
       sameBuf.push(seg.text);
     } else {
-      if (sameBuf.length) { merged.push({ type: "same", text: sameBuf.join("\n") }); sameBuf.length = 0; }
+      if (sameBuf.length) {
+        merged.push({ type: "same", text: sameBuf.join("\n") });
+        sameBuf.length = 0;
+      }
       merged.push(seg);
     }
   }
@@ -296,7 +340,10 @@ function backtrackDiff(a: string[], b: string[], dp: number[][]): DiffSegment[] 
   return merged;
 }
 
-function computeTextDiff(oldText: string, newText: string): { oldSegments: DiffSegment[]; newSegments: DiffSegment[] } {
+function computeTextDiff(
+  oldText: string,
+  newText: string,
+): { oldSegments: DiffSegment[]; newSegments: DiffSegment[] } {
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
   const dp = lcsTable(oldLines, newLines);
@@ -332,12 +379,21 @@ function computeTextDiff(oldText: string, newText: string): { oldSegments: DiffS
     return out;
   }
 
-  return { oldSegments: compact(oldSegments), newSegments: compact(newSegments) };
+  return {
+    oldSegments: compact(oldSegments),
+    newSegments: compact(newSegments),
+  };
 }
 
 // ── Side-by-side diff view ────────────────────────────────────────
 
-export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistoryItem; newEntry: ReportHistoryItem }) {
+export function SideBySideDiff({
+  oldEntry,
+  newEntry,
+}: {
+  oldEntry: ReportHistoryItem;
+  newEntry: ReportHistoryItem;
+}) {
   const oldSections = oldEntry.report_data?.sections ?? [];
   const newSections = newEntry.report_data?.sections ?? [];
   const sectionDiffs = computeSectionDiff(oldSections, newSections);
@@ -356,13 +412,16 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
       const lines = seg.text ? seg.text.split("\n") : [""];
 
       let bgClass = "";
-      if (seg.type === "del") bgClass = "bg-red-100/50 text-red-800";
-      else if (seg.type === "add") bgClass = "bg-green-100/50 text-green-800";
+      if (seg.type === "del") bgClass = "ui-diff-removed";
+      else if (seg.type === "add") bgClass = "ui-diff-added";
 
       return (
         <div key={i} className={bgClass}>
           {lines.map((line, li) => (
-            <div key={li} className="min-h-[1.4em] px-2 py-px font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all">
+            <div
+              key={li}
+              className="min-h-[1.4em] px-2 py-px font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap"
+            >
               {line || " "}
             </div>
           ))}
@@ -374,11 +433,11 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
   return (
     <div className="space-y-1 text-xs">
       {/* Summary bar */}
-      <div className="mb-2 flex items-center gap-3 rounded bg-muted p-2 text-[11px]">
-        <span className="text-green-600">+{summary.added} 新增</span>
-        <span className="text-red-600">-{summary.removed} 移除</span>
-        <span className="text-amber-600">~{summary.modified} 修改</span>
-        <span className="text-muted-foreground">{summary.unchanged} 不变</span>
+      <div className="bg-muted mb-2 flex flex-wrap items-center gap-2 rounded p-2 text-[11px]">
+        <StatusBadge tone="success" label={`+${summary.added} 新增`} />
+        <StatusBadge tone="danger" label={`-${summary.removed} 移除`} />
+        <StatusBadge tone="warning" label={`~${summary.modified} 修改`} />
+        <StatusBadge tone="neutral" label={`${summary.unchanged} 不变`} />
       </div>
 
       {/* Side-by-side sections */}
@@ -408,25 +467,31 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
         }
 
         return (
-          <div key={sd.id} className="mb-2 rounded border border-muted overflow-hidden">
+          <div
+            key={sd.id}
+            className="border-muted mb-2 overflow-hidden rounded border"
+          >
             {/* Section header */}
-            <div className={`px-2 py-1 text-[11px] font-medium ${
-              isAdded ? "bg-green-100 text-green-700" :
-              isRemoved ? "bg-red-100 text-red-700" :
-              isModified ? "bg-amber-100 text-amber-700" :
-              "bg-muted/50 text-muted-foreground"
-            }`}>
+            <div
+              className={`border-b px-2 py-1 text-[11px] font-medium ${diffClass(sd.status)}`}
+            >
               {sd.title}
-              <span className="ml-2 font-normal text-[10px]">
-                {isAdded ? "新增" : isRemoved ? "移除" : isModified ? "修改" : "无变化"}
+              <span className="ml-2 text-[10px] font-normal opacity-80">
+                {isAdded
+                  ? "新增"
+                  : isRemoved
+                    ? "移除"
+                    : isModified
+                      ? "修改"
+                      : "无变化"}
               </span>
             </div>
 
             {/* Side-by-side panels */}
-            <div className="grid grid-cols-2 divide-x divide-border">
+            <div className="divide-border grid grid-cols-2 divide-x">
               {/* Old panel */}
               <div className="min-h-[2em]">
-                <div className="bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground border-b border-border">
+                <div className="bg-muted/30 text-muted-foreground border-border border-b px-2 py-0.5 text-[10px]">
                   旧版本
                 </div>
                 <div className="max-h-80 overflow-y-auto">
@@ -435,7 +500,7 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
               </div>
               {/* New panel */}
               <div className="min-h-[2em]">
-                <div className="bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground border-b border-border">
+                <div className="bg-muted/30 text-muted-foreground border-border border-b px-2 py-0.5 text-[10px]">
                   新版本
                 </div>
                 <div className="max-h-80 overflow-y-auto">
@@ -454,7 +519,10 @@ export function SideBySideDiff({ oldEntry, newEntry }: { oldEntry: ReportHistory
 
 export function useSourceHover() {
   const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
-  const [hoverPos, setHoverPos] = useState<{ top: number; left: number } | null>(null);
+  const [hoverPos, setHoverPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleSourceEnter = (e: React.MouseEvent, trace: SourceInfo) => {

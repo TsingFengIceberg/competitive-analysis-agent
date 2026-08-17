@@ -17,19 +17,23 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
-      const req = http.get(url, {
-        headers: lastEventId ? { "Last-Event-ID": lastEventId } : {},
-      }, (res) => {
-        res.on("data", (chunk: Buffer) => {
-          controller.enqueue(new Uint8Array(chunk));
-        });
-        res.on("end", () => {
-          controller.close();
-        });
-        res.on("error", (err: Error) => {
-          controller.error(err);
-        });
-      });
+      const req = http.get(
+        url,
+        {
+          headers: lastEventId ? { "Last-Event-ID": lastEventId } : {},
+        },
+        (res) => {
+          res.on("data", (chunk: Buffer) => {
+            controller.enqueue(new Uint8Array(chunk));
+          });
+          res.on("end", () => {
+            controller.close();
+          });
+          res.on("error", (err: Error) => {
+            controller.error(err);
+          });
+        },
+      );
       req.on("error", (err: Error) => {
         controller.error(err);
       });
@@ -37,7 +41,11 @@ export async function GET(
       // Cleanup if client disconnects
       request.signal.addEventListener("abort", () => {
         req.destroy();
-        try { controller.close(); } catch { /* already closed */ }
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
       });
     },
   });
@@ -46,7 +54,7 @@ export async function GET(
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
+      Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     },
   });

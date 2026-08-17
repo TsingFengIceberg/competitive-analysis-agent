@@ -40,7 +40,15 @@ if [[ "$needs_build" == false ]]; then
 fi
 
 echo "Building the frontend at idle I/O and low CPU priority..."
-build_command=(pnpm build)
+if command -v pnpm >/dev/null 2>&1; then
+    build_command=(pnpm build)
+elif [[ -x "$FRONTEND_ROOT/node_modules/.bin/next" ]]; then
+    echo "pnpm is unavailable; using the installed Next.js binary."
+    build_command=("$FRONTEND_ROOT/node_modules/.bin/next" build)
+else
+    echo "Neither pnpm nor frontend/node_modules/.bin/next is available. Run 'make install' first." >&2
+    exit 1
+fi
 if command -v eatmydata >/dev/null 2>&1; then
     build_command=(eatmydata "${build_command[@]}")
 fi

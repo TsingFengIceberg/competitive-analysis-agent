@@ -1,16 +1,23 @@
 "use client";
 
-import { Check, Loader2, X } from "lucide-react";
+import { Check, ChevronDown, Loader2, X } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 
-import type { AnalysisBrief, BriefDimensionId } from "./api-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { StatusNotice } from "@/components/ui/status-badge";
 
-const DIMENSIONS: Array<[BriefDimensionId, string]> = [
-  ["features", "功能与体验"],
-  ["pricing", "定价与商业模式"],
-  ["users", "用户与使用场景"],
-  ["market", "市场与竞争格局"],
-  ["technology", "技术与集成能力"],
-];
+import type { AnalysisBrief } from "./api-client";
+import BriefChipEditor from "./brief-chip-editor";
+import BriefDimensionEditor from "./brief-dimension-editor";
+import { briefValidationErrors, complexityResourceLabel } from "./brief-utils";
 
 interface Props {
   brief: AnalysisBrief;
@@ -22,118 +29,286 @@ interface Props {
   onCancel?: () => void;
 }
 
-export default function AnalysisBriefCard({ brief, readOnly = false, pending = false, error, onChange, onConfirm, onCancel }: Props) {
-  const update = (patch: Partial<AnalysisBrief>) => onChange?.({ ...brief, ...patch });
-  const selected = new Set(brief.dimensions.map((dimension) => dimension.id));
+function BriefSelect({
+  label,
+  value,
+  onValueChange,
+  children,
+  disabled = false,
+  help,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (value: string) => void;
+  children: ReactNode;
+  disabled?: boolean;
+  help?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="ui-field-label">{label}</label>
+      <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+        <SelectTrigger className="w-full" aria-label={label}>
+          <SelectValue placeholder="请选择" />
+        </SelectTrigger>
+        <SelectContent>{children}</SelectContent>
+      </Select>
+      {help && <p className="ui-field-help">{help}</p>}
+    </div>
+  );
+}
 
-  const toggleDimension = (id: BriefDimensionId) => {
-    if (selected.has(id) && selected.size === 1) return;
-    const next = selected.has(id)
-      ? brief.dimensions.filter((dimension) => dimension.id !== id)
-      : [...brief.dimensions, { id, label: DIMENSIONS.find(([key]) => key === id)?.[1] ?? id, weight: 1 }];
-    const weight = next.length ? 1 / next.length : 1;
-    update({ dimensions: next.map((dimension, index) => ({ ...dimension, weight: index === next.length - 1 ? 1 - weight * (next.length - 1) : weight })) });
-  };
+export default function AnalysisBriefCard({
+  brief,
+  readOnly = false,
+  pending = false,
+  error,
+  onChange,
+  onConfirm,
+  onCancel,
+}: Props) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const update = (patch: Partial<AnalysisBrief>) =>
+    onChange?.({ ...brief, ...patch });
+  const validationErrors = useMemo(() => briefValidationErrors(brief), [brief]);
 
   if (readOnly) {
     return (
-      <section className="rounded-lg border bg-muted/20 px-4 py-3 text-sm" aria-label="Analysis scope">
+      <section className="ui-inset p-4 text-sm" aria-label="Analysis scope">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <strong>分析范围</strong>
-          <span className="text-xs text-muted-foreground">{brief.target_products.join(" · ")}</span>
+          <strong className="text-strong">分析范围</strong>
+          <span className="ui-meta">{brief.target_products.join(" · ")}</span>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">{brief.objective}</p>
-        <p className="mt-2 text-xs text-muted-foreground">{brief.dimensions.map((dimension) => dimension.label).join(" · ")} · {brief.market_scope}</p>
+        <p className="text-muted-foreground mt-2 text-xs">{brief.objective}</p>
+        <p className="text-muted-foreground mt-2 text-xs">
+          {brief.dimensions
+            .map(
+              (dimension) =>
+                `${dimension.label} ${Math.round(dimension.weight * 100)}%`,
+            )
+            .join(" · ")}{" "}
+          · {brief.market_scope}
+        </p>
       </section>
     );
   }
 
   return (
-    <section className="rounded-lg border bg-background px-4 py-4 shadow-sm" aria-label="Analysis Brief">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <section
+      className="ui-panel-elevated p-4 sm:p-5"
+      aria-label="Analysis Brief"
+    >
+      <div className="ui-section-header">
         <div>
-          <h2 className="text-sm font-semibold">请确认分析范围</h2>
-          <p className="mt-1 text-xs text-muted-foreground">确认后才会开始竞品解析和资料采集。</p>
+          <h2 className="ui-section-title">请确认分析范围</h2>
+          <p className="ui-section-description">
+            确认后才会开始竞品解析和资料采集。
+          </p>
         </div>
-        <span className="text-xs text-muted-foreground">修订 {brief.revision}</span>
+        <span className="ui-meta">修订 {brief.revision}</span>
       </div>
 
-      <label className="mt-4 block text-xs font-medium">竞品（每行一个）
-        <textarea
-          value={brief.target_products.join("\n")}
-          onChange={(event) => update({ target_products: event.target.value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean) })}
+      <div className="mt-5 grid gap-4">
+        <BriefChipEditor
+          label="竞品（每行一个）"
+          values={brief.target_products}
+          placeholder="输入名称后按 Enter"
           disabled={pending}
-          rows={3}
-          className="mt-1 w-full resize-y rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/30"
+          onChange={(target_products) => update({ target_products })}
         />
-      </label>
-
-      <label className="mt-3 block text-xs font-medium">决策目标
-        <input value={brief.objective} onChange={(event) => update({ objective: event.target.value })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30" />
-      </label>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs font-medium">面向对象
-          <select value={brief.audience} onChange={(event) => update({ audience: event.target.value as AnalysisBrief["audience"] })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30">
-            <option value="product">产品团队</option><option value="strategy">战略</option><option value="procurement">采购</option><option value="executive">管理层</option><option value="technical">技术团队</option><option value="general">通用</option>
-          </select>
+        <label className="ui-field-label">
+          决策目标
+          <Input
+            value={brief.objective}
+            onChange={(event) => update({ objective: event.target.value })}
+            disabled={pending}
+            className="mt-1.5"
+          />
         </label>
-        <label className="text-xs font-medium">市场
-          <input value={brief.market_scope} onChange={(event) => update({ market_scope: event.target.value })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30" />
-        </label>
-        <label className="text-xs font-medium">分析深度
-          <select value={brief.complexity} onChange={(event) => update({ complexity: event.target.value as AnalysisBrief["complexity"] })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30">
-            <option value="quick">快速</option><option value="standard">标准</option><option value="deep">深度</option>
-          </select>
-        </label>
+        <BriefDimensionEditor
+          brief={brief}
+          disabled={pending}
+          onChange={(dimensions) => update({ dimensions })}
+        />
       </div>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs font-medium">时间范围
-          <select value={brief.time_range.mode} onChange={(event) => update({ time_range: { ...brief.time_range, mode: event.target.value as AnalysisBrief["time_range"]["mode"] } })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30">
-            <option value="latest">最新情况</option><option value="last_12_months">最近12个月</option><option value="all_available">全部可用资料</option><option value="custom">自定义</option>
-          </select>
-        </label>
-        <label className="text-xs font-medium">证据策略
-          <select value={brief.evidence_policy} onChange={(event) => update({ evidence_policy: event.target.value as AnalysisBrief["evidence_policy"] })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30">
-            <option value="balanced">平衡来源</option><option value="official_preferred">优先官方来源</option><option value="strict_multi_source">严格多来源</option>
-          </select>
-        </label>
-      </div>
-      {brief.time_range.mode === "custom" && (
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <label className="text-xs font-medium">开始日期
-            <input type="date" value={brief.time_range.start ?? ""} onChange={(event) => update({ time_range: { ...brief.time_range, start: event.target.value || null } })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30" />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => setAdvancedOpen((value) => !value)}
+        aria-expanded={advancedOpen}
+        className="text-muted-foreground mt-4 -ml-2 text-xs"
+      >
+        <ChevronDown
+          className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+        />
+        高级范围设置
+      </Button>
+
+      {advancedOpen && (
+        <div className="border-subtle mt-3 grid gap-4 border-t pt-4 sm:grid-cols-2">
+          <BriefSelect
+            label="面向对象"
+            value={brief.audience}
+            onValueChange={(value) =>
+              update({ audience: value as AnalysisBrief["audience"] })
+            }
+            disabled={pending}
+          >
+            <SelectItem value="product">产品团队</SelectItem>
+            <SelectItem value="strategy">战略</SelectItem>
+            <SelectItem value="procurement">采购</SelectItem>
+            <SelectItem value="executive">管理层</SelectItem>
+            <SelectItem value="technical">技术团队</SelectItem>
+            <SelectItem value="general">通用</SelectItem>
+          </BriefSelect>
+          <label className="ui-field-label">
+            市场
+            <Input
+              value={brief.market_scope}
+              onChange={(event) => update({ market_scope: event.target.value })}
+              disabled={pending}
+              className="mt-1.5"
+            />
           </label>
-          <label className="text-xs font-medium">结束日期
-            <input type="date" value={brief.time_range.end ?? ""} onChange={(event) => update({ time_range: { ...brief.time_range, end: event.target.value || null } })} disabled={pending} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30" />
-          </label>
+          <BriefSelect
+            label="分析深度"
+            value={brief.complexity}
+            onValueChange={(value) =>
+              update({ complexity: value as AnalysisBrief["complexity"] })
+            }
+            disabled={pending}
+            help={complexityResourceLabel(brief.complexity)}
+          >
+            <SelectItem value="quick">快速</SelectItem>
+            <SelectItem value="standard">标准</SelectItem>
+            <SelectItem value="deep">深度</SelectItem>
+          </BriefSelect>
+          <BriefSelect
+            label="时间范围"
+            value={brief.time_range.mode}
+            onValueChange={(value) =>
+              update({
+                time_range: {
+                  ...brief.time_range,
+                  mode: value as AnalysisBrief["time_range"]["mode"],
+                },
+              })
+            }
+            disabled={pending}
+          >
+            <SelectItem value="latest">最新情况</SelectItem>
+            <SelectItem value="last_12_months">最近12个月</SelectItem>
+            <SelectItem value="all_available">全部可用资料</SelectItem>
+            <SelectItem value="custom">自定义</SelectItem>
+          </BriefSelect>
+          <BriefSelect
+            label="证据策略"
+            value={brief.evidence_policy}
+            onValueChange={(value) =>
+              update({
+                evidence_policy: value as AnalysisBrief["evidence_policy"],
+              })
+            }
+            disabled={pending}
+          >
+            <SelectItem value="balanced">平衡来源</SelectItem>
+            <SelectItem value="official_preferred">优先官方来源</SelectItem>
+            <SelectItem value="strict_multi_source">严格多来源</SelectItem>
+          </BriefSelect>
+          {brief.time_range.mode === "custom" && (
+            <>
+              <label className="ui-field-label">
+                开始日期
+                <Input
+                  type="date"
+                  value={brief.time_range.start ?? ""}
+                  onChange={(event) =>
+                    update({
+                      time_range: {
+                        ...brief.time_range,
+                        start: event.target.value || null,
+                      },
+                    })
+                  }
+                  disabled={pending}
+                  className="mt-1.5"
+                />
+              </label>
+              <label className="ui-field-label">
+                结束日期
+                <Input
+                  type="date"
+                  value={brief.time_range.end ?? ""}
+                  onChange={(event) =>
+                    update({
+                      time_range: {
+                        ...brief.time_range,
+                        end: event.target.value || null,
+                      },
+                    })
+                  }
+                  disabled={pending}
+                  className="mt-1.5"
+                />
+              </label>
+            </>
+          )}
+          <div className="sm:col-span-2">
+            <BriefChipEditor
+              label="输出重点"
+              values={brief.output_focus}
+              placeholder="输入重点后按 Enter"
+              disabled={pending}
+              onChange={(output_focus) => update({ output_focus })}
+            />
+          </div>
         </div>
       )}
 
-      <label className="mt-3 block text-xs font-medium">输出重点（每行一个）
-        <textarea value={brief.output_focus.join("\n")} onChange={(event) => update({ output_focus: event.target.value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 8) })} disabled={pending} rows={2} className="mt-1 w-full resize-y rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/30" />
-      </label>
-
-      <fieldset className="mt-3">
-        <legend className="text-xs font-medium">分析维度</legend>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-          {DIMENSIONS.map(([id, label]) => (
-            <label key={id} className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              <input type="checkbox" checked={selected.has(id)} onChange={() => toggleDimension(id)} disabled={pending} />
-              <span className="min-w-0 flex-1 break-words">{label}</span>
-              {selected.has(id) && <input aria-label={`${label}权重`} type="range" min="0.05" max="1" step="0.05" value={brief.dimensions.find((dimension) => dimension.id === id)?.weight ?? 0.2} onChange={(event) => update({ dimensions: brief.dimensions.map((dimension) => dimension.id === id ? { ...dimension, weight: Number(event.target.value) } : dimension) })} disabled={pending} className="w-20 accent-primary" />}
-            </label>
+      {brief.ambiguities.length > 0 && (
+        <StatusNotice tone="warning" title="需要确认的范围" className="mt-4">
+          {brief.ambiguities.map((item) => (
+            <p key={`${item.field}-${item.question}`}>{item.question}</p>
           ))}
-        </div>
-      </fieldset>
+        </StatusNotice>
+      )}
+      {validationErrors.length > 0 && (
+        <StatusNotice tone="warning" title="请修正以下内容" className="mt-4">
+          {validationErrors.map((message) => (
+            <p key={message}>{message}</p>
+          ))}
+        </StatusNotice>
+      )}
+      {error && (
+        <StatusNotice tone="danger" title="无法开始分析" className="mt-4">
+          {error}
+        </StatusNotice>
+      )}
 
-      {brief.ambiguities.length > 0 && <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">{brief.ambiguities.map((item) => <p key={`${item.field}-${item.question}`}>{item.question}</p>)}</div>}
-      {error && <p className="mt-3 text-xs text-destructive" role="alert">{error}</p>}
-
-      <div className="mt-4 flex flex-wrap justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={pending} className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-xs hover:bg-muted disabled:opacity-50"><X className="size-3.5" />取消</button>
-        <button type="button" onClick={onConfirm} disabled={pending || brief.target_products.length < 2} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}确认并开始</button>
+      <div className="mt-5 flex flex-wrap justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onCancel}
+          disabled={pending}
+        >
+          <X className="size-3.5" />
+          取消
+        </Button>
+        <Button
+          type="button"
+          onClick={onConfirm}
+          disabled={pending || validationErrors.length > 0}
+        >
+          {pending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Check className="size-3.5" />
+          )}
+          确认并开始
+        </Button>
       </div>
     </section>
   );

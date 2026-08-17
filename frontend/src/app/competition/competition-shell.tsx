@@ -11,11 +11,15 @@ type CompetitionLayoutState = {
   setReportPanelExpanded: (expanded: boolean) => void;
 };
 
-const CompetitionLayoutStateContext = createContext<CompetitionLayoutState | null>(null);
+const CompetitionLayoutStateContext =
+  createContext<CompetitionLayoutState | null>(null);
 
 export function useCompetitionLayoutState(): CompetitionLayoutState {
   const context = useContext(CompetitionLayoutStateContext);
-  if (!context) throw new Error("useCompetitionLayoutState must be used within CompetitionShell");
+  if (!context)
+    throw new Error(
+      "useCompetitionLayoutState must be used within CompetitionShell",
+    );
   return context;
 }
 
@@ -24,14 +28,22 @@ export function CompetitionShell({
   defaultOpen,
 }: Readonly<{ children: React.ReactNode; defaultOpen?: boolean }>) {
   const [reportPanelExpanded, setReportPanelExpanded] = useState(false);
-  const value = useMemo(() => ({ reportPanelExpanded, setReportPanelExpanded }), [reportPanelExpanded]);
+  const value = useMemo(
+    () => ({ reportPanelExpanded, setReportPanelExpanded }),
+    [reportPanelExpanded],
+  );
 
   return (
     <CompetitionLayoutStateContext.Provider value={value}>
-        <SidebarProvider className="h-screen" defaultOpen={defaultOpen}>
-          <CompetitionSidebar />
-          <SidebarInset className="!w-auto min-w-0 flex-1 overflow-hidden">{children}</SidebarInset>
-        </SidebarProvider>
+      <SidebarProvider
+        className="h-dvh min-h-dvh pb-[env(safe-area-inset-bottom)]"
+        defaultOpen={defaultOpen}
+      >
+        <CompetitionSidebar />
+        <SidebarInset className="!w-auto min-w-0 flex-1 overflow-hidden">
+          {children}
+        </SidebarInset>
+      </SidebarProvider>
       <Toaster position="top-center" />
     </CompetitionLayoutStateContext.Provider>
   );

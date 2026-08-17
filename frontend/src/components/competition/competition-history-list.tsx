@@ -1,6 +1,6 @@
 "use client";
 
-import { Pin, PinOff, Trash2 } from "lucide-react";
+import { FileText, Pin, PinOff, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -51,11 +51,15 @@ export function CompetitionHistoryList() {
         list.sort((a, b) => {
           if (a.pinned && !b.pinned) return -1;
           if (!a.pinned && b.pinned) return 1;
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          return (
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
         });
         setRecords(list);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     setLoading(false);
   }, []);
 
@@ -67,15 +71,21 @@ export function CompetitionHistoryList() {
   useEffect(() => {
     const handler = () => fetchHistory();
     window.addEventListener("competition:refresh-history", handler);
-    return () => window.removeEventListener("competition:refresh-history", handler);
+    return () =>
+      window.removeEventListener("competition:refresh-history", handler);
   }, [fetchHistory]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     try {
-      const res = await fetch(`/api/competition/db-report/${deleteTarget.thread_id}`, { method: "DELETE" });
+      const res = await fetch(
+        `/api/competition/db-report/${deleteTarget.thread_id}`,
+        { method: "DELETE" },
+      );
       if (res.ok) {
-        setRecords((prev) => prev.filter((r) => r.thread_id !== deleteTarget.thread_id));
+        setRecords((prev) =>
+          prev.filter((r) => r.thread_id !== deleteTarget.thread_id),
+        );
         if (pathname === `/competition/${deleteTarget.thread_id}`) {
           router.push("/competition/new");
         }
@@ -83,14 +93,19 @@ export function CompetitionHistoryList() {
       } else {
         toast.error("删除失败");
       }
-    } catch { toast.error("删除失败"); }
+    } catch {
+      toast.error("删除失败");
+    }
     setDeleteTarget(null);
   }, [deleteTarget, pathname, router]);
 
   const handlePin = useCallback(async (record: HistoryRecord) => {
     const newPinned = !record.pinned;
     try {
-      const res = await fetch(`/api/competition/db-report/${record.thread_id}/pin?pinned=${newPinned}`, { method: "PATCH" });
+      const res = await fetch(
+        `/api/competition/db-report/${record.thread_id}/pin?pinned=${newPinned}`,
+        { method: "PATCH" },
+      );
       if (res.ok) {
         setRecords((prev) => {
           const updated = prev.map((r) =>
@@ -100,13 +115,18 @@ export function CompetitionHistoryList() {
           updated.sort((a, b) => {
             if (a.pinned && !b.pinned) return -1;
             if (!a.pinned && b.pinned) return 1;
-            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+            return (
+              new Date(b.created_at).getTime() -
+              new Date(a.created_at).getTime()
+            );
           });
           return updated;
         });
         toast.success(newPinned ? "已置顶" : "已取消置顶");
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const handleDeleteClick = useCallback((record: HistoryRecord) => {
@@ -123,54 +143,76 @@ export function CompetitionHistoryList() {
         <SidebarGroupLabel>历史分析</SidebarGroupLabel>
         <SidebarGroupContent>
           {loading ? (
-            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
+            <div className="text-muted-foreground px-2 py-4 text-center text-xs">
               加载中...
             </div>
           ) : records.length === 0 ? (
-            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-              <p className="mb-2">📝 暂无历史记录</p>
-              <p className="text-[10px] leading-relaxed">输入 query 开始你的第一次竞品分析，分析完成后将自动出现在这里</p>
+            <div className="ui-inset text-muted-foreground mx-2 px-3 py-4 text-center text-xs">
+              <FileText
+                className="mx-auto mb-2 size-4 opacity-60"
+                aria-hidden="true"
+              />
+              <p className="text-foreground mb-1 font-medium">暂无历史记录</p>
+              <p className="text-[10px] leading-relaxed">
+                完成一次分析后，报告会自动出现在这里
+              </p>
             </div>
           ) : (
             <SidebarMenu>
               {records.map((record, idx) => {
-                const showSep = record.pinned === false && idx > 0 && records[idx - 1]?.pinned === true;
+                const showSep =
+                  record.pinned === false &&
+                  idx > 0 &&
+                  records[idx - 1]?.pinned === true;
                 return (
-                  <SidebarMenuItem key={record.thread_id} className="group/item relative">
+                  <SidebarMenuItem
+                    key={record.thread_id}
+                    className="group/item relative"
+                  >
                     {showSep && (
-                      <div className="mx-2 mb-0.5 border-t border-border/50" />
+                      <div className="border-border/50 mx-2 mb-0.5 border-t" />
                     )}
                     <SidebarMenuButton
                       isActive={pathname === `/competition/${record.thread_id}`}
                       asChild
-                      className={record.pinned ? "bg-amber-50/50 dark:bg-amber-950/20" : ""}
+                      className={
+                        record.pinned ? "bg-[var(--status-warning-bg)]" : ""
+                      }
                     >
                       <Link href={`/competition/${record.thread_id}`}>
                         {record.pinned && (
-                          <Pin className="mr-1 size-3 shrink-0 text-amber-500" />
+                          <Pin className="mr-1 size-3 shrink-0 text-[var(--status-warning)]" />
                         )}
-                        <span className="truncate">{record.title || record.query}</span>
+                        <span className="truncate">
+                          {record.title || record.query}
+                        </span>
                       </Link>
                     </SidebarMenuButton>
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover/item:flex items-center gap-0.5">
-                      <button
+                    <div className="absolute top-1/2 right-1 hidden -translate-y-1/2 items-center gap-0.5 group-focus-within/item:flex [@media(hover:none)]:flex">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
                         onClick={() => handlePin(record)}
                         title={record.pinned ? "取消置顶" : "置顶"}
-                        className="flex size-6 items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                        className="text-muted-foreground"
                       >
                         {record.pinned ? (
                           <PinOff className="size-3.5" />
                         ) : (
                           <Pin className="size-3.5" />
                         )}
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
                         onClick={() => handleDeleteClick(record)}
                         title="删除"
-                        className="flex size-6 items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors"
+                        className="text-muted-foreground hover:text-destructive"
                       >
                         <Trash2 className="size-3.5" />
-                      </button>
+                      </Button>
                     </div>
                   </SidebarMenuItem>
                 );
@@ -181,13 +223,17 @@ export function CompetitionHistoryList() {
       </SidebarGroup>
 
       {/* Delete confirmation dialog */}
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <Dialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>删除分析记录</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            确定要删除「{deleteTarget?.title || deleteTarget?.query}」吗？此操作不可撤销。
+          <p className="text-muted-foreground text-sm">
+            确定要删除「{deleteTarget?.title || deleteTarget?.query}
+            」吗？此操作不可撤销。
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>

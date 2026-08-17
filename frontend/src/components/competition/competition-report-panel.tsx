@@ -1,29 +1,50 @@
 "use client";
 
-import { X } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useState, useCallback } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
+import { Download, FileJson } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { StatusBadge, StatusNotice } from "@/components/ui/status-badge";
+import SafeMarkdown from "@/components/competition/safe-markdown";
 
-import type { ReportData, ReportSection, ReportHistoryItem } from "@/components/competition/api-client";
-import { SideBySideDiff, VersionDiff, SourceCard, type SourceInfo } from "@/components/competition/source-card";
-import { VersionTree } from "@/components/competition/version-tree";
+import type {
+  ReportData,
+  ReportSection,
+  ReportHistoryItem,
+} from "@/components/competition/api-client";
+import {
+  SourceCard,
+  type SourceInfo,
+} from "@/components/competition/source-card";
 
-function parseMarkdownTable(content: string): { headers: string[]; rows: string[][] } | null {
+const LazyReportDiff = dynamic(() => import("./report-diff"), {
+  ssr: false,
+  loading: () => (
+    <div
+      className="ui-inset min-h-32 animate-pulse"
+      aria-label="版本对比加载中"
+    />
+  ),
+});
+
+function parseMarkdownTable(
+  content: string,
+): { headers: string[]; rows: string[][] } | null {
   if (!content || !content.includes("|")) return null;
 
   // Normalize: split by common row delimiters
   let lines: string[];
   if (content.includes("\n")) {
-    lines = content.split("\n").map(l => l.trim()).filter(l => l.includes("|"));
+    lines = content
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.includes("|"));
   } else {
     // Single-line compressed format: split by separator row pattern
     // e.g. "| H1 | H2 | |---|---| | A | B |"
-    lines = content.split(/\|(?=\s*-)/).flatMap(part => {
+    lines = content.split(/\|(?=\s*-)/).flatMap((part) => {
       const sub = part.split(/(?<=\|)\s*(?=\|)/);
-      return sub.map(s => s.trim()).filter(s => s.includes("|"));
+      return sub.map((s) => s.trim()).filter((s) => s.includes("|"));
     });
     // If the above didn't work well, try simpler: find all pipe-delimited segments
     if (lines.length < 2) {
@@ -33,7 +54,9 @@ function parseMarkdownTable(content: string): { headers: string[]; rows: string[
         const idx = content.indexOf(sepMatch[0]);
         const before = content.slice(0, idx);
         const after = content.slice(idx + sepMatch[0].length);
-        lines = [before, ...after.split(/(?<=\|)\s*(?=\|)/)].filter(l => l.includes("|"));
+        lines = [before, ...after.split(/(?<=\|)\s*(?=\|)/)].filter((l) =>
+          l.includes("|"),
+        );
       }
     }
   }
@@ -41,11 +64,14 @@ function parseMarkdownTable(content: string): { headers: string[]; rows: string[
   if (lines.length < 2) return null;
 
   // Find separator line
-  const sepIdx = lines.findIndex(l => /^\|[\s\-:|]+\|$/.test(l.trim()));
+  const sepIdx = lines.findIndex((l) => /^\|[\s\-:|]+\|$/.test(l.trim()));
   if (sepIdx < 1) return null;
 
   const parseRow = (line: string): string[] =>
-    line.split("|").map(c => c.trim()).filter((c, i, arr) => c !== "" || (i > 0 && i < arr.length - 1));
+    line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((c, i, arr) => c !== "" || (i > 0 && i < arr.length - 1));
 
   const headerLine = lines[sepIdx - 1];
   if (!headerLine) return null;
@@ -94,6 +120,18 @@ function sectionDomId(section: ReportSection): string {
   return `report-section-${section.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
+function flattenSections(
+  sections: ReportSection[],
+  depth = 0,
+): Array<{ section: ReportSection; depth: number }> {
+  return sections.flatMap((section) => [
+    { section, depth },
+    ...(section.subsections
+      ? flattenSections(section.subsections, depth + 1)
+      : []),
+  ]);
+}
+
 function sectionTypeLabel(type: string): string {
   if (type === "table") return "表格";
   if (type === "chart") return "图表";
@@ -115,13 +153,13 @@ function formatGeneratedAt(value: unknown): string | null {
 
 function sectionWrapperClass(depth: number): string {
   return depth === 0
-    ? "scroll-mt-4 rounded-xl border bg-card/80 p-4 shadow-sm"
+    ? "ui-panel scroll-mt-4 p-4"
     : "scroll-mt-4 border-l-2 border-primary/20 pl-4 pt-3";
 }
 
 function sectionTitleClass(depth: number): string {
   return depth === 0
-    ? "text-base font-semibold tracking-tight text-foreground"
+    ? "text-strong text-base font-semibold tracking-tight"
     : "text-sm font-semibold text-foreground";
 }
 
@@ -133,20 +171,26 @@ function looksLikeStructuredPlainText(content: string): boolean {
 }
 
 function classifyPlainLine(line: string): string {
-  if (/^\[\d+\]\s/.test(line)) return "rounded-lg border bg-muted/20 px-3 py-2 text-xs leading-relaxed break-words [overflow-wrap:anywhere]";
-  if (/^(总数据点|已验证|事实错误|质量分|多源交叉|单源)[:：]/.test(line)) return "rounded-md bg-muted/30 px-3 py-2 text-xs font-medium leading-relaxed";
-  if (/^[-*]\s/.test(line)) return "rounded-md border-l-2 border-primary/30 bg-muted/20 px-3 py-2 text-sm leading-6 break-words";
+  if (/^\[\d+\]\s/.test(line))
+    return "rounded-lg border bg-muted/20 px-3 py-2 text-xs leading-relaxed break-words [overflow-wrap:anywhere]";
+  if (/^(总数据点|已验证|事实错误|质量分|多源交叉|单源)[:：]/.test(line))
+    return "rounded-md bg-muted/30 px-3 py-2 text-xs font-medium leading-relaxed";
+  if (/^[-*]\s/.test(line))
+    return "rounded-md border-l-2 border-primary/30 bg-muted/20 px-3 py-2 text-sm leading-6 break-words";
   return "rounded-md bg-muted/15 px-3 py-2 text-sm leading-6 break-words";
 }
 
 function preprocessSourceLine(line: string): string {
-  return line.split("\n").map((part) => {
-    const match = /^\[(\d+)\]\s+(\S+)(.*)$/.exec(part);
-    if (!match) return part;
-    const [, id, url, rest = ""] = match;
-    if (!url?.startsWith("http")) return part;
-    return `[${id}] [${url}](${url})${rest}`;
-  }).join("\n");
+  return line
+    .split("\n")
+    .map((part) => {
+      const match = /^\[(\d+)\]\s+(\S+)(.*)$/.exec(part);
+      if (!match) return part;
+      const [, id, url, rest = ""] = match;
+      if (!url?.startsWith("http")) return part;
+      return `[${id}] [${url}](${url})${rest}`;
+    })
+    .join("\n");
 }
 
 type SwotEntry = { category: string; statement: string; evidence: string };
@@ -179,10 +223,15 @@ function parseSwotContent(content: string): SwotGroup[] {
         current = { product: "综合分析", entries: [] };
         groups.push(current);
       }
-      pending = { category: itemMatch[1] ?? "要点", statement: itemMatch[2] ?? "", evidence: "" };
+      pending = {
+        category: itemMatch[1] ?? "要点",
+        statement: itemMatch[2] ?? "",
+        evidence: "",
+      };
       continue;
     }
-    const evidenceMatch = /^-\s+(?:\*证据\*|\*\*证据\*\*|证据)[:：]\s*(.+)$/.exec(line);
+    const evidenceMatch =
+      /^-\s+(?:\*证据\*|\*\*证据\*\*|证据)[:：]\s*(.+)$/.exec(line);
     if (evidenceMatch && pending) {
       pending.evidence = evidenceMatch[1] ?? "";
     }
@@ -192,80 +241,167 @@ function parseSwotContent(content: string): SwotGroup[] {
 }
 
 export default function CompetitionReportPanel({
-  open, onClose, displayReport, historyEntries,
-  viewingHistory, isViewingLatest, onViewHistory,
-  selectedForDiff, onToggleDiff, onCompare,
-  diffVersions, diffViewMode, setDiffViewMode, setDiffVersions, setSelectedForDiff,
-  dbLoadedThreadId, hitlVisible, status,
+  open,
+  displayReport,
+  historyEntries,
+  viewingHistory,
+  isViewingLatest: _isViewingLatest,
+  onViewHistory,
+  selectedForDiff: _selectedForDiff,
+  onToggleDiff: _onToggleDiff,
+  onCompare: _onCompare,
+  diffVersions,
+  diffViewMode,
+  setDiffViewMode,
+  setDiffVersions,
+  setSelectedForDiff,
+  dbLoadedThreadId,
+  hitlVisible,
+  status,
   threadIdForApi,
   onCitationSelect,
 }: Props) {
   const [hoveredSource, setHoveredSource] = useState<SourceInfo | null>(null);
-  const [sourcePos, setSourcePos] = useState<{ top: number; left: number } | null>(null);
+  const [sourcePos, setSourcePos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
-  const preprocessContent = useCallback((content: string): string => {
-    return content.replace(/\[(\d+)\]/g, (_, id) => {
-      const trace = displayReport?.traceability_map?.[id];
-      const url = typeof trace === "object" && /^https?:\/\//i.test(trace.url) ? trace.url : "";
-      if (url) {
-        return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}"><a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">[${id}]</a></sup>`;
+  const preprocessContent = useCallback(
+    (content: string): string => {
+      return content.replace(/\[(\d+)\]/g, (_, id) => {
+        const trace = displayReport?.traceability_map?.[id];
+        const url =
+          typeof trace === "object" && /^https?:\/\//i.test(trace.url)
+            ? trace.url
+            : "";
+        if (url) {
+          return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}"><a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">[${id}]</a></sup>`;
+        }
+        return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}">[${id}]</sup>`;
+      });
+    },
+    [displayReport],
+  );
+
+  const handleReportHover = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = (e.target as HTMLElement).closest(
+        ".ref-link",
+      ) as HTMLElement | null;
+      if (!target) {
+        setHoveredSource(null);
+        setSourcePos(null);
+        return;
       }
-      return `<sup class="ref-link" data-trace-id="${escapeAttr(id)}">[${id}]</sup>`;
-    });
-  }, [displayReport]);
+      const traceId = target.dataset.traceId;
+      const trace = traceId
+        ? displayReport?.traceability_map?.[traceId]
+        : undefined;
+      const source = trace && typeof trace === "object" ? trace : null;
+      const traceUrl =
+        source && /^https?:\/\//i.test(source.url) ? source.url : "";
+      if (!traceId || !traceUrl) return;
+      const rect = target.getBoundingClientRect();
+      setHoveredSource({
+        id: traceId,
+        url: traceUrl,
+        snippet: source?.snippet,
+        confidence: source?.confidence,
+        verified: source?.verified,
+        timestamp: source?.timestamp,
+        credibility_tier: source?.credibility_tier,
+      });
+      setSourcePos({
+        top: rect.bottom + window.scrollY + 4,
+        left: rect.left + window.scrollX,
+      });
+    },
+    [displayReport],
+  );
 
-  const handleReportHover = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
-    if (!target) { setHoveredSource(null); setSourcePos(null); return; }
-    const traceId = target.dataset.traceId;
-    const trace = traceId ? displayReport?.traceability_map?.[traceId] : undefined;
-    const source = trace && typeof trace === "object" ? trace : null;
-    const traceUrl = source && /^https?:\/\//i.test(source.url) ? source.url : "";
-    if (!traceId || !traceUrl) return;
-    const rect = target.getBoundingClientRect();
-    setHoveredSource({ id: traceId, url: traceUrl, snippet: source?.snippet,
-      confidence: source?.confidence, verified: source?.verified,
-      timestamp: source?.timestamp, credibility_tier: source?.credibility_tier });
-    setSourcePos({ top: rect.bottom + window.scrollY + 4, left: rect.left + window.scrollX });
-  }, [displayReport]);
-
-  const handleReportClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = (e.target as HTMLElement).closest(".ref-link") as HTMLElement | null;
-    const traceId = target?.dataset.traceId;
-    if (traceId) onCitationSelect?.(traceId);
-  }, [onCitationSelect]);
+  const handleReportClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = (e.target as HTMLElement).closest(
+        ".ref-link",
+      ) as HTMLElement | null;
+      const traceId = target?.dataset.traceId;
+      if (traceId) onCitationSelect?.(traceId);
+    },
+    [onCitationSelect],
+  );
 
   const renderMarkdownInline = (content: string): React.ReactNode => (
-      <div className="prose prose-sm max-w-none text-inherit leading-inherit prose-p:my-0 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-strong:text-foreground prose-em:not-italic prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
-      onMouseOver={handleReportHover} onClick={handleReportClick} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]}>{preprocessContent(preprocessSourceLine(content))}</ReactMarkdown>
+    <div
+      className="prose prose-sm leading-inherit prose-p:my-0 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-strong:text-foreground prose-em:not-italic prose-a:break-words prose-a:[overflow-wrap:anywhere] max-w-none text-inherit [&_.ref-link]:cursor-pointer [&_.ref-link]:text-[var(--status-info)] [&_.ref-link_a]:text-[var(--status-info)]"
+      onMouseOver={handleReportHover}
+      onClick={handleReportClick}
+      onMouseOut={() => {
+        setHoveredSource(null);
+        setSourcePos(null);
+      }}
+    >
+      <SafeMarkdown>
+        {preprocessContent(preprocessSourceLine(content))}
+      </SafeMarkdown>
     </div>
   );
 
-  const renderSectionHeader = (section: ReportSection, depth: number): React.ReactNode => (
-    <div className="mb-3 flex items-start justify-between gap-3 border-b border-border/60 pb-2">
+  const renderSectionHeader = (
+    section: ReportSection,
+    depth: number,
+  ): React.ReactNode => (
+    <div className="border-border/60 mb-3 flex items-start justify-between gap-3 border-b pb-2">
       <div className="min-w-0">
         <div className="mb-1 flex items-center gap-2">
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+          <span className="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-[10px] font-medium">
             {sectionTypeLabel(section.content_type)}
           </span>
-          {depth > 0 && <span className="text-[10px] text-muted-foreground">子章节</span>}
+          {depth > 0 && (
+            <span className="text-muted-foreground text-[10px]">子章节</span>
+          )}
         </div>
         <h3 className={sectionTitleClass(depth)}>{section.title}</h3>
       </div>
     </div>
   );
 
-  const renderTable = (headers: string[], rows: string[][]): React.ReactNode => (
-    <div className="overflow-x-auto rounded-lg border border-border/70 bg-background">
+  const renderTable = (
+    headers: string[],
+    rows: string[][],
+  ): React.ReactNode => (
+    <div
+      className="border-border/70 bg-background overflow-x-auto rounded-lg border"
+      tabIndex={0}
+      aria-label="可横向滚动的报告表格"
+    >
       <table className="w-max min-w-full border-collapse text-sm">
         <thead className="bg-muted/70 text-muted-foreground">
-          <tr>{headers.map((h, i) => <th key={i} className="border-b border-r border-border/60 px-3 py-2 text-left text-xs font-semibold last:border-r-0">{h}</th>)}</tr>
+          <tr>
+            {headers.map((h, i) => (
+              <th
+                key={i}
+                className={`border-border/60 bg-muted/90 sticky top-0 z-[1] border-r border-b px-3 py-2 text-left text-xs font-semibold last:border-r-0 ${i === 0 ? "left-0 z-[2]" : ""}`}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} className={ri % 2 === 0 ? "bg-background" : "bg-muted/20"}>
-              {row.map((cell, ci) => <td key={ci} className="align-top border-b border-r border-border/50 px-3 py-2 text-xs leading-relaxed break-words [overflow-wrap:anywhere] last:border-r-0">{cell}</td>)}
+            <tr
+              key={ri}
+              className={ri % 2 === 0 ? "bg-background" : "bg-muted/20"}
+            >
+              {row.map((cell, ci) => (
+                <td
+                  key={ci}
+                  className={`border-border/50 border-r border-b px-3 py-2 align-top text-xs leading-relaxed [overflow-wrap:anywhere] break-words last:border-r-0 ${ci === 0 ? "sticky left-0 bg-inherit" : ""}`}
+                >
+                  {cell}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -279,21 +415,38 @@ export default function CompetitionReportPanel({
     return (
       <div className="space-y-4">
         {groups.map((group) => (
-          <div key={group.product} className="rounded-lg border bg-background/80 p-3">
-            <div className="mb-3 flex items-center gap-2 border-b border-border/60 pb-2">
-              <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">竞品</span>
-              <h4 className="text-sm font-semibold text-foreground">{group.product}</h4>
+          <div
+            key={group.product}
+            className="bg-background/80 rounded-lg border p-3"
+          >
+            <div className="border-border/60 mb-3 flex items-center gap-2 border-b pb-2">
+              <span className="bg-primary/10 text-primary rounded px-2 py-0.5 text-xs font-semibold">
+                竞品
+              </span>
+              <h4 className="text-foreground text-sm font-semibold">
+                {group.product}
+              </h4>
             </div>
             <div className="space-y-2.5">
               {group.entries.map((entry, index) => (
-                <div key={`${entry.category}-${index}`} className="rounded-lg border-l-4 border-primary/40 bg-muted/20 px-3 py-2.5">
+                <div
+                  key={`${entry.category}-${index}`}
+                  className="border-primary/40 bg-muted/20 rounded-lg border-l-4 px-3 py-2.5"
+                >
                   <div className="mb-1 flex flex-wrap items-start gap-2">
-                    <span className="rounded-full bg-background px-2 py-0.5 text-[11px] font-semibold text-foreground shadow-sm">{entry.category}</span>
-                    <div className="min-w-0 flex-1 text-sm leading-6 text-foreground break-words">{renderMarkdownInline(entry.statement)}</div>
+                    <span className="bg-background text-foreground rounded-full px-2 py-0.5 text-[11px] font-semibold shadow-sm">
+                      {entry.category}
+                    </span>
+                    <div className="text-foreground min-w-0 flex-1 text-sm leading-6 break-words">
+                      {renderMarkdownInline(entry.statement)}
+                    </div>
                   </div>
                   {entry.evidence && (
-                    <div className="mt-2 rounded-md bg-background/70 px-2.5 py-1.5 text-xs leading-relaxed text-muted-foreground break-words [overflow-wrap:anywhere]">
-                      <span className="font-medium text-foreground">证据：</span>{renderMarkdownInline(entry.evidence)}
+                    <div className="bg-background/70 text-muted-foreground mt-2 rounded-md px-2.5 py-1.5 text-xs leading-relaxed [overflow-wrap:anywhere] break-words">
+                      <span className="text-foreground font-medium">
+                        证据：
+                      </span>
+                      {renderMarkdownInline(entry.evidence)}
                     </div>
                   )}
                 </div>
@@ -305,15 +458,24 @@ export default function CompetitionReportPanel({
     );
   };
 
-  const renderSection = (section: ReportSection, depth = 0): React.ReactNode => {
+  const renderSection = (
+    section: ReportSection,
+    depth = 0,
+  ): React.ReactNode => {
     const wrapperClass = sectionWrapperClass(depth);
-    const nested = section.subsections?.map((sub) => renderSection(sub, depth + 1));
+    const nested = section.subsections?.map((sub) =>
+      renderSection(sub, depth + 1),
+    );
 
     if (section.id === "sec-swot") {
       const swotContent = renderSwotContent(section.content);
       if (swotContent) {
         return (
-          <section id={sectionDomId(section)} key={section.id} className={wrapperClass}>
+          <section
+            id={sectionDomId(section)}
+            key={section.id}
+            className={wrapperClass}
+          >
             {renderSectionHeader(section, depth)}
             {swotContent}
             {nested && <div className="mt-4 space-y-4">{nested}</div>}
@@ -327,19 +489,31 @@ export default function CompetitionReportPanel({
       const headers = (cp.headers as string[]) || [];
       const rows = (cp.rows as string[][]) || [];
       return (
-        <section id={sectionDomId(section)} key={section.id} className={wrapperClass}>
+        <section
+          id={sectionDomId(section)}
+          key={section.id}
+          className={wrapperClass}
+        >
           {renderSectionHeader(section, depth)}
           {renderTable(headers, rows)}
           {nested && <div className="mt-4 space-y-4">{nested}</div>}
         </section>
       );
     }
-    if (section.content_type === "table" && !section.chart_path && section.id !== "sec-sources") {
+    if (
+      section.content_type === "table" &&
+      !section.chart_path &&
+      section.id !== "sec-sources"
+    ) {
       const parsed = parseMarkdownTable(section.content);
       if (parsed) {
         const { headers: mdHeaders, rows: mdRows } = parsed;
         return (
-          <section id={sectionDomId(section)} key={section.id} className={wrapperClass}>
+          <section
+            id={sectionDomId(section)}
+            key={section.id}
+            className={wrapperClass}
+          >
             {renderSectionHeader(section, depth)}
             {renderTable(mdHeaders, mdRows)}
             {nested && <div className="mt-4 space-y-4">{nested}</div>}
@@ -352,33 +526,126 @@ export default function CompetitionReportPanel({
       const labels = (cp.labels as string[]) || [];
       const series = (cp.series as Record<string, number[]>) || {};
       return (
-        <section id={sectionDomId(section)} key={section.id} className={wrapperClass}>
+        <section
+          id={sectionDomId(section)}
+          key={section.id}
+          className={wrapperClass}
+        >
           {renderSectionHeader(section, depth)}
-          <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
-            <div className="mb-3 text-xs font-medium text-muted-foreground">{(cp.chart as string) || "radar"} · {labels.length} 个维度</div>
-            <div className="space-y-3">{Object.entries(series).map(([name, values]) => (
-              <div key={name} className="flex items-end gap-3"><span className="w-24 shrink-0 text-xs font-medium text-foreground">{name}</span><div className="flex flex-1 items-end gap-1.5">{values.map((v, vi) => <div key={vi} className="flex flex-1 flex-col items-center gap-1"><div className="w-full rounded-t" style={{ height: `${Math.max(6, (v / 5) * 72)}px`, backgroundColor: ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6"][vi % 5], opacity: 0.75 }} /><span className="text-[10px] text-muted-foreground">{labels[vi]}</span></div>)}</div></div>
-            ))}</div>
+          <div className="border-border/70 bg-muted/20 rounded-lg border p-4">
+            <div className="text-muted-foreground mb-3 text-xs font-medium">
+              {(cp.chart as string) || "radar"} · {labels.length} 个维度
+            </div>
+            <div
+              className="space-y-3"
+              role="img"
+              aria-label={`${(cp.chart as string) || "报告图表"}，包含 ${labels.length} 个维度`}
+            >
+              {Object.entries(series).map(([name, values]) => (
+                <div key={name} className="flex items-end gap-3">
+                  <span className="text-foreground w-24 shrink-0 text-xs font-medium">
+                    {name}
+                  </span>
+                  <div className="flex flex-1 items-end gap-1.5">
+                    {values.map((v, vi) => (
+                      <div
+                        key={vi}
+                        className="flex flex-1 flex-col items-center gap-1"
+                      >
+                        <div
+                          className="w-full rounded-t"
+                          style={{
+                            height: `${Math.max(6, (v / 5) * 72)}px`,
+                            backgroundColor: [
+                              "#3b82f6",
+                              "#ef4444",
+                              "#22c55e",
+                              "#f59e0b",
+                              "#8b5cf6",
+                            ][vi % 5],
+                            opacity: 0.75,
+                          }}
+                        />
+                        <span className="text-muted-foreground text-[10px]">
+                          {labels[vi]}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <details className="bg-background mt-4 rounded border p-2 text-xs">
+              <summary className="cursor-pointer font-medium">
+                查看图表数据
+              </summary>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr>
+                      <th className="border px-2 py-1 text-left">产品</th>
+                      {labels.map((label, index) => (
+                        <th
+                          key={`${label}-${index}`}
+                          className="border px-2 py-1 text-left"
+                        >
+                          {label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(series).map(([name, values]) => (
+                      <tr key={name}>
+                        <th className="border px-2 py-1 text-left">{name}</th>
+                        {labels.map((_, index) => (
+                          <td key={index} className="border px-2 py-1">
+                            {values[index] ?? "-"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </div>
           {nested && <div className="mt-4 space-y-4">{nested}</div>}
         </section>
       );
     }
     return (
-      <section id={sectionDomId(section)} key={section.id} className={wrapperClass}>
+      <section
+        id={sectionDomId(section)}
+        key={section.id}
+        className={wrapperClass}
+      >
         {renderSectionHeader(section, depth)}
         {looksLikeStructuredPlainText(section.content) ? (
           <div className="space-y-2">
             {section.content.split("\n").map((line, index) => {
               const text = line.trim();
               if (!text) return null;
-              return <div key={index} className={classifyPlainLine(text)}>{renderMarkdownInline(text)}</div>;
+              return (
+                <div key={index} className={classifyPlainLine(text)}>
+                  {renderMarkdownInline(text)}
+                </div>
+              );
             })}
           </div>
         ) : (
-          <div className="prose prose-sm max-w-none text-sm leading-6 text-foreground prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:mt-4 prose-headings:mb-2 prose-headings:font-semibold prose-strong:text-foreground prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_th]:border [&_th]:bg-muted/70 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_td]:border [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:break-words [&_td]:[overflow-wrap:anywhere] [&_.ref-link]:text-blue-600 [&_.ref-link]:cursor-pointer [&_.ref-link_a]:text-blue-600"
-            onMouseOver={handleReportHover} onClick={handleReportClick} onMouseOut={() => { setHoveredSource(null); setSourcePos(null); }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]}>{preprocessContent(preprocessSourceLine(section.content))}</ReactMarkdown>
+          <div
+            className="prose prose-sm text-foreground prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:mt-4 prose-headings:mb-2 prose-headings:font-semibold prose-strong:text-foreground prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_th]:bg-muted/70 max-w-none text-sm leading-6 [&_.ref-link]:cursor-pointer [&_.ref-link]:text-[var(--status-info)] [&_.ref-link_a]:text-[var(--status-info)] [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_td]:border [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:[overflow-wrap:anywhere] [&_td]:break-words [&_th]:border [&_th]:px-3 [&_th]:py-2 [&_th]:text-left"
+            onMouseOver={handleReportHover}
+            onClick={handleReportClick}
+            onMouseOut={() => {
+              setHoveredSource(null);
+              setSourcePos(null);
+            }}
+          >
+            <SafeMarkdown>
+              {preprocessContent(preprocessSourceLine(section.content))}
+            </SafeMarkdown>
           </div>
         )}
         {nested && <div className="mt-4 space-y-4">{nested}</div>}
@@ -389,83 +656,186 @@ export default function CompetitionReportPanel({
   if (!open) return null;
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col overflow-hidden border-l bg-background">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b px-4 py-2.5 shrink-0">
-        <h2 className="text-sm font-semibold truncate">{displayReport?.title ?? "分析报告"}</h2>
-        <button onClick={onClose} className="flex items-center justify-center rounded-md border border-border bg-muted/50 p-1.5 hover:bg-muted hover:border-muted-foreground/30 transition-colors" title="关闭报告面板">
-          <X className="size-3.5" />
-        </button>
-      </div>
+    <div className="border-subtle bg-background flex h-full w-full min-w-0 flex-col overflow-hidden border-l">
       {/* Content */}
-      <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
-        {historyEntries.length > 0 && (
-          <VersionTree entries={historyEntries} activeVersion={viewingHistory?.version ?? null} isViewingLatest={isViewingLatest}
-            onSelect={(v) => onViewHistory(v)} onViewLatest={() => onViewHistory(null)}
-            selectedForDiff={selectedForDiff} onToggleDiff={onToggleDiff} onCompare={onCompare} />
-        )}
-        {diffVersions && (() => {
-          const [vA, vB] = diffVersions;
-          const entryA = historyEntries.find((e) => e.version === vA);
-          const entryB = historyEntries.find((e) => e.version === vB);
-          if (!entryA || !entryB) return null;
-          return (
-            <div className="mb-3 rounded border-2 border-purple-300 bg-purple-50/30 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-semibold text-purple-700">版本对比: v{vA} vs v{vB}</span>
-                <div className="flex gap-2">
-                  <button onClick={() => setDiffViewMode("side-by-side")} className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "side-by-side" ? "bg-purple-500 text-white" : "bg-muted"}`}>逐行对比</button>
-                  <button onClick={() => setDiffViewMode("summary")} className={`rounded px-2 py-0.5 text-[11px] ${diffViewMode === "summary" ? "bg-purple-500 text-white" : "bg-muted"}`}>章节概览</button>
-                  <button onClick={() => { setDiffVersions(null); setSelectedForDiff(new Set()); }} className="text-xs text-muted-foreground hover:text-foreground">关闭</button>
+      <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4">
+        {displayReport?.sections?.length ? (
+          <nav
+            aria-label="报告目录"
+            className="border-subtle bg-background/95 sticky top-0 z-10 mb-4 flex gap-1 overflow-x-auto border-b py-2 backdrop-blur-sm"
+          >
+            {flattenSections(displayReport.sections).map(
+              ({ section, depth }) => (
+                <a
+                  key={section.id}
+                  href={`#${sectionDomId(section)}`}
+                  className="ui-tab shrink-0"
+                  style={{ marginLeft: `${depth * 8}px` }}
+                >
+                  {section.title}
+                </a>
+              ),
+            )}
+          </nav>
+        ) : null}
+        {diffVersions &&
+          (() => {
+            const [vA, vB] = diffVersions;
+            const entryA = historyEntries.find((e) => e.version === vA);
+            const entryB = historyEntries.find((e) => e.version === vB);
+            if (!entryA || !entryB) return null;
+            return (
+              <div className="ui-panel mb-3 border-[var(--status-info)] bg-[var(--status-info-bg)] p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-[var(--status-info)]">
+                    版本对比: v{vA} vs v{vB}
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDiffViewMode("side-by-side")}
+                      className="ui-tab text-[11px]"
+                      data-active={diffViewMode === "side-by-side"}
+                    >
+                      逐行对比
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDiffViewMode("summary")}
+                      className="ui-tab text-[11px]"
+                      data-active={diffViewMode === "summary"}
+                    >
+                      章节概览
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setDiffVersions(null);
+                        setSelectedForDiff(new Set());
+                      }}
+                      className="text-muted-foreground text-xs"
+                    >
+                      关闭
+                    </Button>
+                  </div>
                 </div>
+                <LazyReportDiff
+                  oldEntry={entryA}
+                  newEntry={entryB}
+                  mode={diffViewMode}
+                />
               </div>
-              {diffViewMode === "side-by-side" ? <SideBySideDiff oldEntry={entryA} newEntry={entryB} /> : <VersionDiff oldEntry={entryA} newEntry={entryB} />}
-            </div>
-          );
-        })()}
+            );
+          })()}
         {viewingHistory && (
-          <div className="mb-3 rounded border border-amber-300 bg-amber-50/50 p-2 text-xs text-amber-800">
+          <StatusNotice tone="warning" className="mb-3">
             <div className="flex items-center justify-between">
-              <span>查看历史版本 v{viewingHistory.version}{viewingHistory.parent_version ? ` (← v${viewingHistory.parent_version})` : " (初始)"}</span>
-              <button onClick={() => onViewHistory(null)} className="text-amber-700 underline hover:text-amber-900">返回最新</button>
+              <span>
+                查看历史版本 v{viewingHistory.version}
+                {viewingHistory.parent_version
+                  ? ` (← v${viewingHistory.parent_version})`
+                  : " (初始)"}
+              </span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => onViewHistory(null)}
+              >
+                返回最新
+              </Button>
             </div>
-          </div>
+          </StatusNotice>
         )}
         {dbLoadedThreadId && !viewingHistory && (
-          <div className="mb-3 rounded border border-green-300 bg-green-50/50 p-2 text-xs text-green-800">📁 已保存报告 ({dbLoadedThreadId.slice(0, 12)})</div>
+          <StatusNotice tone="success" className="mb-3">
+            已保存报告（{dbLoadedThreadId.slice(0, 12)}）
+          </StatusNotice>
         )}
         {displayReport && (
           <div className="mb-4 space-y-3">
-            <div className="rounded-xl border bg-gradient-to-br from-card to-muted/20 p-4 shadow-sm">
+            <div className="ui-panel-elevated from-card to-muted/20 bg-gradient-to-br p-4">
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Competition Report</p>
-                  <h1 className="text-lg font-semibold leading-tight text-foreground">{displayReport.title}</h1>
-                  {displayReport.products && displayReport.products.length > 0 && (
-                    <p className="mt-1 text-xs text-muted-foreground">竞品对象：{displayReport.products.join(" / ")}</p>
-                  )}
+                  <p className="text-muted-foreground mb-1 text-[11px] font-medium tracking-wide uppercase">
+                    Competition Report
+                  </p>
+                  <h1 className="text-foreground text-lg leading-tight font-semibold">
+                    {displayReport.title}
+                  </h1>
+                  {displayReport.products &&
+                    displayReport.products.length > 0 && (
+                      <p className="text-muted-foreground mt-1 text-xs">
+                        竞品对象：{displayReport.products.join(" / ")}
+                      </p>
+                    )}
                 </div>
-                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">{displayReport.sections.length} 个章节</span>
+                <span className="bg-primary/10 text-primary rounded-full px-2.5 py-1 text-[11px] font-medium">
+                  {displayReport.sections.length} 个章节
+                </span>
               </div>
               <div className="flex flex-wrap gap-2 text-[11px]">
-                {formatGeneratedAt(displayReport.generated_at) && <span className="rounded border bg-background/70 px-2 py-1 text-muted-foreground">生成时间：{formatGeneratedAt(displayReport.generated_at)}</span>}
-                {formatMetric(displayReport.metrics?.coverage) && <span className="rounded border bg-blue-50 px-2 py-1 font-medium text-blue-700">覆盖率 {formatMetric(displayReport.metrics?.coverage)}</span>}
-                {formatMetric(displayReport.metrics?.cross_validation_rate) && <span className="rounded border bg-green-50 px-2 py-1 font-medium text-green-700">交叉验证 {formatMetric(displayReport.metrics?.cross_validation_rate)}</span>}
-                {formatMetric(displayReport.metrics?.trace_completeness) && <span className="rounded border bg-purple-50 px-2 py-1 font-medium text-purple-700">溯源率 {formatMetric(displayReport.metrics?.trace_completeness)}</span>}
-                {formatMetric(displayReport.metrics?.improvement_ratio) && <span className="rounded border bg-amber-50 px-2 py-1 font-medium text-amber-700">改善率 {formatMetric(displayReport.metrics?.improvement_ratio)}</span>}
+                {formatGeneratedAt(displayReport.generated_at) && (
+                  <span className="bg-background/70 text-muted-foreground rounded border px-2 py-1">
+                    生成时间：{formatGeneratedAt(displayReport.generated_at)}
+                  </span>
+                )}
+                {formatMetric(displayReport.metrics?.coverage) && (
+                  <StatusBadge
+                    tone="info"
+                    label={`覆盖率 ${formatMetric(displayReport.metrics?.coverage)}`}
+                  />
+                )}
+                {formatMetric(displayReport.metrics?.cross_validation_rate) && (
+                  <StatusBadge
+                    tone="success"
+                    label={`交叉验证 ${formatMetric(displayReport.metrics?.cross_validation_rate)}`}
+                  />
+                )}
+                {formatMetric(displayReport.metrics?.trace_completeness) && (
+                  <StatusBadge
+                    tone="info"
+                    label={`溯源率 ${formatMetric(displayReport.metrics?.trace_completeness)}`}
+                  />
+                )}
+                {formatMetric(displayReport.metrics?.improvement_ratio) && (
+                  <StatusBadge
+                    tone="warning"
+                    label={`改善率 ${formatMetric(displayReport.metrics?.improvement_ratio)}`}
+                  />
+                )}
               </div>
             </div>
 
-            <div className="rounded-xl border bg-card/70 p-3">
+            <div className="ui-panel p-3">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-semibold">报告目录</h3>
-                <span className="text-[11px] text-muted-foreground">点击跳转章节</span>
+                <span className="text-muted-foreground text-[11px]">
+                  点击跳转章节
+                </span>
               </div>
               <div className="grid gap-1.5 sm:grid-cols-2">
                 {displayReport.sections.map((section, index) => (
-                  <a key={section.id} href={`#${sectionDomId(section)}`} className="group flex items-center justify-between gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-muted/40">
-                    <span className="min-w-0 truncate"><span className="mr-1 font-mono text-muted-foreground">{index + 1}.</span>{section.title}</span>
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground group-hover:text-foreground">{sectionTypeLabel(section.content_type)}</span>
+                  <a
+                    key={section.id}
+                    href={`#${sectionDomId(section)}`}
+                    className="group hover:border-border hover:bg-surface-hover flex items-center justify-between gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs"
+                  >
+                    <span className="min-w-0 truncate">
+                      <span className="text-muted-foreground mr-1 font-mono">
+                        {index + 1}.
+                      </span>
+                      {section.title}
+                    </span>
+                    <span className="bg-muted text-muted-foreground group-hover:text-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">
+                      {sectionTypeLabel(section.content_type)}
+                    </span>
                   </a>
                 ))}
               </div>
@@ -475,15 +845,40 @@ export default function CompetitionReportPanel({
         <div className="space-y-4">
           {displayReport?.sections.map((s) => renderSection(s))}
         </div>
-        {hoveredSource && sourcePos && <SourceCard source={hoveredSource} position={sourcePos} onClose={() => { setHoveredSource(null); setSourcePos(null); }} />}
+        {hoveredSource && sourcePos && (
+          <SourceCard
+            source={hoveredSource}
+            position={sourcePos}
+            onClose={() => {
+              setHoveredSource(null);
+              setSourcePos(null);
+            }}
+          />
+        )}
         {hitlVisible && status === "approved" && !viewingHistory && (
-          <div className="mt-6 rounded-lg border-2 border-green-400 bg-green-50/30 p-4">
-            <h3 className="font-semibold text-sm text-green-700">✅ 报告已批准发布</h3>
-            <div className="flex gap-2 mt-2">
-              <a href={`/api/competition/report/${threadIdForApi}/export?format=md`} className="inline-flex items-center gap-1 rounded bg-blue-500 px-3 py-1.5 text-xs text-white hover:bg-blue-600" download>📥 导出 MD</a>
-              <a href={`/api/competition/report/${threadIdForApi}/export?format=json`} className="inline-flex items-center gap-1 rounded bg-gray-500 px-3 py-1.5 text-xs text-white hover:bg-gray-600" download>📦 导出 JSON</a>
+          <StatusNotice tone="success" className="mt-6">
+            <h3 className="text-sm font-semibold">报告已批准发布</h3>
+            <div className="mt-2 flex gap-2">
+              <Button asChild size="sm">
+                <a
+                  href={`/api/competition/report/${threadIdForApi}/export?format=md`}
+                  download
+                >
+                  <Download className="size-3.5" />
+                  导出 MD
+                </a>
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <a
+                  href={`/api/competition/report/${threadIdForApi}/export?format=json`}
+                  download
+                >
+                  <FileJson className="size-3.5" />
+                  导出 JSON
+                </a>
+              </Button>
             </div>
-          </div>
+          </StatusNotice>
         )}
       </div>
     </div>

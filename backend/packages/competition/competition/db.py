@@ -820,6 +820,60 @@ def save_user_settings(user_id: str, settings: dict, conn: sqlite3.Connection | 
     return True
 
 
+def save_user_settings_if_current(
+    user_id: str,
+    settings: dict,
+    expected_updated_at: str = "",
+    conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Atomically save settings only when the caller still has the latest token."""
+    import json as _json
+    from datetime import UTC, datetime
+
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT updated_at FROM user_settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        current_token = (row[0] if row and row[0] else "")
+        if current_token != (expected_updated_at or ""):
+            conn.rollback()
+            return {"result": "conflict", "settings": get_user_settings(user_id, conn=conn)}
+
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            """INSERT INTO user_settings (user_id, active_group, default_model, provider_keys, provider_bases, agent_configs, search_toggles, feishu_config, config_groups, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 active_group=excluded.active_group, default_model=excluded.default_model,
+                 provider_keys=excluded.provider_keys, provider_bases=excluded.provider_bases,
+                 agent_configs=excluded.agent_configs, search_toggles=excluded.search_toggles,
+                 feishu_config=excluded.feishu_config, config_groups=excluded.config_groups,
+                 updated_at=excluded.updated_at""",
+            (
+                user_id,
+                settings.get("active_group", "groupA"),
+                settings.get("default_model", ""),
+                _json.dumps(settings.get("provider_keys", {}), ensure_ascii=False),
+                _json.dumps(settings.get("provider_bases", {}), ensure_ascii=False),
+                _json.dumps(settings.get("agent_configs", {}), ensure_ascii=False),
+                _json.dumps(settings.get("search_toggles", {}), ensure_ascii=False),
+                _json.dumps(settings.get("feishu_config", {}), ensure_ascii=False),
+                _json.dumps(settings.get("config_groups", []), ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.commit()
+        return {"result": "saved", "settings": get_user_settings(user_id, conn=conn)}
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def migrate_default_data(target_user_id: str, conn: sqlite3.Connection | None = None) -> int:
     """Assign all 'default' user data to target_user_id. Returns number of rows updated."""
     close_conn = conn is None

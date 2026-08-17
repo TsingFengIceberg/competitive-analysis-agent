@@ -1,13 +1,39 @@
 "use client";
 
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Download,
+  FileDown,
+  FileJson,
+  FileText,
+  GitBranch,
+  Pencil,
+  RefreshCw,
+  Search,
+  Workflow,
+} from "lucide-react";
 import { useState } from "react";
 
-import type { ReportData, ReportHistoryItem } from "@/components/competition/api-client";
+import type {
+  ReportData,
+  ReportHistoryItem,
+} from "@/components/competition/api-client";
+import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/status-badge";
 
 const ACTION_LABELS: Record<string, string> = {
-  rewrite: "重写", reanalyze: "重分析", replan: "重采集",
-  initial: "初始分析", merge: "合并", approve: "已批准",
+  rewrite: "重写",
+  reanalyze: "重分析",
+  replan: "重采集",
+  initial: "初始分析",
+  merge: "合并",
+  approve: "已批准",
 };
 
 // TODO: re-enable version diff badges when metrics are stable across re-executions
@@ -37,7 +63,7 @@ interface Props {
 function metricBar(value: number, color: string) {
   const pct = Math.min(100, Math.max(0, Math.round(value * 100)));
   return (
-    <div className="h-1 w-full rounded-full bg-muted/50 overflow-hidden">
+    <div className="bg-muted/50 h-1 w-full overflow-hidden rounded-full">
       <div
         className={`h-full rounded-full transition-all duration-500 ${color}`}
         style={{ width: `${pct}%` }}
@@ -47,20 +73,27 @@ function metricBar(value: number, color: string) {
 }
 
 function metricColor(value: number): string {
-  if (value >= 0.8) return "bg-green-500";
-  if (value >= 0.5) return "bg-amber-500";
-  return "bg-red-400";
+  if (value >= 0.8) return "bg-[var(--status-success)]";
+  if (value >= 0.5) return "bg-[var(--status-warning)]";
+  return "bg-[var(--status-danger)]";
 }
 
 function diffBadge(current: number, previous: number | null) {
   if (!SHOW_VERSION_DIFF) return null;
   if (previous == null || previous === 0) return null;
   const delta = current - previous;
-  if (Math.abs(delta) < 0.01) return <span className="text-[10px] text-muted-foreground ml-1">→0%</span>;
+  if (Math.abs(delta) < 0.01)
+    return <span className="text-muted-foreground ml-1 text-[10px]">→0%</span>;
   const pct = Math.round(delta * 100);
   const sign = pct > 0 ? "+" : "";
-  const cls = pct > 0 ? "text-green-600" : "text-red-500";
-  return <span className={`text-[10px] font-medium ${cls} ml-1`}>{sign}{pct}%</span>;
+  const cls =
+    pct > 0 ? "text-[var(--status-success)]" : "text-[var(--status-danger)]";
+  return (
+    <span className={`text-[10px] font-medium ${cls} ml-1`}>
+      {sign}
+      {pct}%
+    </span>
+  );
 }
 
 export default function CompetitionReportCard({
@@ -97,100 +130,143 @@ export default function CompetitionReportCard({
   const hasSiblings = siblings.length > 1;
   const actionLabel = thisEntry?.action
     ? (ACTION_LABELS[thisEntry.action] ?? thisEntry.action)
-    : version === 1 ? "初始分析" : `版本 ${version}`;
+    : version === 1
+      ? "初始分析"
+      : `版本 ${version}`;
 
   // ── Diff vs previous sibling ──
   const prevSibling = siblingIndex > 0 ? siblings[siblingIndex - 1] : null;
   const prevMetrics = prevSibling?.report_data?.metrics ?? null;
 
   // ── Section preview titles (first 5) ──
-  const sectionPreviews = rd.sections?.slice(0, 5).map((s) => ({
-    title: s.title,
-    type: s.content_type,
-    snippet: s.content?.replace(/[#*`|]/g, "").trim().slice(0, 60) || "",
-  })) ?? [];
+  const sectionPreviews =
+    rd.sections?.slice(0, 5).map((s) => ({
+      title: s.title,
+      type: s.content_type,
+      snippet:
+        s.content
+          ?.replace(/[#*`|]/g, "")
+          .trim()
+          .slice(0, 60) || "",
+    })) ?? [];
 
   // ── Has meaningful diff? ──
   const hasDiff = prevSibling != null;
 
   return (
-    <div className="rounded-xl border bg-card shadow-sm transition-shadow hover:shadow-md">
+    <div
+      data-report-print-root
+      className="ui-panel-elevated overflow-hidden transition-shadow hover:shadow-md"
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-lg shrink-0">📊</span>
+      <div className="border-subtle flex items-center justify-between border-b px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-lg">
+            <BarChart3 className="size-4" aria-hidden="true" />
+          </span>
           <div className="min-w-0">
             {/* Version badge + navigation */}
-            <div className="flex items-center gap-1 mb-0.5">
-              <span className={`text-[10px] font-medium rounded px-1.5 py-px shrink-0 ${isLatest ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" : "bg-muted text-muted-foreground"}`}>
-                {actionLabel}
-              </span>
+            <div className="mb-0.5 flex items-center gap-1">
+              <StatusBadge
+                tone={isLatest ? "info" : "neutral"}
+                label={actionLabel}
+                className="text-[10px]"
+              />
               {hasSiblings && (
                 <>
-                  <button
+                  <Button
                     onClick={() => {
                       const prev = siblings[siblingIndex - 1];
                       if (prev != null) onNavigateVersion(prev.version);
                     }}
                     disabled={siblingIndex <= 0}
-                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default shrink-0"
+                    variant="ghost"
+                    size="icon-sm"
                   >
                     <ChevronLeft className="size-3" />
-                  </button>
-                  <span className="text-[10px] text-muted-foreground font-mono tabular-nums select-none shrink-0">
+                  </Button>
+                  <span className="text-muted-foreground shrink-0 font-mono text-[10px] tabular-nums select-none">
                     {siblingIndex + 1}/{siblings.length}
                   </span>
-                  <button
+                  <Button
                     onClick={() => {
                       const next = siblings[siblingIndex + 1];
                       if (next != null) onNavigateVersion(next.version);
                     }}
                     disabled={siblingIndex >= siblings.length - 1}
-                    className="rounded p-0.5 hover:bg-muted disabled:opacity-30 disabled:cursor-default shrink-0"
+                    variant="ghost"
+                    size="icon-sm"
                   >
                     <ChevronRight className="size-3" />
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
-            <h4 className="text-sm font-semibold leading-tight truncate">{rd.title}</h4>
-            <p className="text-[11px] text-muted-foreground truncate">
+            <h4 className="truncate text-sm leading-tight font-semibold">
+              {rd.title}
+            </h4>
+            <p className="text-muted-foreground truncate text-[11px]">
               {rd.products?.join(", ")}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+        <div className="ml-2 flex shrink-0 items-center gap-1.5">
           {rd.quality_gate ? (
-            <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline ${rd.quality_gate.status === "blocked" ? "bg-red-100 text-red-700" : rd.quality_gate.status === "warning" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
-              {rd.quality_gate.status === "blocked" ? `阻断 ${rd.quality_gate.blocking_count}` : rd.quality_gate.status === "warning" ? `警告 ${rd.quality_gate.warning_count}` : "通过"}
-            </span>
+            <StatusBadge
+              tone={
+                rd.quality_gate.status === "blocked"
+                  ? "danger"
+                  : rd.quality_gate.status === "warning"
+                    ? "warning"
+                    : "success"
+              }
+              label={
+                rd.quality_gate.status === "blocked"
+                  ? `阻断 ${rd.quality_gate.blocking_count}`
+                  : rd.quality_gate.status === "warning"
+                    ? `警告 ${rd.quality_gate.warning_count}`
+                    : "通过"
+              }
+              className="hidden text-[10px] sm:inline-flex"
+            />
           ) : (
-            <span className="hidden rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">旧版本</span>
+            <StatusBadge
+              tone="neutral"
+              label="旧版本"
+              className="hidden text-[10px] sm:inline-flex"
+            />
           )}
           {SHOW_VERSION_DIFF && hasDiff && (
-            <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 hidden sm:inline">
+            <span className="text-muted-foreground bg-muted/50 hidden rounded px-1.5 py-0.5 text-[10px] sm:inline">
               vs v{prevSibling.version}
             </span>
           )}
-          <button
+          <Button
             onClick={() => onExpand(version)}
-            className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+            variant="secondary"
+            size="sm"
+            className="text-primary"
           >
             研究工作台
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* Metrics — with progress bars */}
       {metrics && (
-        <div className="px-4 py-3 space-y-2">
+        <div className="space-y-2 px-4 py-3">
           {metrics.coverage != null && (
             <div className="w-full sm:w-1/2">
-              <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[10px] text-muted-foreground">覆盖率</span>
-                <span className="text-[11px] font-bold text-blue-600">
-                  {((metrics.coverage) * 100).toFixed(0)}%
-                  {diffBadge(metrics.coverage, prevMetrics?.coverage as number | null)}
+              <div className="mb-0.5 flex items-center justify-between">
+                <span className="text-muted-foreground text-[10px]">
+                  覆盖率
+                </span>
+                <span className="text-[11px] font-bold text-[var(--status-info)]">
+                  {(metrics.coverage * 100).toFixed(0)}%
+                  {diffBadge(
+                    metrics.coverage,
+                    prevMetrics?.coverage as number | null,
+                  )}
                 </span>
               </div>
               {metricBar(metrics.coverage, metricColor(metrics.coverage))}
@@ -198,34 +274,55 @@ export default function CompetitionReportCard({
           )}
           {metrics.cross_validation_rate != null && (
             <div className="w-1/2">
-              <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[10px] text-muted-foreground">交叉验证率</span>
-                <span className="text-[11px] font-bold text-green-600">
-                  {((metrics.cross_validation_rate) * 100).toFixed(0)}%
-                  {diffBadge(metrics.cross_validation_rate, prevMetrics?.cross_validation_rate as number | null)}
+              <div className="mb-0.5 flex items-center justify-between">
+                <span className="text-muted-foreground text-[10px]">
+                  交叉验证率
+                </span>
+                <span className="text-[11px] font-bold text-[var(--status-success)]">
+                  {(metrics.cross_validation_rate * 100).toFixed(0)}%
+                  {diffBadge(
+                    metrics.cross_validation_rate,
+                    prevMetrics?.cross_validation_rate as number | null,
+                  )}
                 </span>
               </div>
-              {metricBar(metrics.cross_validation_rate, metricColor(metrics.cross_validation_rate))}
+              {metricBar(
+                metrics.cross_validation_rate,
+                metricColor(metrics.cross_validation_rate),
+              )}
             </div>
           )}
           {metrics.trace_completeness != null && (
             <div className="w-1/2">
-              <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[10px] text-muted-foreground">溯源率</span>
-                <span className="text-[11px] font-bold text-purple-600">
-                  {((metrics.trace_completeness) * 100).toFixed(0)}%
-                  {diffBadge(metrics.trace_completeness, prevMetrics?.trace_completeness as number | null)}
+              <div className="mb-0.5 flex items-center justify-between">
+                <span className="text-muted-foreground text-[10px]">
+                  溯源率
+                </span>
+                <span className="text-[11px] font-bold text-[var(--status-info)]">
+                  {(metrics.trace_completeness * 100).toFixed(0)}%
+                  {diffBadge(
+                    metrics.trace_completeness,
+                    prevMetrics?.trace_completeness as number | null,
+                  )}
                 </span>
               </div>
-              {metricBar(metrics.trace_completeness, metricColor(metrics.trace_completeness))}
+              {metricBar(
+                metrics.trace_completeness,
+                metricColor(metrics.trace_completeness),
+              )}
             </div>
           )}
-          {metrics.repair_delta != null && (metrics.repair_delta) !== 0 && (
+          {metrics.repair_delta != null && metrics.repair_delta !== 0 && (
             <div className="w-1/2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-muted-foreground">质量修复增量</span>
-                <span className={`text-[11px] font-bold ${(metrics.repair_delta) > 0 ? "text-green-600" : (metrics.repair_delta) < 0 ? "text-red-500" : "text-muted-foreground"}`}>
-                  {(metrics.repair_delta) > 0 ? "+" : ""}{((metrics.repair_delta) * 100).toFixed(0)}%
+                <span className="text-muted-foreground text-[10px]">
+                  质量修复增量
+                </span>
+                <span
+                  className={`text-[11px] font-bold ${metrics.repair_delta > 0 ? "text-[var(--status-success)]" : metrics.repair_delta < 0 ? "text-[var(--status-danger)]" : "text-muted-foreground"}`}
+                >
+                  {metrics.repair_delta > 0 ? "+" : ""}
+                  {(metrics.repair_delta * 100).toFixed(0)}%
                 </span>
               </div>
             </div>
@@ -233,21 +330,36 @@ export default function CompetitionReportCard({
           {rd.sections && (
             <div className="w-1/2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] text-muted-foreground">章节数</span>
-                <span className="text-[11px] font-bold text-amber-600">
-                {rd.sections.length}
-                {SHOW_VERSION_DIFF && prevSibling?.report_data?.sections && (
-                  (() => {
-                    const prevCount = prevSibling.report_data.sections.length;
-                    const delta = rd.sections.length - prevCount;
-                    if (delta === 0) return <span className="text-[10px] text-muted-foreground ml-1">→0</span>;
-                    const sign = delta > 0 ? "+" : "";
-                    const cls = delta > 0 ? "text-green-600" : "text-red-500";
-                    return <span className={`text-[10px] font-medium ${cls} ml-1`}>{sign}{delta}</span>;
-                  })()
-                )}
-              </span>
-            </div>
+                <span className="text-muted-foreground text-[10px]">
+                  章节数
+                </span>
+                <span className="text-[11px] font-bold text-[var(--status-warning)]">
+                  {rd.sections.length}
+                  {SHOW_VERSION_DIFF &&
+                    prevSibling?.report_data?.sections &&
+                    (() => {
+                      const prevCount = prevSibling.report_data.sections.length;
+                      const delta = rd.sections.length - prevCount;
+                      if (delta === 0)
+                        return (
+                          <span className="text-muted-foreground ml-1 text-[10px]">
+                            →0
+                          </span>
+                        );
+                      const sign = delta > 0 ? "+" : "";
+                      const cls =
+                        delta > 0
+                          ? "text-[var(--status-success)]"
+                          : "text-[var(--status-danger)]";
+                      return (
+                        <span className={`text-[10px] font-medium ${cls} ml-1`}>
+                          {sign}
+                          {delta}
+                        </span>
+                      );
+                    })()}
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -255,31 +367,42 @@ export default function CompetitionReportCard({
 
       {/* Structured section preview */}
       {sectionPreviews.length > 0 && (
-        <div className="border-t bg-muted/20">
+        <div className="bg-muted/20 border-t">
           <button
             onClick={() => setExpanded(!expanded)}
-            className="flex items-center justify-between w-full px-4 py-2 text-left hover:bg-muted/30 transition-colors"
+            className="hover:bg-muted/30 flex w-full items-center justify-between px-4 py-2 text-left transition-colors"
           >
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            <span className="text-muted-foreground text-[10px] font-medium tracking-wider uppercase">
               {expanded ? "报告结构" : "报告结构（点击展开）"}
             </span>
-            {expanded ? <ChevronUp className="size-3 text-muted-foreground" /> : <ChevronDown className="size-3 text-muted-foreground" />}
+            {expanded ? (
+              <ChevronUp className="text-muted-foreground size-3" />
+            ) : (
+              <ChevronDown className="text-muted-foreground size-3" />
+            )}
           </button>
-          <div className={`overflow-hidden transition-all duration-200 ${expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}>
-            <div className="px-4 pb-2 space-y-1">
+          <div
+            className={`overflow-hidden transition-all duration-200 ${expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}
+          >
+            <div className="space-y-1 px-4 pb-2">
               {sectionPreviews.map((s, i) => (
                 <div key={i} className="flex items-start gap-2 text-[11px]">
-                  <span className="text-muted-foreground font-mono shrink-0 mt-0.5">{i + 1}.</span>
+                  <span className="text-muted-foreground mt-0.5 shrink-0 font-mono">
+                    {i + 1}.
+                  </span>
                   <div className="min-w-0">
                     <span className="font-medium">{s.title}</span>
                     {s.snippet && (
-                      <span className="text-muted-foreground"> — {s.snippet}</span>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        — {s.snippet}
+                      </span>
                     )}
                   </div>
                 </div>
               ))}
               {rd.sections && rd.sections.length > 5 && (
-                <div className="text-[10px] text-muted-foreground pl-4">
+                <div className="text-muted-foreground pl-4 text-[10px]">
                   + {rd.sections.length - 5} 个章节...
                 </div>
               )}
@@ -289,57 +412,147 @@ export default function CompetitionReportCard({
       )}
 
       {/* Actions — grouped layout */}
-      <div className="border-t bg-muted/10">
+      <div className="border-subtle bg-surface-sunken border-t">
         {/* Primary: HITL actions */}
         {(hitlVisible || isLatest) && (
-          <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
-            {isLatest && hitlVisible && status !== "approved" && status !== "completed" && (
-              <span className="text-[11px] text-muted-foreground">⏳ {hitlSubmitting ? "处理中..." : "审批中..."}</span>
-            )}
+          <div className="flex flex-wrap items-center gap-1.5 px-4 py-2">
+            {isLatest &&
+              hitlVisible &&
+              status !== "approved" &&
+              status !== "completed" && (
+                <StatusBadge
+                  tone="info"
+                  label={hitlSubmitting ? "处理中..." : "审批中..."}
+                  className="text-[11px]"
+                />
+              )}
             {hitlVisible && (
               <>
-                <button onClick={() => onReanalyze("rewrite", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">✏️ 重写</button>
-                <button onClick={() => onReanalyze("reanalyze", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔄 重分析</button>
-                <button onClick={() => onReanalyze("replan", "", version)} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] hover:bg-muted transition-colors">🔍 重采集</button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onReanalyze("rewrite", "", version)}
+                  className="text-[11px]"
+                >
+                  <Pencil className="size-3.5" />
+                  重写
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onReanalyze("reanalyze", "", version)}
+                  className="text-[11px]"
+                >
+                  <RefreshCw className="size-3.5" />
+                  重分析
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onReanalyze("replan", "", version)}
+                  className="text-[11px]"
+                >
+                  <Search className="size-3.5" />
+                  重采集
+                </Button>
               </>
             )}
             <div className="flex-1" />
             {isLatest && hitlVisible && status === "completed" && (
-              <button
+              <Button
+                type="button"
                 onClick={onApprove}
-                className="inline-flex items-center gap-1 rounded bg-green-500 px-2.5 py-1 text-[11px] text-white hover:bg-green-600 transition-colors"
+                variant={
+                  rd.quality_gate?.status === "blocked" ? "outline" : "default"
+                }
+                size="sm"
+                className="text-[11px]"
               >
-                {rd.quality_gate?.status === "blocked" ? "⚠️ 带风险批准" : "✅ 批准发布"}
-              </button>
+                {rd.quality_gate?.status === "blocked" ? (
+                  <AlertTriangle className="size-3.5" />
+                ) : (
+                  <CheckCircle2 className="size-3.5" />
+                )}
+                {rd.quality_gate?.status === "blocked"
+                  ? "带风险批准"
+                  : "批准发布"}
+              </Button>
             )}
           </div>
         )}
 
         {/* Secondary: tools + export */}
-        <div className="flex items-center gap-1.5 px-4 py-1.5 flex-wrap border-t border-border/30">
+        <div className="border-subtle flex flex-wrap items-center gap-1.5 border-t px-4 py-1.5">
           {onViewBranchTree && (
-            <button onClick={onViewBranchTree} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-              🌳 分支树
-            </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onViewBranchTree}
+              className="text-muted-foreground text-[10px]"
+            >
+              <GitBranch className="size-3.5" />
+              分支树
+            </Button>
           )}
           {onViewTrace && (
-            <button onClick={onViewTrace} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-              🔍 流程
-            </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onViewTrace}
+              className="text-muted-foreground text-[10px]"
+            >
+              <Workflow className="size-3.5" />
+              流程
+            </Button>
           )}
           {onEdit && (
-            <button onClick={onEdit} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-              ✏️ 修正
-            </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onEdit}
+              className="text-muted-foreground text-[10px]"
+            >
+              <Pencil className="size-3.5" />
+              修正
+            </Button>
           )}
           <div className="flex-1" />
-          <button onClick={onExportMD} title="导出 Markdown 报告" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📥 MD</button>
-          <button onClick={onExportJSON} title="导出 JSON 原始数据" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors">📦 JSON</button>
-          <button
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onExportMD}
+            title="导出 Markdown 报告"
+            className="text-muted-foreground text-[10px]"
+          >
+            <Download className="size-3.5" />
+            MD
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onExportJSON}
+            title="导出 JSON 原始数据"
+            className="text-muted-foreground text-[10px]"
+          >
+            <FileJson className="size-3.5" />
+            JSON
+          </Button>
+          <Button
+            type="button"
             title="导出到飞书文档"
             onClick={async () => {
               try {
-                const response = await fetch(`/api/competition/report/${threadId}/export-feishu`);
+                const response = await fetch(
+                  `/api/competition/report/${threadId}/export-feishu`,
+                );
                 const data = await response.json().catch(() => ({}));
                 if (response.ok && data.doc_url) {
                   window.open(data.doc_url, "_blank");
@@ -350,20 +563,31 @@ export default function CompetitionReportCard({
                 alert("请求失败");
               }
             }}
-            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-          >📄 飞书</button>
-          <button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground text-[10px]"
+          >
+            <FileText className="size-3.5" />
+            飞书
+          </Button>
+          <Button
+            type="button"
             onClick={() => {
-              const sections = rd.sections?.map((s) =>
-                `<h2>${s.title}</h2>${s.content.replace(/\n/g, "<br>")}<br><br>`
-              ).join("") || "";
-              const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${rd.title}</title><style>body{font-family:sans-serif;max-width:800px;margin:0 auto;padding:20px;font-size:13px;line-height:1.6}h2{color:#333;margin-top:24px}</style></head><body><h1>${rd.title}</h1><p>${rd.products?.join(", ") || ""}</p><hr>${sections}</body></html>`;
-              const w = window.open("", "_blank");
-              if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 500); }
+              const cleanup = () =>
+                document.body.classList.remove("printing-report");
+              document.body.classList.add("printing-report");
+              window.addEventListener("afterprint", cleanup, { once: true });
+              window.print();
+              window.setTimeout(cleanup, 2000);
             }}
             title="打印为 PDF"
-            className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-          >📋 PDF</button>
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground text-[10px]"
+          >
+            <FileDown className="size-3.5" />
+            PDF
+          </Button>
         </div>
       </div>
     </div>

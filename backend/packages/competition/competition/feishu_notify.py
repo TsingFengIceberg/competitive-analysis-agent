@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,7 @@ def _get_token(app_id: str, app_secret: str) -> str | None:
 
 
 def _get_feishu_config() -> dict:
-    """Read feishu toggles from DB config_group only."""
+    """Read Feishu toggles from the active configuration source."""
     from competition.config_mode import is_file_mode
 
     if is_file_mode():
@@ -54,10 +53,36 @@ def _get_feishu_config() -> dict:
     return {}
 
 
+def _get_feishu_config_from_file() -> dict:
+    """Read Feishu notification toggles from the active file-mode group."""
+    try:
+        from pathlib import Path
+
+        import yaml
+
+        for path in (
+            Path("config.yaml"),
+            Path("backend/config.yaml"),
+            Path(__file__).parent.parent.parent.parent.parent / "config.yaml",
+            Path(__file__).parent.parent.parent.parent.parent.parent / "config.yaml",
+        ):
+            if not path.exists():
+                continue
+            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            competition = config.get("competition") or {}
+            active_group = competition.get("active_group") or ""
+            groups = competition.get("groups") or {}
+            group = groups.get(active_group, {}) if active_group and groups else competition
+            return group.get("feishu") or competition.get("feishu") or {}
+    except Exception:
+        logger.exception("Unable to read file-mode Feishu notification config")
+    return {}
+
+
 def _get_feishu_credentials() -> dict:
     """Get feishu credentials from DB. Supports multi-provider format."""
     try:
-        from competition.executor import _get_user_settings, _get_active_config_group
+        from competition.executor import _get_active_config_group, _get_user_settings
         us = _get_user_settings() or {}
     except Exception:
         us = {}

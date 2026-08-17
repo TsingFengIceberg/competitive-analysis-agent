@@ -30,13 +30,17 @@ function SidebarUserFooter() {
     fetch("/api/competition/me")
       .then((r) => r.json())
       .then((d) => {
-        if (d.authenticated) setUserLabel(d.email || d.username || d.user_id || null);
+        if (d.authenticated)
+          setUserLabel(d.email || d.username || d.user_id || null);
       })
       .catch(() => undefined);
   }, []);
 
   const handleLogout = async () => {
-    await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" });
+    await fetch("/api/v1/auth/logout", {
+      method: "POST",
+      credentials: "include",
+    });
     router.push("/auth/login?redirect=/competition/new");
   };
 
@@ -45,7 +49,7 @@ function SidebarUserFooter() {
   if (!isSidebarOpen) {
     return (
       <div className="flex flex-col items-center gap-1 py-2">
-        <div className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
+        <div className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full text-sm font-medium">
           {initials}
         </div>
       </div>
@@ -53,18 +57,36 @@ function SidebarUserFooter() {
   }
 
   return (
-    <div className="px-3 py-2 text-xs space-y-1">
-      {userLabel && <div className="truncate text-muted-foreground" title={userLabel}>👤 {userLabel}</div>}
-      <Link href="/competition/settings" className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
-        <Settings size={12} />
+    <div className="space-y-1 border-t px-3 py-3 text-xs">
+      {userLabel && (
+        <div
+          className="text-muted-foreground mb-2 flex items-center gap-2 truncate"
+          title={userLabel}
+        >
+          <span className="bg-muted text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold">
+            {initials}
+          </span>
+          <span className="truncate">{userLabel}</span>
+        </div>
+      )}
+      <Link
+        href="/competition/settings"
+        className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex min-h-8 items-center gap-2 rounded-md px-2 transition-colors"
+      >
+        <Settings size={14} />
         <span>设置</span>
       </Link>
-      <button onClick={handleLogout} className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
-        <LogOut size={12} />
+      <button
+        onClick={handleLogout}
+        className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex min-h-8 w-full items-center gap-2 rounded-md px-2 transition-colors"
+      >
+        <LogOut size={14} />
         <span>退出</span>
       </button>
-      <div className="font-mono text-[10px] text-muted-foreground/50">
-        build {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") ?? "dev"}
+      <div className="text-muted-foreground/50 px-2 pt-2 font-mono text-[10px]">
+        build{" "}
+        {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") ??
+          "dev"}
       </div>
     </div>
   );
@@ -78,7 +100,11 @@ export function CompetitionSidebar({
   const pathname = usePathname();
 
   return (
-    <Sidebar variant="sidebar" collapsible={reportPanelExpanded ? "offcanvas" : "icon"} {...props}>
+    <Sidebar
+      variant="sidebar"
+      collapsible={reportPanelExpanded ? "offcanvas" : "icon"}
+      {...props}
+    >
       <SidebarHeader className="py-0">
         <CompetitionHeader />
         <SidebarMenu>

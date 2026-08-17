@@ -66,14 +66,31 @@ BACKEND_PID=$!
 
 (
     cd "$REPO_ROOT/frontend"
+    if command -v pnpm >/dev/null 2>&1; then
+        if [[ "$MODE" == "watch" ]]; then
+            exec pnpm dev --hostname 0.0.0.0 --port "$FRONTEND_PORT"
+        fi
+        if [[ ! -f .next/BUILD_ID ]]; then
+            echo "Frontend build missing. Run 'make build' before 'make start'." >&2
+            exit 1
+        fi
+        exec pnpm start --hostname 0.0.0.0 --port "$FRONTEND_PORT"
+    fi
+
+    NEXT_BIN="$REPO_ROOT/frontend/node_modules/.bin/next"
+    if [[ ! -x "$NEXT_BIN" ]]; then
+        echo "pnpm is unavailable and the installed Next.js binary was not found. Run 'make install' first." >&2
+        exit 1
+    fi
+    echo "pnpm is unavailable; using the installed Next.js binary."
     if [[ "$MODE" == "watch" ]]; then
-        exec pnpm dev --hostname 0.0.0.0 --port "$FRONTEND_PORT"
+        exec "$NEXT_BIN" dev --turbo --hostname 0.0.0.0 --port "$FRONTEND_PORT"
     fi
     if [[ ! -f .next/BUILD_ID ]]; then
         echo "Frontend build missing. Run 'make build' before 'make start'." >&2
         exit 1
     fi
-    exec pnpm start --hostname 0.0.0.0 --port "$FRONTEND_PORT"
+    exec "$NEXT_BIN" start --hostname 0.0.0.0 --port "$FRONTEND_PORT"
 ) &
 FRONTEND_PID=$!
 

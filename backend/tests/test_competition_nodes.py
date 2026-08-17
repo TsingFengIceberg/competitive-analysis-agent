@@ -1050,7 +1050,9 @@ class TestErrorHandlerNode:
         assert len(issues) >= 1  # existing + new
 
     def test_empty_error(self):
-        error_handler_node({"error": "", "collected_data": []})
+        result = error_handler_node({"error": "", "collected_data": []})
+        assert result["error"] == "FATAL: 未采集到可用于分析的数据"
+        assert "未采集到可用于分析的数据" in result["report_data"]["sections"][0]["content"]
 # Rework intent routing (§5.7 / R16)
 # ═══════════════════════════════════════════════════════════════
 

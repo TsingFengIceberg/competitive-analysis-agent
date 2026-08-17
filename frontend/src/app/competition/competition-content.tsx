@@ -18,5 +18,9 @@ export async function CompetitionContent({
     cookieStore.get("sidebar_state")?.value,
   );
 
-  return <CompetitionShell defaultOpen={initialSidebarOpen}>{children}</CompetitionShell>;
+  return (
+    <CompetitionShell defaultOpen={initialSidebarOpen}>
+      {children}
+    </CompetitionShell>
+  );
 }

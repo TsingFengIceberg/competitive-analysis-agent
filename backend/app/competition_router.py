@@ -89,6 +89,16 @@ class ConfirmAnalysisRequest(BaseModel):
     brief: dict
 
 
+class SettingsUpdateRequest(BaseModel):
+    settings: dict
+    expected_updated_at: str = ""
+
+
+class SettingsConnectionRequest(BaseModel):
+    kind: str
+    name: str = Field(..., min_length=1, max_length=120)
+
+
 class StreamEvent(BaseModel):
     """Single SSE event payload."""
 
@@ -2036,15 +2046,35 @@ async def get_settings(fastapi_request: Request):
 
 
 @router.put("/settings")
-async def save_settings(body: dict, fastapi_request: Request):
+async def save_settings(body: SettingsUpdateRequest | dict, fastapi_request: Request):
     """Save current user's settings."""
-    from competition.db import save_user_settings
+    from competition.db import save_user_settings_if_current
     user_id = _get_user_id(fastapi_request)
     if user_id == "default":
         raise HTTPException(status_code=401, detail="Login required to save settings")
-    settings = body.get("settings", body)
-    success = save_user_settings(user_id, settings)
-    return {"ok": success, "user_id": user_id}
+    payload = body if isinstance(body, dict) else body.model_dump()
+    settings = payload.get("settings", payload)
+    expected = str(payload.get("expected_updated_at", ""))
+    result = save_user_settings_if_current(user_id, settings, expected)
+    if result["result"] == "conflict":
+        raise HTTPException(status_code=409, detail={"code": "settings_conflict", "message": "设置已在其他窗口更新。", "settings": result["settings"]})
+    return {"ok": True, "user_id": user_id, "settings": result["settings"]}
+
+
+@router.post("/settings/test-connection")
+async def test_settings_connection(body: SettingsConnectionRequest, fastapi_request: Request):
+    """Run one explicit bounded check against a provider already saved by this user."""
+    from competition.db import get_user_settings
+    from competition.settings_connection import ConnectionCheckError, run_connection_check
+
+    user_id = _get_user_id(fastapi_request)
+    if user_id == "default":
+        raise HTTPException(status_code=401, detail="Login required to test settings")
+    try:
+        return await asyncio.to_thread(run_connection_check, body.kind, body.name, get_user_settings(user_id))
+    except ConnectionCheckError as exc:
+        status = 504 if exc.code == "timeout" else 422 if exc.code == "missing_config" else 400
+        raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message}) from None
 
 
 @router.post("/settings/migrate")
@@ -2628,6 +2658,31 @@ def _run_graph_sync(thread_id: str) -> None:
                     flags.append(f"error={update['error'][:50]}")
                 logger.info("Analysis %s event#%d: %s", thread_id[:12], event_num, " → ".join(flags) if flags else "init")
 
+        state = _store[thread_id]["state"]
+        terminal_error = str(state.get("error") or "").strip()
+        if terminal_error:
+            failure_message = terminal_error.removeprefix("FATAL:").strip() or "分析未生成有效结果"
+            _add_token_entry(thread_id, "初始分析")
+            _store[thread_id]["status"] = "failed"
+
+            from competition.db import upsert_analysis
+            rd = state.get("report_data")
+            upsert_analysis(
+                thread_id=thread_id,
+                status="failed",
+                current_node="",
+                progress=f"失败: {failure_message[:100]}",
+                report_data=rd.model_dump() if hasattr(rd, "model_dump") else rd,
+                metrics=(rd.get("metrics") if isinstance(rd, dict) else None),
+                token_usage=_store[thread_id].get("token_usage", []),
+            )
+            _emit_event(thread_id, "error", {"error": failure_message[:200], "status": "failed"})
+            clear_stream_callback()
+            clear_cancel_checker()
+            clear_progress_callback()
+            logger.error("Analysis %s failed at graph termination: %s", thread_id, failure_message)
+            return
+
         # Emit completion
         _emit_event(thread_id, "end", {"status": "completed"})
         clear_stream_callback()
@@ -2639,7 +2694,6 @@ def _run_graph_sync(thread_id: str) -> None:
 
         # Persist completion to DB (§18)
         from competition.db import upsert_analysis
-        state = _store[thread_id]["state"]
         rd = state.get("report_data")
         upsert_analysis(
             thread_id=thread_id, status="completed",

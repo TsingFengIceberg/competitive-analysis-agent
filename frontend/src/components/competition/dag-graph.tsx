@@ -18,7 +18,10 @@ import type { DagState } from "./api-client";
 
 // ── Status Colors ──
 
-const STATUS_STYLES: Record<string, { bg: string; border: string; text: string }> = {
+const STATUS_STYLES: Record<
+  string,
+  { bg: string; border: string; text: string }
+> = {
   waiting: { bg: "#F5F5F5", border: "#9E9E9E", text: "#757575" },
   active: { bg: "#E8F5E9", border: "#4CAF50", text: "#2E7D32" },
   done: { bg: "#E3F2FD", border: "#2196F3", text: "#1565C0" },
@@ -28,18 +31,26 @@ const STATUS_STYLES: Record<string, { bg: string; border: string; text: string }
 
 // ── Edge color/type config ──
 
-const EDGE_STYLES: Record<string, { stroke: string; dash: string; label: string }> = {
-  main:          { stroke: "#2196F3", dash: "",   label: "" },
-  feedback:      { stroke: "#FF9800", dash: "8 4", label: "打回重做" },
-  hitl_replan:   { stroke: "#9C27B0", dash: "6 4", label: "重新采集" },
-  hitl_rewrite:  { stroke: "#9C27B0", dash: "6 4", label: "重新生成" },
-  hitl_reanalyze:{ stroke: "#9C27B0", dash: "6 4", label: "重新分析" },
+const EDGE_STYLES: Record<
+  string,
+  { stroke: string; dash: string; label: string }
+> = {
+  main: { stroke: "#2196F3", dash: "", label: "" },
+  feedback: { stroke: "#FF9800", dash: "8 4", label: "打回重做" },
+  hitl_replan: { stroke: "#9C27B0", dash: "6 4", label: "重新采集" },
+  hitl_rewrite: { stroke: "#9C27B0", dash: "6 4", label: "重新生成" },
+  hitl_reanalyze: { stroke: "#9C27B0", dash: "6 4", label: "重新分析" },
 };
 
 // ── Main pipeline order (left → right) ──
 
 const PIPELINE_ORDER = [
-  "orchestrator", "collector", "analyst", "reviewer", "writer", "hitl_gate",
+  "orchestrator",
+  "collector",
+  "analyst",
+  "reviewer",
+  "writer",
+  "hitl_gate",
 ];
 
 const NODE_W = 170;
@@ -47,7 +58,9 @@ const NODE_H = 64;
 const H_GAP = 40;
 const V_GAP = 80;
 
-function layoutNodes(dagNodes: DagState["nodes"]): Record<string, { x: number; y: number }> {
+function layoutNodes(
+  dagNodes: DagState["nodes"],
+): Record<string, { x: number; y: number }> {
   const mainIds = new Set(PIPELINE_ORDER);
   const mainNodes = dagNodes.filter((n) => mainIds.has(n.id));
   const auxNodes = dagNodes.filter((n) => !mainIds.has(n.id));
@@ -79,12 +92,42 @@ function layoutNodes(dagNodes: DagState["nodes"]): Record<string, { x: number; y
 function CompetitionNode({ data }: { data: Record<string, unknown> }) {
   return (
     <div className="relative">
-      <Handle type="target" position={Position.Left} id="target" style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Right} id="source" style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Bottom} id="bottom-out" style={{ opacity: 0 }} />
-      <Handle type="target" position={Position.Bottom} id="bottom-in" style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Top} id="top-out" style={{ opacity: 0 }} />
-      <Handle type="target" position={Position.Top} id="top-in" style={{ opacity: 0 }} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="target"
+        style={{ opacity: 0 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="source"
+        style={{ opacity: 0 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom-out"
+        style={{ opacity: 0 }}
+      />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="bottom-in"
+        style={{ opacity: 0 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="top-out"
+        style={{ opacity: 0 }}
+      />
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="top-in"
+        style={{ opacity: 0 }}
+      />
       {data.label as React.ReactNode}
     </div>
   );
@@ -112,9 +155,11 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
       const isDeep = dn.id.startsWith("deep_") || dn.id === "feishu_delivery";
       const sa = dn.self_assessment;
       const saDotColor =
-        sa?.tier === "green" ? "#4CAF50"
-        : sa?.tier === "yellow" ? "#FF9800"
-        : "#F44336";
+        sa?.tier === "green"
+          ? "#4CAF50"
+          : sa?.tier === "yellow"
+            ? "#FF9800"
+            : "#F44336";
 
       return {
         id: dn.id,
@@ -123,7 +168,7 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
         data: {
           label: (
             <div
-              className="flex flex-col items-center justify-center rounded-xl border-2 px-2 py-1.5 text-xs cursor-pointer select-none"
+              className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 px-2 py-1.5 text-xs select-none"
               style={{
                 backgroundColor: style.bg,
                 borderColor: style.border,
@@ -140,11 +185,11 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
               }}
               onClick={() => onNodeClick?.(dn.id)}
             >
-              <span className="font-semibold text-[11px]">
+              <span className="text-[11px] font-semibold">
                 {icon} {dn.label}
               </span>
               {dn.annotation && (
-                <span className="mt-0.5 text-[10px] opacity-75 leading-tight text-center">
+                <span className="mt-0.5 text-center text-[10px] leading-tight opacity-75">
                   {dn.annotation}
                 </span>
               )}
@@ -196,7 +241,9 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
           labelBgStyle: { fill: "#FFFFFF", fillOpacity: 0.85 },
           labelBgPadding: [6, 3] as [number, number],
           labelBgBorderRadius: 4,
-          pathOptions: isFeedback ? { curvature: 0.4, borderRadius: 16 } : { borderRadius: 8 },
+          pathOptions: isFeedback
+            ? { curvature: 0.4, borderRadius: 16 }
+            : { borderRadius: 8 },
         };
       });
 
@@ -205,7 +252,7 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
 
   if (!dagState) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
         Submit a query to see the DAG graph
       </div>
     );

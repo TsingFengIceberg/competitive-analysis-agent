@@ -1,18 +1,21 @@
 "use client";
 
 import { useState, useRef } from "react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  GitCompare,
+  GitMerge,
+  Pencil,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 
 import type { ReportHistoryItem } from "@/components/competition/api-client";
-
-// ── Version Tree Component ──
-
-interface TreeNode {
-  entry: ReportHistoryItem;
-  children: TreeNode[];
-}
-
-
-// ── Version Tree Component ──
+import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/ui/status-badge";
 
 interface TreeNode {
   entry: ReportHistoryItem;
@@ -40,9 +43,14 @@ function buildTree(entries: ReportHistoryItem[]): TreeNode[] {
   return walk(null);
 }
 
-const ACTION_LABELS: Record<string, string> = {
-  rewrite: "✏️重写", reanalyze: "🔄重分析", replan: "🔍重采集",
-  initial: "📋初始", merge: "🔀合并", approve: "✅批准",
+const DEFAULT_ACTION = { label: "初始", icon: ClipboardList };
+const ACTION_CONFIG: Record<string, { label: string; icon: typeof Pencil }> = {
+  rewrite: { label: "重写", icon: Pencil },
+  reanalyze: { label: "重分析", icon: RefreshCw },
+  replan: { label: "重采集", icon: Search },
+  initial: DEFAULT_ACTION,
+  merge: { label: "合并", icon: GitMerge },
+  approve: { label: "批准", icon: Check },
 };
 
 function VersionTree({
@@ -66,8 +74,13 @@ function VersionTree({
 }) {
   const tree = buildTree(entries);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
-  const [hoveredEntry, setHoveredEntry] = useState<ReportHistoryItem | null>(null);
-  const [popupPos, setPopupPos] = useState<{ top: number; left: number } | null>(null);
+  const [hoveredEntry, setHoveredEntry] = useState<ReportHistoryItem | null>(
+    null,
+  );
+  const [popupPos, setPopupPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function handleMouseEnter(e: React.MouseEvent, entry: ReportHistoryItem) {
@@ -90,10 +103,16 @@ function VersionTree({
     }, 150);
   }
 
-  function renderNode(node: TreeNode, depth: number, ancestors: boolean[]): React.ReactNode {
+  function renderNode(
+    node: TreeNode,
+    depth: number,
+    ancestors: boolean[],
+  ): React.ReactNode {
     const { entry } = node;
     const isActive = activeVersion === entry.version;
-    const actionIcon = entry.action ? (ACTION_LABELS[entry.action] ?? "") : (entry.hitl_decision?.action ? (ACTION_LABELS[entry.hitl_decision.action] ?? "") : "");
+    const action = entry.action ?? entry.hitl_decision?.action ?? "initial";
+    const actionConfig = ACTION_CONFIG[action] ?? DEFAULT_ACTION;
+    const ActionIcon = actionConfig.icon;
     const comment = entry.hitl_decision?.comment?.slice(0, 25) ?? "";
     const isRoot = !entry.parent_version;
     const isApproved = entry.is_approved === true;
@@ -112,24 +131,40 @@ function VersionTree({
     return (
       <div key={entry.version} className="leading-relaxed">
         <div className="flex items-center gap-1 font-mono text-xs">
-          <span className="select-none text-muted-foreground whitespace-pre shrink-0">
-            {depth > 0 ? prefix + connector + " " : (isRoot ? "○ " : "● ")}
+          <span className="text-muted-foreground shrink-0 whitespace-pre select-none">
+            {depth > 0 ? prefix + connector + " " : isRoot ? "○ " : "● "}
           </span>
           {canCollapse && (
-            <button
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
               onClick={() => {
                 const next = new Set(collapsed);
                 if (isCollapsed) next.delete(entry.version);
                 else next.add(entry.version);
                 setCollapsed(next);
               }}
-              className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
+              className="text-muted-foreground shrink-0"
               title={isCollapsed ? "展开子分支" : "折叠子分支"}
             >
-              {isCollapsed ? "▶" : "▼"}
-            </button>
+              {isCollapsed ? (
+                <ChevronRight aria-hidden="true" />
+              ) : (
+                <ChevronDown aria-hidden="true" />
+              )}
+            </Button>
           )}
-          <button
+          <Button
+            type="button"
+            variant={
+              isActive
+                ? "default"
+                : selectedForDiff.has(entry.version)
+                  ? "outline"
+                  : "ghost"
+            }
+            size="sm"
             onClick={(e) => {
               if (e.ctrlKey || e.metaKey) {
                 onToggleDiff(entry.version);
@@ -139,19 +174,30 @@ function VersionTree({
             }}
             onMouseEnter={(e) => handleMouseEnter(e, entry)}
             onMouseLeave={handleMouseLeave}
-            className={`shrink-0 rounded px-1 py-px ${isActive ? "bg-blue-500 text-white" : selectedForDiff.has(entry.version) ? "bg-purple-500/20 ring-1 ring-purple-400 text-purple-700" : "text-muted-foreground hover:bg-muted"}`}
+            className={`h-7 shrink-0 px-2 text-xs ${selectedForDiff.has(entry.version) && !isActive ? "border-[var(--status-info)] text-[var(--status-info)]" : "text-muted-foreground"}`}
           >
-            {actionIcon || "📋初始"} v{entry.version}
-            {isApproved && <span className="text-green-500 shrink-0">✓</span>}
-          </button>
+            <ActionIcon aria-hidden="true" />
+            <span>
+              {actionConfig.label} v{entry.version}
+            </span>
+            {isApproved && (
+              <Check
+                className="size-3.5 text-[var(--status-success)]"
+                aria-label="已批准"
+              />
+            )}
+          </Button>
           {comment && (
-            <span className="truncate text-muted-foreground/70" title={entry.hitl_decision?.comment}>
+            <span
+              className="text-muted-foreground/70 truncate"
+              title={entry.hitl_decision?.comment}
+            >
               {comment}
             </span>
           )}
         </div>
         {isCollapsed ? (
-          <div className="ml-8 text-[10px] text-muted-foreground/50">
+          <div className="text-muted-foreground/50 ml-8 text-[10px]">
             ··· {node.children.length} 个子分支已折叠
           </div>
         ) : (
@@ -165,45 +211,57 @@ function VersionTree({
   }
 
   return (
-    <div className="mb-3 rounded border border-muted p-2">
+    <div className="border-muted mb-3 rounded border p-2">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">版本树</span>
-        <span className="text-[10px] text-muted-foreground/50">Ctrl+点击 选2个版本对比</span>
-        <button
+        <span className="text-muted-foreground text-xs font-medium">
+          版本树
+        </span>
+        <span className="text-muted-foreground/50 text-[10px]">
+          Ctrl+点击 选2个版本对比
+        </span>
+        <Button
+          type="button"
+          variant={isViewingLatest ? "default" : "outline"}
+          size="sm"
           onClick={onViewLatest}
-          className={`rounded px-2 py-0.5 text-xs ${isViewingLatest ? "bg-blue-500 text-white" : "bg-muted hover:bg-muted/80"}`}
+          className="h-7 text-xs"
         >
           最新
-        </button>
+        </Button>
       </div>
       <div className="space-y-0.5">
         {tree.map((root, i) => {
-          const ancestors: boolean[] = tree.length > 1 ? [i < tree.length - 1] : [];
+          const ancestors: boolean[] =
+            tree.length > 1 ? [i < tree.length - 1] : [];
           return renderNode(root, 0, ancestors);
         })}
       </div>
 
       {/* Compare button */}
       {selectedForDiff.size === 2 && (
-        <div className="mt-2 border-t border-muted pt-2">
-          <button
+        <div className="border-muted mt-2 border-t pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => {
               const sorted = [...selectedForDiff].sort((x, y) => x - y);
               const a = sorted[0]!;
               const b = sorted[1]!;
               onCompare(a, b);
             }}
-            className="w-full rounded bg-purple-100 px-2 py-1 text-xs font-medium text-purple-700 hover:bg-purple-200"
+            className="w-full text-xs"
           >
-            对比 v{[...selectedForDiff].sort((x, y) => x - y)[0]} vs v{[...selectedForDiff].sort((x, y) => x - y)[1]}
-          </button>
+            <GitCompare aria-hidden="true" />
+            {`对比 v${[...selectedForDiff].sort((x, y) => x - y)[0]} vs v${[...selectedForDiff].sort((x, y) => x - y)[1]}`}
+          </Button>
         </div>
       )}
 
       {/* Hover preview popup */}
       {hoveredEntry && popupPos && (
         <div
-          className="fixed z-50 w-72 rounded-lg border border-border bg-card p-3 shadow-lg"
+          className="border-border bg-card fixed z-50 w-72 rounded-lg border p-3 shadow-lg"
           style={{ top: popupPos.top, left: popupPos.left }}
           onMouseEnter={() => {
             if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -223,23 +281,28 @@ function VersionTree({
 function _renderPreviewCard(entry: ReportHistoryItem) {
   const rd = entry.report_data;
   const isApproved = entry.is_approved === true;
-  const actionIcon = entry.action
-    ? ACTION_LABELS[entry.action] ?? ""
-    : entry.hitl_decision?.action
-      ? ACTION_LABELS[entry.hitl_decision.action] ?? ""
-      : "";
+  const action = entry.action ?? entry.hitl_decision?.action ?? "initial";
+  const actionConfig = ACTION_CONFIG[action] ?? DEFAULT_ACTION;
+  const ActionIcon = actionConfig.icon;
   const ts = entry.created_at ?? entry.timestamp ?? "";
 
   return (
     <div className="space-y-2 text-xs">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border pb-1.5">
-        <span className="font-semibold text-sm">
-          {actionIcon || "📋"} v{entry.version}
-          {isApproved && <span className="ml-1 text-green-500">✓ 已批准</span>}
+      <div className="border-border flex items-center justify-between border-b pb-1.5">
+        <span className="text-sm font-semibold">
+          <span className="inline-flex items-center gap-1">
+            <ActionIcon className="size-3.5" aria-hidden="true" />
+            {actionConfig.label} v{entry.version}
+          </span>
+          {isApproved && (
+            <StatusBadge tone="success" label="已批准" className="ml-1" />
+          )}
         </span>
         {entry.parent_version != null && (
-          <span className="text-muted-foreground">← v{entry.parent_version}</span>
+          <span className="text-muted-foreground">
+            ← v{entry.parent_version}
+          </span>
         )}
       </div>
 
@@ -247,29 +310,54 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
       {rd ? (
         <>
           <div>
-            <span className="font-medium text-foreground">{rd.title}</span>
+            <span className="text-foreground font-medium">{rd.title}</span>
           </div>
           {rd.products?.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {rd.products.map((p) => (
-                <span key={p} className="rounded bg-muted px-1.5 py-px text-[11px]">{p}</span>
+                <span
+                  key={p}
+                  className="bg-muted rounded px-1.5 py-px text-[11px]"
+                >
+                  {p}
+                </span>
               ))}
             </div>
           )}
           {/* Key metrics */}
           {rd.metrics && Object.keys(rd.metrics).length > 0 && (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 rounded bg-muted/50 p-1.5 text-[11px]">
+            <div className="bg-muted/50 grid grid-cols-2 gap-x-3 gap-y-0.5 rounded p-1.5 text-[11px]">
               {rd.metrics.coverage != null && (
-                <div>覆盖率 <span className="font-mono">{(rd.metrics.coverage * 100).toFixed(0)}%</span></div>
+                <div>
+                  覆盖率{" "}
+                  <span className="font-mono">
+                    {(rd.metrics.coverage * 100).toFixed(0)}%
+                  </span>
+                </div>
               )}
               {rd.metrics.cross_validation_rate != null && (
-                <div>交叉验证 <span className="font-mono">{(rd.metrics.cross_validation_rate * 100).toFixed(0)}%</span></div>
+                <div>
+                  交叉验证{" "}
+                  <span className="font-mono">
+                    {(rd.metrics.cross_validation_rate * 100).toFixed(0)}%
+                  </span>
+                </div>
               )}
               {rd.metrics.trace_completeness != null && (
-                <div>溯源 <span className="font-mono">{(rd.metrics.trace_completeness * 100).toFixed(0)}%</span></div>
+                <div>
+                  溯源{" "}
+                  <span className="font-mono">
+                    {(rd.metrics.trace_completeness * 100).toFixed(0)}%
+                  </span>
+                </div>
               )}
               {rd.metrics.human_correction_rate != null && (
-                <div>人工修正 <span className="font-mono">{(rd.metrics.human_correction_rate * 100).toFixed(0)}%</span></div>
+                <div>
+                  人工修正{" "}
+                  <span className="font-mono">
+                    {(rd.metrics.human_correction_rate * 100).toFixed(0)}%
+                  </span>
+                </div>
               )}
             </div>
           )}
@@ -280,13 +368,14 @@ function _renderPreviewCard(entry: ReportHistoryItem) {
         </>
       ) : (
         <div className="text-muted-foreground italic">
-          {entry.hitl_decision?.comment?.slice(0, 60) ?? "无报告数据" + (entry.action ? ` (${entry.action})` : "")}
+          {entry.hitl_decision?.comment?.slice(0, 60) ??
+            "无报告数据" + (entry.action ? ` (${entry.action})` : "")}
         </div>
       )}
 
       {/* Timestamp */}
       {ts && (
-        <div className="border-t border-border pt-1.5 text-[11px] text-muted-foreground/70">
+        <div className="border-border text-muted-foreground/70 border-t pt-1.5 text-[11px]">
           {new Date(ts).toLocaleString("zh-CN")}
         </div>
       )}

@@ -4,6 +4,10 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { StatusNotice } from "@/components/ui/status-badge";
+
 function CompetitionLoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -61,30 +65,38 @@ function CompetitionLoginForm() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <div className="w-full max-w-sm space-y-6">
+    <div className="bg-background flex min-h-screen items-center justify-center px-4 py-8">
+      <div className="ui-panel-elevated w-full max-w-md space-y-6 p-6 sm:p-8">
         {/* Logo */}
-        <div className="text-center space-y-2">
-          <img src="/logo.png" alt="CI-Agent" className="mx-auto size-12 rounded-full" />
-          <h1 className="text-xl font-serif font-bold">CI-Agent</h1>
-          <p className="text-sm text-muted-foreground">竞品分析 Agent 协作系统</p>
+        <div className="space-y-2 text-center">
+          <img
+            src="/logo.png"
+            alt="CI-Agent"
+            className="mx-auto size-12 rounded-full"
+          />
+          <h1 className="text-xl font-semibold tracking-tight">CI-Agent</h1>
+          <p className="text-muted-foreground text-sm">
+            竞品分析 Agent 协作系统
+          </p>
         </div>
 
         {/* Mode tabs */}
-        <div className="flex rounded-lg bg-muted p-1">
+        <div className="bg-muted/70 flex rounded-lg p-1">
           <button
-            onClick={() => { setMode("login"); setError(""); }}
-            className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-              mode === "login" ? "bg-background shadow-sm" : "text-muted-foreground"
-            }`}
+            onClick={() => {
+              setMode("login");
+              setError("");
+            }}
+            className={`ui-tab flex-1 ${mode === "login" ? "bg-background text-foreground shadow-sm" : ""}`}
           >
             登录
           </button>
           <button
-            onClick={() => { setMode("register"); setError(""); }}
-            className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-              mode === "register" ? "bg-background shadow-sm" : "text-muted-foreground"
-            }`}
+            onClick={() => {
+              setMode("register");
+              setError("");
+            }}
+            className={`ui-tab flex-1 ${mode === "register" ? "bg-background text-foreground shadow-sm" : ""}`}
           >
             注册
           </button>
@@ -93,48 +105,47 @@ function CompetitionLoginForm() {
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <label htmlFor="email" className="text-sm font-medium">邮箱</label>
-            <input
+            <label htmlFor="email" className="ui-field-label">
+              邮箱
+            </label>
+            <Input
               id="email"
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+              className="bg-background"
               placeholder="your@email.com"
             />
           </div>
           <div className="space-y-2">
-            <label htmlFor="password" className="text-sm font-medium">密码</label>
-            <input
+            <label htmlFor="password" className="ui-field-label">
+              密码
+            </label>
+            <Input
               id="password"
               type="password"
               required
               minLength={4}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+              className="bg-background"
               placeholder="至少 4 位"
             />
           </div>
 
-          {error && (
-            <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-            </div>
-          )}
+          {error && <StatusNotice tone="danger">{error}</StatusNotice>}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
+          <Button type="submit" disabled={loading} className="h-10 w-full">
             {loading ? "请稍候..." : mode === "login" ? "登录" : "注册"}
-          </button>
+          </Button>
         </form>
 
-        <p className="text-center text-xs text-muted-foreground">
-          <Link href="/competition/new" className="hover:text-foreground transition-colors">
+        <p className="text-muted-foreground text-center text-xs">
+          <Link
+            href="/competition/new"
+            className="hover:text-foreground transition-colors"
+          >
             跳过登录，以访客身份使用
           </Link>
         </p>
