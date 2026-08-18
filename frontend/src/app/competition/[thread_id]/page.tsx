@@ -19,6 +19,7 @@ import type {
   ReportHistoryItem,
   TokenEntry,
 } from "@/components/competition/api-client";
+import type { WorkbenchTab } from "@/components/competition/research-workbench";
 import { useCompetitionAPI } from "@/components/competition/api-client";
 import CompetitionChatArea from "@/components/competition/competition-chat-area";
 import CompetitionQueryInput from "@/components/competition/competition-query-input";
@@ -115,6 +116,30 @@ function resolvePhaseInfo(phaseKey: string): { label: string; icon: string } {
   return PHASE_INFO[phaseKey] ?? { label: phaseKey, icon: "settings" };
 }
 
+function inferLiveReportVersion(
+  historyEntries: ReportHistoryItem[],
+  reportData: ReportData | null,
+): number | null {
+  if (!reportData) return null;
+  const maxHistoryVersion = historyEntries.length
+    ? Math.max(...historyEntries.map((entry) => entry.version))
+    : 0;
+  if (maxHistoryVersion === 0) return 1;
+
+  const latestHistoryEntry = historyEntries.find(
+    (entry) => entry.version === maxHistoryVersion,
+  );
+  const storedLatestReport = latestHistoryEntry?.report_data;
+  const sameLatestReport =
+    storedLatestReport != null &&
+    storedLatestReport.generated_at === reportData.generated_at &&
+    storedLatestReport.title === reportData.title;
+
+  return storedLatestReport == null || sameLatestReport
+    ? maxHistoryVersion
+    : maxHistoryVersion + 1;
+}
+
 // Phase execution order — used to eagerly create the next phase bubble on node_end
 const PHASE_ORDER = [
   "resolving",
@@ -183,6 +208,7 @@ export default function CompetitionPage() {
       setDbLoadedThreadId(null);
       setViewingHistory(null);
       setReportPanelOpen(false);
+      setWorkbenchInitialTab("report");
       setReportPanelExpanded(false);
       if (previousSidebarOpenRef.current !== null) {
         setSidebarOpen(previousSidebarOpenRef.current);
@@ -480,6 +506,8 @@ export default function CompetitionPage() {
     "side-by-side",
   );
   const [reportPanelOpen, setReportPanelOpen] = useState(false);
+  const [workbenchInitialTab, setWorkbenchInitialTab] =
+    useState<WorkbenchTab>("report");
   const [editorOpen, setEditorOpen] = useState(false);
   const [userMessages, setUserMessages] = useState<
     { text: string; timestamp: string; generation: number }[]
@@ -913,6 +941,20 @@ export default function CompetitionPage() {
         setViewingHistory(null);
         return;
       }
+      const knownLatestVersion =
+        inferLiveReportVersion(historyEntries, reportData) ??
+        (historyEntries.length > 0
+          ? Math.max(...historyEntries.map((entry) => entry.version))
+          : dbLoadedReport
+            ? 1
+            : null);
+      // Selecting the latest entry in the version tree should keep the page
+      // in the live/current context. Otherwise approve/export/rework actions
+      // can be sent as if the latest report were an old fork.
+      if (knownLatestVersion === version) {
+        setViewingHistory(null);
+        return;
+      }
       // First try cached entries
       const cached = historyEntries.find(
         (h: ReportHistoryItem) => h.version === version,
@@ -942,11 +984,25 @@ export default function CompetitionPage() {
         }
       }
     },
-    [threadId, historyEntries],
+    [dbLoadedReport, historyEntries, reportData, threadId],
   );
 
-  const displayReport =
-    viewingHistory?.report_data ?? dbLoadedReport ?? reportData;
+  // A selected historical entry without persisted report data must not fall
+  // back to the current report; doing so mixes a historical version label with
+  // the latest version's content and makes quality/source/process panels lie.
+  const displayReport = viewingHistory
+    ? (viewingHistory.report_data ?? null)
+    : (dbLoadedReport ?? reportData);
+
+  const latestVersion = useMemo(() => {
+    const versions = historyEntries.map((entry) => entry.version);
+    if (versions.length > 0) return Math.max(...versions);
+    return displayReport ? 1 : null;
+  }, [displayReport, historyEntries]);
+
+  const isViewingLatest =
+    viewingHistory == null ||
+    (latestVersion != null && viewingHistory.version === latestVersion);
 
   // ── Build report cards from history + live data ──
   // Each version with report_data becomes a card in the chat flow.
@@ -973,18 +1029,20 @@ export default function CompetitionPage() {
       }
     }
 
-    // Live report — may duplicate a history entry; deduplicate by version
+    // Live report — may duplicate the latest history entry.  History rows can
+    // briefly arrive without report_data while the current report is already
+    // available, so derive the version from all history rows rather than only
+    // rows that already contain a payload.
     if (reportData) {
-      // Determine version: if history has entries, the live report is likely
-      // the latest version; otherwise it's v1 (initial).
-      const maxHistVersion =
-        cards.length > 0 ? Math.max(...cards.map((c) => c.version)) : 0;
-      const liveVersion = maxHistVersion > 0 ? maxHistVersion : 1;
+      // If the newest history row already contains a different report, the
+      // live payload belongs to the next version (the history request may be
+      // one render behind the report poll).
+      const liveVersion = inferLiveReportVersion(historyEntries, reportData)!;
       if (!seen.has(liveVersion)) {
         cards.push({
           version: liveVersion,
           reportData,
-          action: maxHistVersion > 0 ? undefined : "initial",
+          action: historyEntries.length > 0 ? undefined : "initial",
           isLatest: true,
         });
       } else {
@@ -992,6 +1050,13 @@ export default function CompetitionPage() {
         const match = cards.find((c) => c.version === liveVersion);
         if (match) match.isLatest = true;
       }
+    } else if (cards.length > 0) {
+      // A restored session may have history payloads before the live report
+      // poll finishes. Keep the newest available card actionable instead of
+      // making every card look historical.
+      const newest = Math.max(...cards.map((card) => card.version));
+      const match = cards.find((card) => card.version === newest);
+      if (match) match.isLatest = true;
     }
 
     cards.sort((a, b) => a.version - b.version);
@@ -1020,18 +1085,34 @@ export default function CompetitionPage() {
     : "输入竞品分析请求，例如：深度分析 Claude Code, Codex, Antigravity，特别是在用户基数方面";
 
   // Report panel + HITL callbacks
-  const handleExpandReport = useCallback(
-    (version: number) => {
+  const openWorkbenchAt = useCallback(
+    (version: number, initialTab: WorkbenchTab) => {
       previousSidebarOpenRef.current ??= sidebarOpen;
       void handleViewHistory(version);
+      setWorkbenchInitialTab(initialTab);
       setReportPanelExpanded(true);
       setSidebarOpen(false);
       setReportPanelOpen(true);
     },
     [handleViewHistory, sidebarOpen, setReportPanelExpanded, setSidebarOpen],
   );
+  const handleExpandReport = useCallback(
+    (version: number) => {
+      openWorkbenchAt(version, "report");
+    },
+    [openWorkbenchAt],
+  );
+  const handleViewTrace = useCallback(
+    (version: number) => openWorkbenchAt(version, "process"),
+    [openWorkbenchAt],
+  );
+  const handleViewBranchTree = useCallback(
+    (version: number) => openWorkbenchAt(version, "versions"),
+    [openWorkbenchAt],
+  );
   const handleCloseReport = useCallback(() => {
     setReportPanelOpen(false);
+    setWorkbenchInitialTab("report");
     setReportPanelExpanded(false);
     if (previousSidebarOpenRef.current !== null) {
       setSidebarOpen(previousSidebarOpenRef.current);
@@ -1187,8 +1268,8 @@ export default function CompetitionPage() {
                   onExportMD={handleExportMD}
                   onExportJSON={handleExportJSON}
                   onNavigateVersion={handleNavigateVersion}
-                  onViewTrace={undefined}
-                  onViewBranchTree={undefined}
+                  onViewTrace={handleViewTrace}
+                  onViewBranchTree={handleViewBranchTree}
                   onEdit={displayReport ? handleEdit : undefined}
                   analysisBrief={analysisBrief}
                   briefPending={briefPending}
@@ -1295,7 +1376,7 @@ export default function CompetitionPage() {
               displayReport={displayReport}
               historyEntries={historyEntries}
               viewingHistory={viewingHistory}
-              isViewingLatest={!viewingHistory}
+              isViewingLatest={isViewingLatest}
               onViewHistory={handleViewHistory}
               selectedForDiff={selectedForDiff}
               onToggleDiff={handleToggleDiff}
@@ -1311,9 +1392,10 @@ export default function CompetitionPage() {
               status={status}
               threadIdForApi={threadId}
               getTrace={api.getTrace}
-              onEdit={displayReport ? handleEdit : undefined}
+              onEdit={displayReport && isViewingLatest ? handleEdit : undefined}
               onExportMD={handleExportMD}
               onExportJSON={handleExportJSON}
+              initialTab={workbenchInitialTab}
             />
           </div>
         )}

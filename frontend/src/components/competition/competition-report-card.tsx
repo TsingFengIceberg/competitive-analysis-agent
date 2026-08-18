@@ -52,11 +52,11 @@ interface Props {
   onExpand: (version: number) => void;
   onApprove: () => void;
   onReanalyze: (action: string, comment: string, cardVersion: number) => void;
-  onExportMD: () => void;
-  onExportJSON: () => void;
+  onExportMD?: () => void;
+  onExportJSON?: () => void;
   onNavigateVersion: (version: number) => void;
-  onViewTrace?: () => void;
-  onViewBranchTree?: () => void;
+  onViewTrace?: (version: number) => void;
+  onViewBranchTree?: (version: number) => void;
   onEdit?: () => void;
 }
 
@@ -105,7 +105,7 @@ export default function CompetitionReportCard({
   hitlSubmitting,
   status,
   historyEntries,
-  viewingHistory: _viewingHistory,
+  viewingHistory,
   onExpand,
   onApprove,
   onReanalyze,
@@ -117,6 +117,8 @@ export default function CompetitionReportCard({
   onEdit,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [exportingFeishu, setExportingFeishu] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const rd = displayReport;
   const metrics = rd.metrics;
 
@@ -127,7 +129,7 @@ export default function CompetitionReportCard({
     .filter((e) => (e.parent_version ?? null) === parentVersion)
     .sort((a, b) => a.version - b.version);
   const siblingIndex = siblings.findIndex((e) => e.version === version);
-  const hasSiblings = siblings.length > 1;
+  const hasSiblings = siblings.length > 1 && siblingIndex >= 0;
   const actionLabel = thisEntry?.action
     ? (ACTION_LABELS[thisEntry.action] ?? thisEntry.action)
     : version === 1
@@ -137,6 +139,8 @@ export default function CompetitionReportCard({
   // ── Diff vs previous sibling ──
   const prevSibling = siblingIndex > 0 ? siblings[siblingIndex - 1] : null;
   const prevMetrics = prevSibling?.report_data?.metrics ?? null;
+  const viewingThisVersion = viewingHistory?.version === version;
+  const canExportCurrent = isLatest && (!viewingHistory || viewingThisVersion);
 
   // ── Section preview titles (first 5) ──
   const sectionPreviews =
@@ -172,7 +176,7 @@ export default function CompetitionReportCard({
                 label={actionLabel}
                 className="text-[10px]"
               />
-              {hasSiblings && (
+          {hasSiblings && (
                 <>
                   <Button
                     onClick={() => {
@@ -182,8 +186,10 @@ export default function CompetitionReportCard({
                     disabled={siblingIndex <= 0}
                     variant="ghost"
                     size="icon-sm"
+                    aria-label={`切换到 v${siblings[siblingIndex - 1]?.version ?? "更早"}`}
+                    title="上一个同分支版本"
                   >
-                    <ChevronLeft className="size-3" />
+                    <ChevronLeft className="size-3" aria-hidden="true" />
                   </Button>
                   <span className="text-muted-foreground shrink-0 font-mono text-[10px] tabular-nums select-none">
                     {siblingIndex + 1}/{siblings.length}
@@ -196,8 +202,10 @@ export default function CompetitionReportCard({
                     disabled={siblingIndex >= siblings.length - 1}
                     variant="ghost"
                     size="icon-sm"
+                    aria-label={`切换到 v${siblings[siblingIndex + 1]?.version ?? "更新"}`}
+                    title="下一个同分支版本"
                   >
-                    <ChevronRight className="size-3" />
+                    <ChevronRight className="size-3" aria-hidden="true" />
                   </Button>
                 </>
               )}
@@ -369,6 +377,9 @@ export default function CompetitionReportCard({
       {sectionPreviews.length > 0 && (
         <div className="bg-muted/20 border-t">
           <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={`report-structure-v${version}`}
             onClick={() => setExpanded(!expanded)}
             className="hover:bg-muted/30 flex w-full items-center justify-between px-4 py-2 text-left transition-colors"
           >
@@ -382,6 +393,7 @@ export default function CompetitionReportCard({
             )}
           </button>
           <div
+            id={`report-structure-v${version}`}
             className={`overflow-hidden transition-all duration-200 ${expanded ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}
           >
             <div className="space-y-1 px-4 pb-2">
@@ -414,7 +426,7 @@ export default function CompetitionReportCard({
       {/* Actions — grouped layout */}
       <div className="border-subtle bg-surface-sunken border-t">
         {/* Primary: HITL actions */}
-        {(hitlVisible || isLatest) && (
+        {hitlVisible && (
           <div className="flex flex-wrap items-center gap-1.5 px-4 py-2">
             {isLatest &&
               hitlVisible &&
@@ -491,10 +503,11 @@ export default function CompetitionReportCard({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={onViewBranchTree}
+              onClick={() => onViewBranchTree(version)}
               className="text-muted-foreground text-[10px]"
+              aria-label={`打开 v${version} 的版本树`}
             >
-              <GitBranch className="size-3.5" />
+              <GitBranch className="size-3.5" aria-hidden="true" />
               分支树
             </Button>
           )}
@@ -503,22 +516,24 @@ export default function CompetitionReportCard({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={onViewTrace}
+              onClick={() => onViewTrace(version)}
               className="text-muted-foreground text-[10px]"
+              aria-label={`打开 v${version} 的分析流程`}
             >
-              <Workflow className="size-3.5" />
+              <Workflow className="size-3.5" aria-hidden="true" />
               流程
             </Button>
           )}
-          {onEdit && (
+          {onEdit && isLatest && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={onEdit}
               className="text-muted-foreground text-[10px]"
+              aria-label={`修正 v${version} 报告`}
             >
-              <Pencil className="size-3.5" />
+              <Pencil className="size-3.5" aria-hidden="true" />
               修正
             </Button>
           )}
@@ -528,10 +543,16 @@ export default function CompetitionReportCard({
             variant="ghost"
             size="sm"
             onClick={onExportMD}
+            disabled={!onExportMD || !canExportCurrent}
             title="导出 Markdown 报告"
+            aria-label={
+              onExportMD && canExportCurrent
+                ? "导出 Markdown 报告"
+                : "历史版本暂不支持导出 Markdown"
+            }
             className="text-muted-foreground text-[10px]"
           >
-            <Download className="size-3.5" />
+            <Download className="size-3.5" aria-hidden="true" />
             MD
           </Button>
           <Button
@@ -539,16 +560,25 @@ export default function CompetitionReportCard({
             variant="ghost"
             size="sm"
             onClick={onExportJSON}
+            disabled={!onExportJSON || !canExportCurrent}
             title="导出 JSON 原始数据"
+            aria-label={
+              onExportJSON && canExportCurrent
+                ? "导出 JSON 原始数据"
+                : "历史版本暂不支持导出 JSON"
+            }
             className="text-muted-foreground text-[10px]"
           >
-            <FileJson className="size-3.5" />
+            <FileJson className="size-3.5" aria-hidden="true" />
             JSON
           </Button>
           <Button
             type="button"
             title="导出到飞书文档"
             onClick={async () => {
+              if (!threadId || !canExportCurrent || exportingFeishu) return;
+              setExportingFeishu(true);
+              setExportError(null);
               try {
                 const response = await fetch(
                   `/api/competition/report/${threadId}/export-feishu`,
@@ -557,18 +587,28 @@ export default function CompetitionReportCard({
                 if (response.ok && data.doc_url) {
                   window.open(data.doc_url, "_blank");
                 } else {
-                  alert(data.detail ?? "导出失败");
+                  setExportError(data.detail ?? "导出失败");
                 }
               } catch {
-                alert("请求失败");
+                setExportError("请求失败，请稍后重试");
+              } finally {
+                setExportingFeishu(false);
               }
             }}
+            disabled={!threadId || !canExportCurrent || exportingFeishu}
+            aria-label={
+              !canExportCurrent
+                ? "历史版本暂不支持导出飞书"
+                : exportingFeishu
+                  ? "正在导出到飞书"
+                  : "导出到飞书文档"
+            }
             variant="ghost"
             size="sm"
             className="text-muted-foreground text-[10px]"
           >
-            <FileText className="size-3.5" />
-            飞书
+            <FileText className="size-3.5" aria-hidden="true" />
+            {exportingFeishu ? "导出中" : "飞书"}
           </Button>
           <Button
             type="button"
@@ -581,14 +621,20 @@ export default function CompetitionReportCard({
               window.setTimeout(cleanup, 2000);
             }}
             title="打印为 PDF"
+            aria-label="打印报告为 PDF"
             variant="ghost"
             size="sm"
             className="text-muted-foreground text-[10px]"
           >
-            <FileDown className="size-3.5" />
+            <FileDown className="size-3.5" aria-hidden="true" />
             PDF
           </Button>
         </div>
+        {exportError && (
+          <div className="text-[var(--status-danger)] px-4 pb-2 text-[10px]" role="status">
+            {exportError}
+          </div>
+        )}
       </div>
     </div>
   );

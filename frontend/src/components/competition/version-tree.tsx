@@ -73,6 +73,10 @@ function VersionTree({
   onCompare: (a: number, b: number) => void;
 }) {
   const tree = buildTree(entries);
+  const latestVersion = entries.reduce(
+    (latest, entry) => Math.max(latest, entry.version),
+    0,
+  );
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [hoveredEntry, setHoveredEntry] = useState<ReportHistoryItem | null>(
     null,
@@ -89,8 +93,11 @@ function VersionTree({
     hoverTimerRef.current = setTimeout(() => {
       setHoveredEntry(entry);
       setPopupPos({
-        top: rect.top + window.scrollY,
-        left: rect.right + 8,
+        // The preview uses `position: fixed`, so viewport coordinates are
+        // required. Adding scroll offsets makes it drift after the workbench
+        // or page has been scrolled.
+        top: Math.max(8, Math.min(rect.top, window.innerHeight - 300)),
+        left: Math.max(8, Math.min(rect.right + 8, window.innerWidth - 296)),
       });
     }, 300);
   }
@@ -109,7 +116,9 @@ function VersionTree({
     ancestors: boolean[],
   ): React.ReactNode {
     const { entry } = node;
-    const isActive = activeVersion === entry.version;
+    const isActive =
+      activeVersion === entry.version ||
+      (isViewingLatest && entry.version === latestVersion);
     const action = entry.action ?? entry.hitl_decision?.action ?? "initial";
     const actionConfig = ACTION_CONFIG[action] ?? DEFAULT_ACTION;
     const ActionIcon = actionConfig.icon;

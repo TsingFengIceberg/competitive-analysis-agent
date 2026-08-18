@@ -2,7 +2,11 @@
 
 import { useEffect, useState } from "react";
 
-import type { GenerationTrace, TraceResponse } from "./api-client";
+import {
+  generationTraceKey,
+  type GenerationTrace,
+  type TraceResponse,
+} from "./api-client";
 
 interface Props {
   trace: TraceResponse | null;
@@ -17,8 +21,8 @@ export default function ProcessInspector({
 }: Props) {
   const generation =
     trace?.generations.find(
-      (item) => item.generation_id === selectedGenerationId,
-    ) ?? trace?.generations[trace.generations.length - 1];
+      (item) => generationTraceKey(item) === selectedGenerationId,
+    ) ?? null;
   const [phaseKey, setPhaseKey] = useState<string | null>(null);
   const phase =
     generation?.phases.find((item) => item.phase_key === phaseKey) ??
@@ -37,6 +41,13 @@ export default function ProcessInspector({
       </div>
     );
 
+  if (!generation)
+    return (
+      <div className="ui-inset text-muted-foreground p-3 text-xs">
+        当前报告版本没有可确定关联的流程记录。
+      </div>
+    );
+
   return (
     <div className="space-y-2 text-xs">
       <div className="flex gap-1 overflow-x-auto pb-1">
@@ -46,7 +57,7 @@ export default function ProcessInspector({
             type="button"
             onClick={() => onSelectGeneration(item)}
             className="ui-tab shrink-0"
-            data-active={item.generation_id === selectedGenerationId}
+            data-active={generationTraceKey(item) === selectedGenerationId}
           >
             {item.label}
           </button>

@@ -206,6 +206,78 @@ class TestStream:
             competition_router._event_buffers.pop(thread_id, None)
             competition_router._event_counters.pop(thread_id, None)
 
+    def test_sse_broadcasts_one_event_to_each_subscriber(self):
+        import app.competition_router as competition_router
+
+        thread_id = "comp-test-sse-broadcast"
+        competition_router._store[thread_id] = {
+            "status": "running",
+            "query": "test",
+            "products": ["A"],
+        }
+        try:
+            first = competition_router._stream_events_sync(thread_id)
+            assert "event: metadata" in next(first)
+            assert "event: values" in next(first)
+
+            second = competition_router._stream_events_sync(thread_id)
+            assert "event: metadata" in next(second)
+            assert "event: values" in next(second)
+
+            competition_router._emit_event(thread_id, "node_end", {"node": "writer"})
+            first_frame = next(first)
+            second_frame = next(second)
+            assert first_frame == second_frame
+            assert "event: node_end" in first_frame
+            assert len(competition_router._stream_subscribers[thread_id]) == 2
+
+            first.close()
+            assert len(competition_router._stream_subscribers[thread_id]) == 1
+            second.close()
+            assert thread_id not in competition_router._stream_subscribers
+        finally:
+            competition_router._store.pop(thread_id, None)
+            competition_router._stream_subscribers.pop(thread_id, None)
+            competition_router._stream_queues.pop(thread_id, None)
+            competition_router._event_buffers.pop(thread_id, None)
+            competition_router._event_counters.pop(thread_id, None)
+
+    def test_sse_reconnect_replays_events_after_last_event_id(self):
+        import app.competition_router as competition_router
+
+        thread_id = "comp-test-sse-replay"
+        competition_router._store[thread_id] = {
+            "status": "running",
+            "query": "test",
+            "products": [],
+        }
+        try:
+            competition_router._emit_event(thread_id, "progress", {"step": 1})
+            first_id = competition_router._event_buffers[thread_id][0][1].split("id: ", 1)[1].splitlines()[0]
+            competition_router._emit_event(thread_id, "end", {"status": "completed"})
+            competition_router._store[thread_id]["status"] = "completed"
+            replay = competition_router._stream_events_sync(thread_id, last_event_id=first_id)
+            assert "event: metadata" in next(replay)
+            assert "event: values" in next(replay)
+            assert "event: end" in next(replay)
+            with pytest.raises(StopIteration):
+                next(replay)
+            replay.close()
+
+            terminal_id = competition_router._event_buffers[thread_id][-1][1].split("id: ", 1)[1].splitlines()[0]
+            terminal_reconnect = competition_router._stream_events_sync(thread_id, last_event_id=terminal_id)
+            assert "event: metadata" in next(terminal_reconnect)
+            assert "event: values" in next(terminal_reconnect)
+            with pytest.raises(StopIteration):
+                next(terminal_reconnect)
+            terminal_reconnect.close()
+        finally:
+            competition_router._store.pop(thread_id, None)
+            competition_router._stream_subscribers.pop(thread_id, None)
+            competition_router._stream_queues.pop(thread_id, None)
+            competition_router._event_buffers.pop(thread_id, None)
+            competition_router._event_counters.pop(thread_id, None)
+
     def test_reanalysis_forwards_bounded_writer_progress_and_clears_hooks(self, monkeypatch):
         import app.competition_router as competition_router
         import competition.executor as executor_module

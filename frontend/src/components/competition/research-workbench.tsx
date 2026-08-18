@@ -10,6 +10,7 @@ import type {
   ReportHistoryItem,
   TraceResponse,
 } from "./api-client";
+import { generationTraceKey } from "./api-client";
 import CompetitionReportPanel from "./competition-report-panel";
 import QualityGatePanel from "./quality-gate-panel";
 import SourceInspector from "./source-inspector";
@@ -23,7 +24,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { StatusNotice } from "@/components/ui/status-badge";
 
-type WorkbenchTab = "report" | "versions" | "quality" | "sources" | "process";
+export type WorkbenchTab =
+  | "report"
+  | "versions"
+  | "quality"
+  | "sources"
+  | "process";
 
 const LazyProcessInspector = dynamic(() => import("./process-inspector"), {
   ssr: false,
@@ -58,6 +64,7 @@ interface Props {
   onEdit?: () => void;
   onExportMD?: () => void;
   onExportJSON?: () => void;
+  initialTab?: WorkbenchTab;
 }
 
 export default function ResearchWorkbench(props: Props) {
@@ -87,6 +94,7 @@ export default function ResearchWorkbench(props: Props) {
     onEdit,
     onExportMD,
     onExportJSON,
+    initialTab = "report",
   } = props;
   const [tab, setTab] = useState<WorkbenchTab>("report");
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -98,21 +106,33 @@ export default function ResearchWorkbench(props: Props) {
   const [traceError, setTraceError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (open) setTab(initialTab);
+  }, [open, initialTab]);
+
+  useEffect(() => {
     if (!open || !threadId || tab !== "process") return;
     let cancelled = false;
     setTraceError(null);
+    setTrace(null);
+    setSelectedGenerationId(null);
     getTrace(threadId)
       .then((value) => {
         if (!cancelled) {
           setTrace(value);
-          setSelectedGenerationId(
-            value.generations.find(
-              (item) =>
-                item.report_version === (viewingHistory?.version ?? null),
-            )?.generation_id ??
-              value.generations.at(-1)?.generation_id ??
-              null,
-          );
+          const selected = viewingHistory?.version
+            ? value.generations.find(
+                (item) => item.report_version === viewingHistory.version,
+              ) ??
+              value.generations.find(
+                (item) => item.version === viewingHistory.version,
+              )
+            : value.generations.find(
+                (item) => item.report_version === value.current_version,
+              ) ??
+              value.generations.find(
+                (item) => item.version === value.current_version,
+              ) ?? value.generations.at(-1);
+          setSelectedGenerationId(selected ? generationTraceKey(selected) : null);
         }
       })
       .catch((error: Error) => {
@@ -130,7 +150,7 @@ export default function ResearchWorkbench(props: Props) {
 
   const selectIssue = useCallback((issue: QualityGateIssue) => {
     setSelectedIssueId(issue.id);
-    setTab("quality");
+    setTab("report");
     const sectionId = issue.section_ids[0];
     if (sectionId)
       window.setTimeout(
@@ -148,7 +168,7 @@ export default function ResearchWorkbench(props: Props) {
   const selectedGeneration = useMemo(
     () =>
       trace?.generations.find(
-        (item) => item.generation_id === selectedGenerationId,
+        (item) => generationTraceKey(item) === selectedGenerationId,
       ) ?? null,
     [trace, selectedGenerationId],
   );
@@ -201,7 +221,7 @@ export default function ResearchWorkbench(props: Props) {
                 variant="outline"
                 size="icon-sm"
                 onClick={onExportMD}
-                disabled={!onExportMD}
+                disabled={!onExportMD || !isViewingLatest}
                 aria-label="导出 Markdown"
                 title="导出 Markdown"
               >
@@ -212,7 +232,7 @@ export default function ResearchWorkbench(props: Props) {
                 variant="outline"
                 size="icon-sm"
                 onClick={onExportJSON}
-                disabled={!onExportJSON}
+                disabled={!onExportJSON || !isViewingLatest}
                 aria-label="导出 JSON"
                 title="导出 JSON"
               >
@@ -370,7 +390,7 @@ export default function ResearchWorkbench(props: Props) {
                     trace={trace}
                     selectedGenerationId={selectedGenerationId}
                     onSelectGeneration={(generation) =>
-                      setSelectedGenerationId(generation.generation_id ?? null)
+                      setSelectedGenerationId(generationTraceKey(generation))
                     }
                   />
                 ))}

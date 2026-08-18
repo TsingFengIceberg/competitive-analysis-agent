@@ -57,6 +57,7 @@ export function useAnalysisStream({
     let source: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    let lastEventId: string | null = null;
 
     const publish = (next: StreamConnection, nextAttempt = attempt) => {
       if (destroyed) return;
@@ -71,7 +72,10 @@ export function useAnalysisStream({
       }
       publish(attempt > 0 ? "reconnecting" : "connecting", attempt);
       source?.close();
-      source = new EventSource(`/api/competition/stream/${threadId}`);
+      const replayQuery = lastEventId
+        ? `?last_event_id=${encodeURIComponent(lastEventId)}`
+        : "";
+      source = new EventSource(`/api/competition/stream/${threadId}${replayQuery}`);
 
       const events: AnalysisStreamEvent[] = [
         "metadata",
@@ -83,11 +87,18 @@ export function useAnalysisStream({
       ];
       for (const event of events) {
         source.addEventListener(event, (message) => {
-          if (event === "metadata" || event === "values" || event === "end") {
-            eventRef.current(event, message.data);
-          } else {
-            eventRef.current(event, message.data);
+          const eventMessage = message as MessageEvent<string>;
+          // metadata/values use per-connection synthetic IDs on the server;
+          // only remember replayable graph event IDs to avoid treating those
+          // synthetic IDs as a missing point in the event buffer.
+          if (
+            event !== "metadata" &&
+            event !== "values" &&
+            eventMessage.lastEventId
+          ) {
+            lastEventId = eventMessage.lastEventId;
           }
+          eventRef.current(event, eventMessage.data);
           if (event === "metadata") {
             attempt = 0;
             publish("connected", attempt);

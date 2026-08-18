@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import queue as _queue_mod
+import threading
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -175,29 +176,71 @@ _store: dict[str, dict] = {}
 _cancel_flags: dict[str, bool] = {}  # thread_id → cancelled (cooperative cancellation)
 
 # ── SSE streaming (§19) ──
+#
+# A thread can have more than one browser subscribed to its stream (for
+# example, the user may have the report open in two tabs).  A single queue per
+# thread makes those clients compete for events, so live delivery is modelled
+# as one bounded queue per subscriber.  ``_stream_queues`` remains as a small
+# compatibility/orphan queue for older tests and for events emitted before a
+# subscriber has connected; replay is still sourced from ``_event_buffers``.
 _stream_queues: dict[str, _queue_mod.Queue] = {}
+_stream_subscribers: dict[str, set[_queue_mod.Queue]] = {}
+_stream_lock = threading.RLock()
 _event_counters: dict[str, int] = {}  # thread_id → monotonic event id
 _event_buffers: dict[str, list[tuple[int, str]]] = {}  # thread_id → [(id, formatted_sse_line)]
-MAX_BUFFERED_EVENTS = 64
+MAX_BUFFERED_EVENTS = 128
 
 
 def _get_or_create_queue(thread_id: str) -> _queue_mod.Queue:
     """Get or create a thread-safe queue for a thread's SSE stream."""
-    if thread_id not in _stream_queues:
-        _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
-    return _stream_queues[thread_id]
+    with _stream_lock:
+        if thread_id not in _stream_queues:
+            _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
+        return _stream_queues[thread_id]
 
 
 def _reset_stream_queue(thread_id: str) -> None:
-    """Start a fresh live SSE queue while keeping replay buffer history."""
-    _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
+    """Reset the compatibility queue without disconnecting live subscribers.
+
+    Re-analysis starts a new generation, but existing browser connections must
+    stay subscribed so they receive the new generation's events.
+    """
+    with _stream_lock:
+        _stream_queues[thread_id] = _queue_mod.Queue(maxsize=1024)
 
 
-def _put_stream_frame(thread_id: str, frame: str, event_type: str) -> None:
-    q = _get_or_create_queue(thread_id)
+def _register_stream_subscriber(thread_id: str) -> _queue_mod.Queue:
+    """Create and register an independent bounded queue for one SSE client."""
+    subscriber: _queue_mod.Queue = _queue_mod.Queue(maxsize=1024)
+    with _stream_lock:
+        _stream_subscribers.setdefault(thread_id, set()).add(subscriber)
+    return subscriber
+
+
+def _unregister_stream_subscriber(thread_id: str, subscriber: _queue_mod.Queue) -> None:
+    """Remove a disconnected SSE client and release its queue."""
+    with _stream_lock:
+        subscribers = _stream_subscribers.get(thread_id)
+        if not subscribers:
+            return
+        subscribers.discard(subscriber)
+        if not subscribers:
+            _stream_subscribers.pop(thread_id, None)
+
+
+def _put_queue_frame(
+    q: _queue_mod.Queue,
+    frame: str,
+    thread_id: str,
+    event_type: str,
+) -> None:
+    """Put a frame into one subscriber queue, isolating slow consumers."""
     try:
         q.put_nowait(frame)
+        return
     except _queue_mod.Full:
+        # Drop the oldest live frame for this client only.  A terminal frame
+        # therefore remains deliverable even when that client is slow.
         try:
             q.get_nowait()
         except _queue_mod.Empty:
@@ -205,7 +248,22 @@ def _put_stream_frame(thread_id: str, frame: str, event_type: str) -> None:
         try:
             q.put_nowait(frame)
         except _queue_mod.Full:
-            logging.getLogger(__name__).warning("SSE live queue saturated for %s [%s]; dropped frame", thread_id[:12], event_type)
+            logging.getLogger(__name__).warning(
+                "SSE live queue saturated for %s [%s]; dropped frame",
+                thread_id[:12],
+                event_type,
+            )
+
+
+def _put_stream_frame(thread_id: str, frame: str, event_type: str) -> None:
+    # Keep the legacy/orphan queue behaviour for callers that emit before a
+    # client connects, while broadcasting the same frame to every subscriber.
+    with _stream_lock:
+        queues = [_get_or_create_queue(thread_id)]
+        queues.extend(_stream_subscribers.get(thread_id, ()))
+        unique_queues = list(dict.fromkeys(queues))
+    for q in unique_queues:
+        _put_queue_frame(q, frame, thread_id, event_type)
 
 
 def _format_sse(event: str, data, *, event_id: str | None = None) -> str:
@@ -222,6 +280,14 @@ def _format_sse(event: str, data, *, event_id: str | None = None) -> str:
     return "\n".join(parts)
 
 
+def _frame_event_id(frame: str) -> str | None:
+    """Return the SSE id from a formatted frame, if it has one."""
+    for line in frame.splitlines():
+        if line.startswith("id: "):
+            return line[4:]
+    return None
+
+
 def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
     """Emit an SSE event into the thread's stream queue (thread-safe).
 
@@ -232,22 +298,24 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
     import logging
     _log = logging.getLogger(__name__)
     try:
-        # Assign monotonic event ID
-        seq = _event_counters.get(thread_id, 0) + 1
-        _event_counters[thread_id] = seq
-        event_id = f"{thread_id[-8:]}-{seq:05d}"
+        with _stream_lock:
+            if event_type == "end" and data.get("status") == "interrupted":
+                existing = _event_buffers.get(thread_id, [])
+                if existing and "event: end" in existing[-1][1] and '"status": "interrupted"' in existing[-1][1]:
+                    return
+            # Assign monotonic event ID
+            seq = _event_counters.get(thread_id, 0) + 1
+            _event_counters[thread_id] = seq
+            event_id = f"{thread_id[-8:]}-{seq:05d}"
 
-        # Format and buffer
-        frame = _format_sse(event_type, data, event_id=event_id)
+            # Format and buffer
+            frame = _format_sse(event_type, data, event_id=event_id)
 
-        # Circular buffer for replay
-        buf = _event_buffers.get(thread_id)
-        if buf is None:
-            buf = []
-            _event_buffers[thread_id] = buf
-        buf.append((seq, frame))
-        if len(buf) > MAX_BUFFERED_EVENTS:
-            buf.pop(0)
+            # Circular buffer for replay
+            buf = _event_buffers.setdefault(thread_id, [])
+            buf.append((seq, frame))
+            if len(buf) > MAX_BUFFERED_EVENTS:
+                del buf[: len(buf) - MAX_BUFFERED_EVENTS]
 
         # Push to live queue
         _put_stream_frame(thread_id, frame, event_type)
@@ -1010,13 +1078,14 @@ async def cancel_analysis(thread_id: str) -> dict:
     except Exception:
         pass
 
-    # Notify SSE clients
-    q = _stream_queues.get(thread_id)
-    if q:
-        try:
-            q.put_nowait(_format_sse("end", {"status": "interrupted", "message": "分析已终止"}, event_id=f"{thread_id[-8:]}-cancel"))
-        except Exception:
-            pass
+    # Notify every SSE client through the same monotonic/replayable path as
+    # graph events.  The old code only wrote to the shared queue, so one tab
+    # could consume the cancellation event before another tab saw it.
+    _emit_event(
+        thread_id,
+        "end",
+        {"status": "interrupted", "message": "分析已终止"},
+    )
 
     return {"thread_id": thread_id, "status": "cancelling", "message": "Cancellation requested"}
 
@@ -1928,7 +1997,11 @@ async def export_to_feishu(thread_id: str, fastapi_request: Request):
 
 
 @router.get("/stream/{thread_id}")
-async def stream(thread_id: str, fastapi_request: Request):
+async def stream(
+    thread_id: str,
+    fastapi_request: Request,
+    last_event_id_query: str | None = Query(default=None, alias="last_event_id"),
+):
     """SSE stream of graph execution events.
 
     Supports Last-Event-ID header for reconnection.
@@ -1946,7 +2019,11 @@ async def stream(thread_id: str, fastapi_request: Request):
     if entry.get("status") == "awaiting_confirmation":
         raise HTTPException(status_code=409, detail="Analysis is awaiting Brief confirmation")
 
-    last_event_id = fastapi_request.headers.get("Last-Event-ID")
+    # Native EventSource reconnects can carry Last-Event-ID in the header, but
+    # the frontend also performs bounded manual reconnects so it can expose a
+    # degraded state. Those new EventSource instances cannot set headers, so
+    # accept the equivalent query parameter as a backwards-compatible fallback.
+    last_event_id = fastapi_request.headers.get("Last-Event-ID") or last_event_id_query
 
     return StreamingResponse(
         _stream_events_sync(thread_id, last_event_id=last_event_id),
@@ -2757,57 +2834,103 @@ def _stream_events_sync(thread_id: str, last_event_id: str | None = None):
     """
     import time as _time
 
-    q = _get_or_create_queue(thread_id)
+    subscriber = _register_stream_subscriber(thread_id)
+    try:
+        # Register before taking the snapshot.  Any event emitted after this
+        # point is queued for this client, so replay and live delivery have no
+        # registration gap.
+        with _stream_lock:
+            entry = _store.get(thread_id)
+            buffered = list(_event_buffers.get(thread_id, []))
+        # Events emitted between subscriber registration and the first live
+        # read are present both in this snapshot and in the subscriber queue.
+        # Remember the snapshot IDs so those queued copies are not delivered a
+        # second time after replay.  Events emitted after this snapshot have a
+        # new ID and are delivered normally.
+        snapshot_event_ids = {
+            event_id
+            for _seq, frame in buffered
+            if (event_id := _frame_event_id(frame)) is not None
+        }
 
-    # ── Replay buffered events after Last-Event-ID ──
-    if last_event_id:
-        buf = _event_buffers.get(thread_id, [])
-        replay_started = False
-        for seq, frame in buf:
-            if not replay_started:
-                if f"id: {last_event_id}" in frame:
-                    replay_started = True
-                continue
+        if entry:
+            init_id = f"{thread_id[-8:]}-init"
+            yield _format_sse("metadata", {
+                "run_id": thread_id,
+                "thread_id": thread_id,
+                "query": entry.get("query", ""),
+                "products": entry.get("products", []),
+            }, event_id=init_id)
+            yield _format_sse("values", {
+                "status": entry.get("status", "unknown"),
+                "thread_id": thread_id,
+            }, event_id=f"{thread_id[-8:]}-values")
+        else:
+            yield _format_sse("error", {"error": "Thread not found"}, event_id=f"{thread_id[-8:]}-err")
+            return
+
+        # ── Replay buffered events ──
+        # A first connection catches up with the retained buffer (including
+        # events emitted during product resolution before the UI connected).
+        # A reconnect starts strictly after the browser's Last-Event-ID.  If
+        # that ID was evicted, replay all retained events rather than silently
+        # losing the remainder of the run.
+        replay_frames: list[str]
+        if last_event_id:
+            replay_index = next(
+                (
+                    index
+                    for index, (_seq, frame) in enumerate(buffered)
+                    if f"id: {last_event_id}" in frame
+                ),
+                None,
+            )
+            replay_frames = [
+                frame for _seq, frame in (
+                    buffered[replay_index + 1 :] if replay_index is not None else buffered
+                )
+            ]
+        else:
+            replay_frames = [frame for _seq, frame in buffered]
+
+        for frame in replay_frames:
             yield frame
-        if replay_started:
-            pass  # Client is catching up — continue to live stream
 
-    # ── Initial metadata + state ──
-    entry = _store.get(thread_id)
-    if entry:
-        init_id = f"{thread_id[-8:]}-init"
-        yield _format_sse("metadata", {
-            "run_id": thread_id,
-            "thread_id": thread_id,
-            "query": entry.get("query", ""),
-            "products": entry.get("products", []),
-        }, event_id=init_id)
-        yield _format_sse("values", {
-            "status": entry.get("status", "unknown"),
-            "thread_id": thread_id,
-        }, event_id=f"{thread_id[-8:]}-values")
-    else:
-        yield _format_sse("error", {"error": "Thread not found"}, event_id=f"{thread_id[-8:]}-err")
-        return
-
-    # ── Live event loop ──
-    last_heartbeat = _time.monotonic()
-    heartbeat_interval = 15
-
-    while True:
-        try:
-            frame = q.get(timeout=heartbeat_interval)
-            yield frame
-            last_heartbeat = _time.monotonic()
-
-            # Detect end/error to terminate stream
-            if 'event: error' in frame or 'event: end' in frame:
+        # If a completed run is replayed after its terminal event, close the
+        # connection.  Also close when Last-Event-ID already points at the
+        # terminal event (so a reconnect after a lost response does not leave
+        # an idle stream open for five minutes).  When a new re-analysis is
+        # already running, keep the connection open even if retained history
+        # contains an older end.
+        current_status = entry.get("status", "")
+        if current_status not in {"running", "awaiting_confirmation"}:
+            if not replay_frames:
+                return
+            if "event: error" in replay_frames[-1] or "event: end" in replay_frames[-1]:
                 return
 
-        except _queue_mod.Empty:
-            # No event — send SSE comment heartbeat
-            elapsed = _time.monotonic() - last_heartbeat
-            if elapsed >= 300:  # 5 min of total idle → terminate
-                yield _format_sse("end", {"status": "timeout"}, event_id=f"{thread_id[-8:]}-timeout")
-                return
-            yield ": heartbeat\n\n"
+        # ── Live event loop ──
+        last_heartbeat = _time.monotonic()
+        heartbeat_interval = 15
+
+        while True:
+            try:
+                frame = subscriber.get(timeout=heartbeat_interval)
+                if _frame_event_id(frame) in snapshot_event_ids:
+                    continue
+                yield frame
+                last_heartbeat = _time.monotonic()
+
+                # Detect end/error to terminate stream
+                if "event: error" in frame or "event: end" in frame:
+                    return
+
+            except _queue_mod.Empty:
+                # No event — send SSE comment heartbeat
+                elapsed = _time.monotonic() - last_heartbeat
+                if elapsed >= 300:  # 5 min of total idle → terminate
+                    yield _format_sse("end", {"status": "timeout"}, event_id=f"{thread_id[-8:]}-timeout")
+                    return
+                yield ": heartbeat\n\n"
+    finally:
+        _unregister_stream_subscriber(thread_id, subscriber)

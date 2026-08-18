@@ -93,8 +93,8 @@ interface Props {
   onExportMD: () => void;
   onExportJSON: () => void;
   onNavigateVersion: (version: number) => void;
-  onViewTrace?: () => void;
-  onViewBranchTree?: () => void;
+  onViewTrace?: (version: number) => void;
+  onViewBranchTree?: (version: number) => void;
   onEdit?: () => void;
   analysisBrief?: AnalysisBrief | null;
   briefPending?: boolean;

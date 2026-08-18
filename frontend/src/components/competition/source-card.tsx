@@ -29,10 +29,12 @@ export function SourceCard({
   source,
   position,
   onClose,
+  onOpen,
 }: {
   source: SourceInfo;
   position: { top: number; left: number };
   onClose: () => void;
+  onOpen?: () => void;
 }) {
   const confidenceTone: StatusTone =
     (source.confidence ?? 0) >= 0.8
@@ -45,6 +47,7 @@ export function SourceCard({
     <div
       className="border-border bg-card fixed z-50 w-80 rounded-lg border p-3 shadow-xl"
       style={{ top: position.top, left: position.left }}
+      onMouseEnter={onOpen}
       onMouseLeave={onClose}
     >
       {/* Header */}

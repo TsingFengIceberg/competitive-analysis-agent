@@ -156,6 +156,15 @@ export interface GenerationTrace {
   phases: PhaseTraceEntry[];
 }
 
+export function generationTraceKey(
+  generation: Pick<GenerationTrace, "generation_id" | "version" | "action">,
+): string {
+  return (
+    generation.generation_id ??
+    `legacy-${generation.version}-${generation.action}`
+  );
+}
+
 export interface TraceResponse {
   thread_id: string;
   generations: GenerationTrace[];

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Download, FileJson } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, StatusNotice } from "@/components/ui/status-badge";
@@ -266,6 +266,27 @@ export default function CompetitionReportPanel({
     top: number;
     left: number;
   } | null>(null);
+  const sourceHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSourceHideTimer = useCallback(() => {
+    if (sourceHideTimerRef.current) {
+      clearTimeout(sourceHideTimerRef.current);
+      sourceHideTimerRef.current = null;
+    }
+  }, []);
+
+  const closeSource = useCallback(() => {
+    clearSourceHideTimer();
+    setHoveredSource(null);
+    setSourcePos(null);
+  }, [clearSourceHideTimer]);
+
+  const scheduleSourceClose = useCallback(() => {
+    clearSourceHideTimer();
+    sourceHideTimerRef.current = setTimeout(closeSource, 180);
+  }, [clearSourceHideTimer, closeSource]);
+
+  useEffect(() => () => clearSourceHideTimer(), [clearSourceHideTimer]);
 
   const preprocessContent = useCallback(
     (content: string): string => {
@@ -286,12 +307,12 @@ export default function CompetitionReportPanel({
 
   const handleReportHover = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      clearSourceHideTimer();
       const target = (e.target as HTMLElement).closest(
         ".ref-link",
       ) as HTMLElement | null;
       if (!target) {
-        setHoveredSource(null);
-        setSourcePos(null);
+        scheduleSourceClose();
         return;
       }
       const traceId = target.dataset.traceId;
@@ -301,7 +322,10 @@ export default function CompetitionReportPanel({
       const source = trace && typeof trace === "object" ? trace : null;
       const traceUrl =
         source && /^https?:\/\//i.test(source.url) ? source.url : "";
-      if (!traceId || !traceUrl) return;
+      if (!traceId || !traceUrl) {
+        scheduleSourceClose();
+        return;
+      }
       const rect = target.getBoundingClientRect();
       setHoveredSource({
         id: traceId,
@@ -313,11 +337,14 @@ export default function CompetitionReportPanel({
         credibility_tier: source?.credibility_tier,
       });
       setSourcePos({
-        top: rect.bottom + window.scrollY + 4,
-        left: rect.left + window.scrollX,
+        top:
+          rect.bottom + 224 < window.innerHeight
+            ? rect.bottom + 4
+            : Math.max(8, rect.top - 224),
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8)),
       });
     },
-    [displayReport],
+    [clearSourceHideTimer, displayReport, scheduleSourceClose],
   );
 
   const handleReportClick = useCallback(
@@ -336,10 +363,7 @@ export default function CompetitionReportPanel({
       className="prose prose-sm leading-inherit prose-p:my-0 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-strong:text-foreground prose-em:not-italic prose-a:break-words prose-a:[overflow-wrap:anywhere] max-w-none text-inherit [&_.ref-link]:cursor-pointer [&_.ref-link]:text-[var(--status-info)] [&_.ref-link_a]:text-[var(--status-info)]"
       onMouseOver={handleReportHover}
       onClick={handleReportClick}
-      onMouseOut={() => {
-        setHoveredSource(null);
-        setSourcePos(null);
-      }}
+      onMouseLeave={scheduleSourceClose}
     >
       <SafeMarkdown>
         {preprocessContent(preprocessSourceLine(content))}
@@ -638,10 +662,7 @@ export default function CompetitionReportPanel({
             className="prose prose-sm text-foreground prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-headings:mt-4 prose-headings:mb-2 prose-headings:font-semibold prose-strong:text-foreground prose-a:break-words prose-a:[overflow-wrap:anywhere] [&_th]:bg-muted/70 max-w-none text-sm leading-6 [&_.ref-link]:cursor-pointer [&_.ref-link]:text-[var(--status-info)] [&_.ref-link_a]:text-[var(--status-info)] [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_td]:border [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:[overflow-wrap:anywhere] [&_td]:break-words [&_th]:border [&_th]:px-3 [&_th]:py-2 [&_th]:text-left"
             onMouseOver={handleReportHover}
             onClick={handleReportClick}
-            onMouseOut={() => {
-              setHoveredSource(null);
-              setSourcePos(null);
-            }}
+            onMouseLeave={scheduleSourceClose}
           >
             <SafeMarkdown>
               {preprocessContent(preprocessSourceLine(section.content))}
@@ -753,6 +774,23 @@ export default function CompetitionReportPanel({
             </div>
           </StatusNotice>
         )}
+        {viewingHistory && !displayReport && (
+          <StatusNotice tone="warning" className="mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                历史版本 v{viewingHistory.version} 没有保存报告内容，暂时无法展示。
+              </span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                onClick={() => onViewHistory(null)}
+              >
+                返回最新
+              </Button>
+            </div>
+          </StatusNotice>
+        )}
         {dbLoadedThreadId && !viewingHistory && (
           <StatusNotice tone="success" className="mb-3">
             已保存报告（{dbLoadedThreadId.slice(0, 12)}）
@@ -849,10 +887,8 @@ export default function CompetitionReportPanel({
           <SourceCard
             source={hoveredSource}
             position={sourcePos}
-            onClose={() => {
-              setHoveredSource(null);
-              setSourcePos(null);
-            }}
+            onOpen={clearSourceHideTimer}
+            onClose={scheduleSourceClose}
           />
         )}
         {hitlVisible && status === "approved" && !viewingHistory && (
