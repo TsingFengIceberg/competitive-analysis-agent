@@ -285,6 +285,9 @@ export default function CompetitionPage() {
   const [analysisBrief, setAnalysisBrief] = useState<AnalysisBrief | null>(
     null,
   );
+  // Keep local edits while the report poll is still returning the original
+  // awaiting-confirmation brief from the server.
+  const briefDirtyRef = useRef(false);
   const [briefPending, setBriefPending] = useState(false);
   const [briefError, setBriefError] = useState<string | null>(null);
   const [phaseMap, setPhaseMap] = useState<Map<string, PhaseState>>(new Map());
@@ -546,6 +549,7 @@ export default function CompetitionPage() {
   // Reset page state when navigating to /competition/new (Next.js reuses component)
   useEffect(() => {
     if (threadId === "new") {
+      briefDirtyRef.current = false;
       setStatus("idle");
       dispatchSession({ type: "ROUTE_NEW" });
       setPhaseMap(new Map());
@@ -555,6 +559,10 @@ export default function CompetitionPage() {
       setHitlVisible(false);
       setHitlSubmitting(false);
     }
+  }, [threadId]);
+
+  useEffect(() => {
+    briefDirtyRef.current = false;
   }, [threadId]);
 
   // Phase live-timer tick — drives per-phase elapsed display while running
@@ -590,6 +598,7 @@ export default function CompetitionPage() {
       setDbLoadedThreadId(null);
       setHitlVisible(false);
       setHitlSubmitting(false);
+      briefDirtyRef.current = false;
       try {
         const res = await api.startAnalysis({
           query: text,
@@ -618,6 +627,7 @@ export default function CompetitionPage() {
   );
 
   const handleBriefChange = useCallback((next: AnalysisBrief) => {
+    briefDirtyRef.current = true;
     setAnalysisBrief(next);
     setBriefError(null);
   }, []);
@@ -633,6 +643,7 @@ export default function CompetitionPage() {
         analysisBrief.revision,
         analysisBrief,
       );
+      briefDirtyRef.current = false;
       setAnalysisBrief(response.analysis_brief);
       setStatus(response.status);
       window.dispatchEvent(new CustomEvent("competition:refresh-history"));
@@ -723,7 +734,8 @@ export default function CompetitionPage() {
       query?: string;
       title?: string;
     };
-    if (report.analysis_brief) setAnalysisBrief(report.analysis_brief);
+    if (report.analysis_brief && !briefDirtyRef.current)
+      setAnalysisBrief(report.analysis_brief);
     if (report.report_data) setReportData(report.report_data);
     if (report.token_usage) setTokenUsage(report.token_usage);
     if (report.phases && report.phases.length > 0) {

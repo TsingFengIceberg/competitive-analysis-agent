@@ -186,7 +186,7 @@ export default function ResearchWorkbench(props: Props) {
       <DialogContent
         showCloseButton={false}
         aria-describedby="research-workbench-description"
-        className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 shadow-2xl"
+        className="inset-0 flex h-dvh w-screen max-w-none sm:max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 shadow-2xl"
       >
         <DialogTitle className="sr-only">研究工作台</DialogTitle>
         <DialogDescription

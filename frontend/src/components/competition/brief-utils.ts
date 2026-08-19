@@ -1,5 +1,24 @@
 import type { AnalysisBrief, BriefDimension } from "./api-client";
 
+function isAmbiguityResolved(
+  brief: AnalysisBrief,
+  field: string,
+  products: string[],
+): boolean {
+  if (field === "target_products") return products.length >= 2;
+  if (field === "objective") return Boolean(brief.objective.trim());
+  return false;
+}
+
+export function unresolvedBriefAmbiguities(
+  brief: AnalysisBrief,
+): AnalysisBrief["ambiguities"] {
+  const products = brief.target_products.map((item) => item.trim()).filter(Boolean);
+  return brief.ambiguities.filter(
+    (item) => !isAmbiguityResolved(brief, item.field, products),
+  );
+}
+
 export function splitBriefValues(value: string): string[] {
   return [
     ...new Set(
@@ -85,11 +104,7 @@ export function briefValidationErrors(brief: AnalysisBrief): string[] {
   if (Math.abs(total - 1) > 0.0001)
     errors.push("分析维度权重总和必须为 100%。");
   if (
-    brief.ambiguities.some(
-      (item) =>
-        item.required &&
-        !(item.field === "target_products" && products.length >= 2),
-    )
+    unresolvedBriefAmbiguities(brief).some((item) => item.required)
   )
     errors.push("请先处理必填的范围歧义。");
   return errors;

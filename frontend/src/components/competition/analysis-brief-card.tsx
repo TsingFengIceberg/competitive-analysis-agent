@@ -17,7 +17,11 @@ import { StatusNotice } from "@/components/ui/status-badge";
 import type { AnalysisBrief } from "./api-client";
 import BriefChipEditor from "./brief-chip-editor";
 import BriefDimensionEditor from "./brief-dimension-editor";
-import { briefValidationErrors, complexityResourceLabel } from "./brief-utils";
+import {
+  briefValidationErrors,
+  complexityResourceLabel,
+  unresolvedBriefAmbiguities,
+} from "./brief-utils";
 
 interface Props {
   brief: AnalysisBrief;
@@ -71,6 +75,10 @@ export default function AnalysisBriefCard({
   const update = (patch: Partial<AnalysisBrief>) =>
     onChange?.({ ...brief, ...patch });
   const validationErrors = useMemo(() => briefValidationErrors(brief), [brief]);
+  const unresolvedAmbiguities = useMemo(
+    () => unresolvedBriefAmbiguities(brief),
+    [brief],
+  );
 
   if (readOnly) {
     return (
@@ -267,9 +275,9 @@ export default function AnalysisBriefCard({
         </div>
       )}
 
-      {brief.ambiguities.length > 0 && (
+      {unresolvedAmbiguities.length > 0 && (
         <StatusNotice tone="warning" title="需要确认的范围" className="mt-4">
-          {brief.ambiguities.map((item) => (
+          {unresolvedAmbiguities.map((item) => (
             <p key={`${item.field}-${item.question}`}>{item.question}</p>
           ))}
         </StatusNotice>
