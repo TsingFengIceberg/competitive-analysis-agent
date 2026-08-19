@@ -12,6 +12,7 @@ import type {
 } from "./api-client";
 import { generationTraceKey } from "./api-client";
 import CompetitionReportPanel from "./competition-report-panel";
+import EvidenceGraph from "./evidence-graph";
 import QualityGatePanel from "./quality-gate-panel";
 import SourceInspector from "./source-inspector";
 import { VersionTree } from "./version-tree";
@@ -29,6 +30,7 @@ export type WorkbenchTab =
   | "versions"
   | "quality"
   | "sources"
+  | "evidence"
   | "process";
 
 const LazyProcessInspector = dynamic(() => import("./process-inspector"), {
@@ -165,6 +167,19 @@ export default function ResearchWorkbench(props: Props) {
     if (issue.citation_ids[0]) setSelectedSourceId(issue.citation_ids[0]);
   }, []);
 
+  const selectEvidenceSection = useCallback((sectionId: string) => {
+    setTab("report");
+    window.setTimeout(
+      () =>
+        document
+          .getElementById(
+            `report-section-${sectionId.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+          )
+          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      0,
+    );
+  }, []);
+
   const selectedGeneration = useMemo(
     () =>
       trace?.generations.find(
@@ -177,10 +192,11 @@ export default function ResearchWorkbench(props: Props) {
     ["versions", "版本"],
     ["quality", "质量"],
     ["sources", "来源"],
+    ["evidence", "证据图谱"],
     ["process", "流程"],
   ];
-  const inspectorTab: "quality" | "sources" | "process" =
-    tab === "sources" || tab === "process" ? tab : "quality";
+  const inspectorTab: "quality" | "sources" | "evidence" | "process" =
+    tab === "sources" || tab === "evidence" || tab === "process" ? tab : "quality";
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogContent
@@ -332,7 +348,7 @@ export default function ResearchWorkbench(props: Props) {
               />
             </main>
             <aside
-              className={`border-subtle min-h-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "process" ? "block" : "hidden lg:block"}`}
+              className={`border-subtle min-h-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "process" ? "block" : "hidden lg:block"}`}
             >
               <div className="border-subtle mb-3 flex gap-1 border-b pb-2 text-xs lg:flex">
                 <Button
@@ -359,6 +375,16 @@ export default function ResearchWorkbench(props: Props) {
                   type="button"
                   variant="ghost"
                   size="sm"
+                  onClick={() => setTab("evidence")}
+                  className="ui-tab"
+                  data-active={inspectorTab === "evidence"}
+                >
+                  证据图谱
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setTab("process")}
                   className="ui-tab"
                   data-active={inspectorTab === "process"}
@@ -378,6 +404,17 @@ export default function ResearchWorkbench(props: Props) {
                   report={displayReport}
                   selectedSourceId={selectedSourceId}
                   onSelectSource={setSelectedSourceId}
+                />
+              )}
+              {inspectorTab === "evidence" && (
+                <EvidenceGraph
+                  report={displayReport}
+                  selectedSourceId={selectedSourceId}
+                  onSelectSource={(id) => {
+                    setSelectedSourceId(id);
+                    setTab("sources");
+                  }}
+                  onSelectSection={selectEvidenceSection}
                 />
               )}
               {inspectorTab === "process" &&
