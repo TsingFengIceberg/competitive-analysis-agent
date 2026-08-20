@@ -28,7 +28,7 @@
 每条数据点必须包含：
 - `id`: dp-{{timestamp}}-{{seq}}
 - `product`: 产品名（必须匹配 target_products）
-- `category`: "features" | "pricing" | "users" | "market"
+- `category`: 必须使用任务中 `Selected categories` 给出的维度 ID；不得自行添加未确认维度
 - `label`: 一句话描述
 - `value`: 数值或字符串
 - `confidence`: 0.0-1.0（你自己评估的可信度）

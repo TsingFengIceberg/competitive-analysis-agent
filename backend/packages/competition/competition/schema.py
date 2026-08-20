@@ -36,12 +36,19 @@ BRIEF_DIMENSION_LABELS: dict[str, str] = {
 
 
 class BriefDimension(BaseModel):
-    """One selected, bounded dimension in an Analysis Brief."""
+    """One selected, bounded dimension in an Analysis Brief.
+
+    ``source`` makes the three-layer scope visible: core defaults, industry
+    suggestions, model proposals, or an explicit user addition.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    id: Literal["features", "pricing", "users", "market", "technology"]
+    id: str = Field(..., min_length=1, max_length=80, pattern=r"^[a-z0-9][a-z0-9_.:-]*$")
     label: str = ""
+    description: str = Field(default="", max_length=240)
+    search_hint: str = Field(default="", max_length=300)
+    source: Literal["core", "industry", "model", "user"] = "core"
     weight: float = Field(default=0.2, gt=0.0, le=1.0)
 
 
@@ -78,7 +85,17 @@ class AnalysisBrief(BaseModel):
     audience: Literal["product", "strategy", "procurement", "executive", "technical", "general"] = "product"
     market_scope: str = Field(default="Global / unspecified", min_length=1, max_length=120)
     time_range: BriefTimeRange = Field(default_factory=BriefTimeRange)
-    dimensions: list[BriefDimension] = Field(default_factory=list, min_length=1, max_length=5)
+    dimensions: list[BriefDimension] = Field(default_factory=list, min_length=1, max_length=10)
+    dimension_candidates: list[BriefDimension] = Field(
+        default_factory=list,
+        max_length=15,
+        description="Layer-1 and Layer-2 candidates available for user selection.",
+    )
+    effective_dimensions: list[BriefDimension] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Server-owned confirmed dimension contract consumed by all downstream nodes.",
+    )
     complexity: Literal["quick", "standard", "deep"] = "standard"
     evidence_policy: Literal["balanced", "official_preferred", "strict_multi_source"] = "official_preferred"
     output_focus: list[str] = Field(default_factory=lambda: ["关键差异", "可执行建议"], max_length=8)
@@ -220,8 +237,12 @@ class CollectedDataPoint(BaseModel):
 
     id: str = Field(..., description="Unique ID: dp-{timestamp}-{seq}")
     product: str = Field(..., description="Target product name")
-    category: Literal["features", "pricing", "users", "market", "technology"] = Field(
-        ..., description="Data category"
+    category: str = Field(
+        ...,
+        min_length=1,
+        max_length=80,
+        pattern=r"^(features|pricing|users|market|technology|industry:[a-z0-9_.-]+:[1-9][0-9]*)$",
+        description="Confirmed analysis dimension ID",
     )
     label: str = Field(..., description="One-line description, e.g. 'Cursor Pro 月费'")
     value: str | float = Field(..., description="The actual data value")
@@ -363,6 +384,9 @@ class DynamicBlock(BaseModel):
         ..., description="Determines frontend renderer and Reviewer validation strategy"
     )
     title: str = Field(..., description="Block heading, e.g. 'AI 能力对比' / '定价结构差异'")
+    dimension_source: Literal["model"] = "model"
+    rationale: str = Field(default="", max_length=300, description="Why Analyst proposed this Layer-3 angle")
+    included: bool = Field(default=True, description="Whether the proposed block is included in the final report")
     data: dict = Field(..., description="Structure varies by block_type (see per-type specs below)")
     source_data_point_ids: list[str] = Field(
         default_factory=list,

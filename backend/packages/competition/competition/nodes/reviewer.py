@@ -62,7 +62,8 @@ def reviewer_node(state: dict) -> dict:
     # Build quality summary
     quality = _build_quality_summary(collected, gaps, improvement)
     if brief:
-        quality["selected_dimensions"] = [item.get("id") for item in brief.get("dimensions", [])]
+        selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+        quality["selected_dimensions"] = [item.get("id") for item in selected_dimensions if isinstance(item, dict)]
         quality["evidence_policy"] = brief.get("evidence_policy", "balanced")
         quality["evidence_policy_compliant"] = not any(g.get("method") == "evidence_policy" or g.get("method") == "multi_source_policy" for g in gaps)
     quality["round_metrics"] = round_metrics
@@ -257,8 +258,14 @@ def check_dimension_coverage(analysis: dict, target_products: list[str], brief: 
     matrix = analysis.get("comparison_matrix", {})
     cells = matrix.get("cells", [])
     dimensions = set(matrix.get("dimensions", []))
-    if brief and brief.get("dimensions"):
-        dimensions = {"功能" if item.get("id") == "features" else "定价" if item.get("id") == "pricing" else "用户" if item.get("id") == "users" else "市场" if item.get("id") == "market" else "技术" for item in brief["dimensions"]}
+    if brief and (brief.get("effective_dimensions") or brief.get("dimensions")):
+        selected = brief.get("effective_dimensions") or brief.get("dimensions") or []
+        labels = {"features": "功能", "pricing": "定价", "users": "用户", "market": "市场", "technology": "技术"}
+        dimensions = {
+            str(item.get("label") or labels.get(item.get("id"), item.get("id")))
+            for item in selected
+            if isinstance(item, dict) and item.get("id")
+        }
 
     covered = set()
     for c in cells:

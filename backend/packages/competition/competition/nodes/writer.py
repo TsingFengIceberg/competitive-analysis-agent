@@ -119,6 +119,13 @@ def writer_node(state: dict) -> dict:
     task_results = _run_writer_tasks(task_specs)
 
     industry_sections = _merge_industry_sections(task_specs, task_results)
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    has_industry_dimension = any(
+        isinstance(item, dict) and item.get("source") == "industry"
+        for item in selected_dimensions
+    )
+    if brief and not has_industry_dimension:
+        industry_sections = []
     if industry_sections:
         sections.extend(industry_sections)
         logger.info("Added %d industry sections for '%s'", len(industry_sections), state.get("industry", "general"))
@@ -157,7 +164,7 @@ def writer_node(state: dict) -> dict:
             "objective": brief.get("objective"),
             "market_scope": brief.get("market_scope"),
             "time_range": brief.get("time_range"),
-            "dimensions": brief.get("dimensions"),
+            "dimensions": selected_dimensions,
             "audience": brief.get("audience"),
             "evidence_policy": brief.get("evidence_policy"),
             "output_focus": brief.get("output_focus"),
@@ -487,7 +494,12 @@ def _build_writer_task_specs(
             ),
         ))
 
-    for spec in _build_industry_section_specs(state):
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    include_industry = not brief or any(
+        isinstance(item, dict) and item.get("source") == "industry"
+        for item in selected_dimensions
+    )
+    for spec in _build_industry_section_specs(state) if include_industry else []:
         specs.append(_WriterTaskSpec(
             key=f"industry:{spec['section_id']}",
             kind="industry",
@@ -724,6 +736,8 @@ def _render_dynamic_blocks(blocks: list[dict], _src_ref: Callable[[list[str]], s
 
     for i, block in enumerate(blocks):
         if not isinstance(block, dict):
+            continue
+        if block.get("included", True) is False:
             continue
         bt = block.get("block_type", "kv_list")
         title = block.get("title", f"动态分析 {i+1}")
@@ -985,7 +999,7 @@ def _build_quality_gate(
             "section_ids": section_ids_for(data_point_ids, "fact_error"),
         })
 
-    selected_dimensions = brief.get("dimensions") if isinstance(brief.get("dimensions"), list) else []
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
     matrix = analysis.get("comparison_matrix") if isinstance(analysis.get("comparison_matrix"), dict) else {}
     matrix_dimensions = matrix.get("dimensions") if isinstance(matrix.get("dimensions"), list) else []
     if not selected_dimensions:
@@ -1003,7 +1017,7 @@ def _build_quality_gate(
             str(cell.get("product"))
             for cell in matrix.get("cells", []) or []
             if isinstance(cell, dict)
-            and str(cell.get("dimension")) == dim_id
+            and str(cell.get("dimension")) in {dim_id, label}
             and cell.get("rating") is not None
             and str(cell.get("evidence_source", "")) != "insufficient"
             and cell.get("product") in target_products

@@ -51,7 +51,7 @@ class BriefExtraction(BaseModel):
     objective: str = Field(default="", max_length=500)
     market_scope: str = Field(default="", max_length=120)
     audience: str = ""
-    dimensions: list[str] = Field(default_factory=list, max_length=5)
+    dimensions: list[str] = Field(default_factory=list, max_length=8)
     complexity: str = ""
     output_focus: list[str] = Field(default_factory=list, max_length=8)
 
@@ -124,9 +124,25 @@ def _default_dimensions(query: str, complexity: str) -> list[BriefDimension]:
     elif any(term in query.casefold() for term in ("技术", "架构", "integration", "api", "技术栈")):
         selected.append("technology")
     weight = round(1.0 / len(selected), 4)
-    dims = [BriefDimension(id=item, label=BRIEF_DIMENSION_LABELS[item], weight=weight) for item in selected]
+    dims = [
+        BriefDimension(
+            id=item,
+            label=BRIEF_DIMENSION_LABELS[item],
+            source="core",
+            weight=weight,
+        )
+        for item in selected
+    ]
     dims[-1].weight = round(1.0 - sum(item.weight for item in dims[:-1]), 4)
     return dims
+
+
+def _core_dimension_candidates() -> list[BriefDimension]:
+    weight = round(1.0 / len(BRIEF_DIMENSION_LABELS), 4)
+    return [
+        BriefDimension(id=item, label=label, source="core", weight=weight)
+        for item, label in BRIEF_DIMENSION_LABELS.items()
+    ]
 
 
 def _complexity(query: str, products: list[str]) -> str:
@@ -184,12 +200,16 @@ def normalize_brief(
         products = normalize_products(raw.target_products)
         dimensions: list[BriefDimension] = []
         for item in raw.dimensions:
-            dimensions.append(BriefDimension(id=item.id, label=BRIEF_DIMENSION_LABELS[item.id], weight=item.weight))
+            dimensions.append(item.model_copy(update={"label": _clean_text(item.label, 120) or item.id}))
         if dimensions:
             total = sum(item.weight for item in dimensions)
             for item in dimensions:
                 item.weight = round(item.weight / total, 4)
             dimensions[-1].weight = round(1 - sum(item.weight for item in dimensions[:-1]), 4)
+        candidate_by_id = {
+            item.id: item for item in (raw.dimension_candidates or raw.dimensions)
+        }
+        candidate_by_id.update({item.id: item for item in dimensions})
         return raw.model_copy(
             update={
                 "revision": raw.revision,
@@ -197,11 +217,13 @@ def normalize_brief(
                 "objective": _clean_text(raw.objective, 500) or "竞品分析",
                 "market_scope": _clean_text(raw.market_scope, 120) or "Global / unspecified",
                 "dimensions": dimensions,
+                "dimension_candidates": list(candidate_by_id.values()),
                 "output_focus": list(dict.fromkeys(_clean_text(item, 120) for item in raw.output_focus if _clean_text(item, 120)))[:8],
                 "assumptions": [],
                 "inferred_fields": [],
                 "confirmation_source": None,
                 "confirmed_at": None,
+                "effective_dimensions": dimensions,
                 "readiness": "ready" if len(products) >= 2 and bool(dimensions) else "needs_confirmation",
                 "ambiguities": [],
                 "confidence": 1.0,
@@ -216,7 +238,10 @@ def normalize_brief(
         known = [item for item in extracted_model.dimensions if item in BRIEF_DIMENSION_LABELS]
         if known:
             weight = round(1 / len(known), 4)
-            dimensions = [BriefDimension(id=item, label=BRIEF_DIMENSION_LABELS[item], weight=weight) for item in known]
+            dimensions = [
+                BriefDimension(id=item, label=BRIEF_DIMENSION_LABELS[item], source="core", weight=weight)
+                for item in known
+            ]
             dimensions[-1].weight = round(1 - sum(item.weight for item in dimensions[:-1]), 4)
     confidence = 1.0
     if not target_products and not products:
@@ -233,6 +258,18 @@ def normalize_brief(
     ambiguities = _ambiguous(products, query, confidence)
     if open_ended and not ambiguities:
         ambiguities = [BriefAmbiguity(field="target_products", question="请确认具体竞品名单。", required=True)]
+    # Layer 2 candidates are visible in the Brief and can be removed before
+    # confirmation; they are not appended later by Analyst.
+    from competition.industry import get_industry_dimension_specs
+    industry_dimensions = [BriefDimension(**item, weight=1.0) for item in get_industry_dimension_specs(industry)]
+    dimension_candidates = _core_dimension_candidates() + industry_dimensions
+    if industry_dimensions:
+        combined = dimensions + industry_dimensions
+        combined_weight = round(1.0 / len(combined), 4)
+        dimensions = [item.model_copy(update={"weight": combined_weight}) for item in combined]
+        dimensions[-1] = dimensions[-1].model_copy(
+            update={"weight": round(1.0 - sum(item.weight for item in dimensions[:-1]), 4)}
+        )
     return AnalysisBrief(
         objective=_clean_text(extracted_model.objective, 500) or _objective(query, products),
         target_products=products,
@@ -240,6 +277,8 @@ def normalize_brief(
         market_scope=_clean_text(extracted_model.market_scope, 120) or "Global / unspecified",
         time_range=_time_range(),
         dimensions=dimensions,
+        dimension_candidates=dimension_candidates,
+        effective_dimensions=dimensions,
         complexity=complexity,
         evidence_policy="official_preferred",
         output_focus=list(dict.fromkeys(extracted_model.output_focus or ["关键差异", "可执行建议"]))[:8],

@@ -183,6 +183,23 @@ class TestBuildCollectorTask:
         assert "technology" in task
         assert "pricing" not in task
 
+    def test_brief_uses_effective_industry_dimension(self):
+        task = _build_collector_task({
+            "user_request": "compare",
+            "target_products": ["A", "B"],
+            "analysis_brief": {
+                "dimensions": [{"id": "features"}],
+                "effective_dimensions": [{
+                    "id": "industry:devtools:1",
+                    "label": "社区活跃度",
+                    "search_hint": "GitHub stars issues pull requests",
+                    "source": "industry",
+                }],
+            },
+        })
+        assert "industry:devtools:1" in task
+        assert "features" not in task
+
 
 # ═══════════════════════════════════════════════════════════════
 # Data Point Parsing

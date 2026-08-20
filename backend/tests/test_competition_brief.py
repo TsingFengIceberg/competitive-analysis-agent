@@ -101,6 +101,35 @@ def test_invalid_model_output_degrades_to_deterministic_defaults():
     assert brief.dimensions
 
 
+def test_industry_dimensions_are_visible_editable_candidates():
+    brief = brief_from_request("Cursor vs Copilot", industry="devtools")
+
+    industry_candidates = [item for item in brief.dimension_candidates if item.source == "industry"]
+    assert [item.label for item in industry_candidates] == ["社区活跃度", "API文档质量", "插件生态", "开源协议"]
+    assert {item.id for item in industry_candidates}.issubset({item.id for item in brief.dimensions})
+
+
+def test_removed_industry_dimension_stays_out_of_effective_scope():
+    brief = brief_from_request("Cursor vs Copilot", industry="devtools")
+    removed = next(item for item in brief.dimensions if item.source == "industry")
+    edited = brief.model_copy(update={"dimensions": [item for item in brief.dimensions if item.id != removed.id]})
+
+    confirmed = validate_confirmation_brief(edited)
+
+    assert removed.id not in {item.id for item in confirmed.effective_dimensions}
+    assert removed.id in {item.id for item in confirmed.dimension_candidates}
+
+
+def test_core_dimension_can_be_removed_and_restored_as_candidate():
+    brief = brief_from_request("Cursor vs Copilot")
+    edited = brief.model_copy(update={"dimensions": [item for item in brief.dimensions if item.id != "pricing"]})
+
+    confirmed = validate_confirmation_brief(edited)
+
+    assert "pricing" not in {item.id for item in confirmed.effective_dimensions}
+    assert "pricing" in {item.id for item in confirmed.dimension_candidates}
+
+
 def test_optional_model_call_is_bounded_and_open_ended_stays_waiting(monkeypatch):
     calls = []
 

@@ -52,7 +52,7 @@ def collector_node(state: dict) -> dict:
 
     # ── Self-assessment (§3.17.2) ──
     target_products = state.get("target_products", [])
-    self_assessment = _build_collector_self_assessment(data_points, target_products)
+    self_assessment = _build_collector_self_assessment(data_points, target_products, state.get("analysis_brief"))
 
     # ── Questionnaire generation `[§14, feature flag: enable_questionnaire=False]` ──
     questionnaire = None
@@ -75,7 +75,7 @@ def collector_node(state: dict) -> dict:
             # Extract product and category hints from the gap task
             for prod in state.get("target_products", []):
                 if prod.lower() in task_text.lower():
-                    for cat in ["features", "pricing", "users", "market"]:
+                    for cat in _brief_dimension_ids(state.get("analysis_brief")):
                         if cat in task_text.lower() or g.get("type") in ("missing_data", "source_conflict"):
                             gapped_pairs.add((prod.lower(), cat))
         # Keep existing data except for gapped pairs
@@ -120,7 +120,8 @@ def _build_collector_task(state: dict) -> str:
     products_str = ", ".join(target_products) if target_products else "(from user request)"
 
     brief = state.get("analysis_brief") or {}
-    selected = [item.get("id") for item in brief.get("dimensions", []) if item.get("id")]
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    selected = [item.get("id") for item in selected_dimensions if isinstance(item, dict) and item.get("id")]
     categories = selected or ["features", "pricing", "users", "market"]
     market_scope = brief.get("market_scope", "Global / unspecified")
     time_range = brief.get("time_range", {}).get("label", "最近12个月")
@@ -132,7 +133,11 @@ def _build_collector_task(state: dict) -> str:
         "  - users: target segments, satisfaction scores, reviews\n"
         "  - market: market share, growth trends, funding, valuation"
         if not brief else
-        chr(10).join(f"  - {category}: collect evidence for this dimension" for category in categories)
+        chr(10).join(
+            f"  - {item.get('id')}: {item.get('label', item.get('id'))}"
+            for item in selected_dimensions
+            if isinstance(item, dict)
+        )
     )
     task = f"""Search for competitive intelligence data on: {products_str}
 
@@ -340,9 +345,19 @@ def build_collection_summary(points: list[CollectedDataPoint], target_products: 
 COLLECTOR_DIMENSIONS = ["features", "pricing", "users", "market"]
 
 
+def _brief_dimension_ids(brief: dict | None) -> list[str]:
+    if isinstance(brief, dict):
+        dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+        ids = [str(item.get("id")) for item in dimensions if isinstance(item, dict) and item.get("id")]
+        if ids:
+            return ids
+    return list(COLLECTOR_DIMENSIONS)
+
+
 def _build_collector_self_assessment(
     points: list[CollectedDataPoint],
     target_products: list[str],
+    brief: dict | None = None,
 ) -> dict:
     """Build Collector self-assessment: coverage per product×dimension, gaps, confidence.
 
@@ -369,12 +384,13 @@ def _build_collector_self_assessment(
     # Per-product coverage score
     per_product: dict[str, float] = {}
     gaps: list[str] = []
-    total_dimensions = len(COLLECTOR_DIMENSIONS)
+    dimensions = _brief_dimension_ids(brief)
+    total_dimensions = len(dimensions)
 
     for product in target_products:
         dims_covered = len(covered.get(product, set()))
         per_product[product] = dims_covered / total_dimensions if total_dimensions > 0 else 0.0
-        missing = [d for d in COLLECTOR_DIMENSIONS if d not in covered.get(product, set())]
+        missing = [d for d in dimensions if d not in covered.get(product, set())]
         for dim in missing:
             gaps.append(f"{product}-{dim}")
 
@@ -543,15 +559,21 @@ def _run_searches(state: dict) -> str:
     # v4: If dimension_weights are available, adjust categories searched
     # Higher weight → include that dimension in the search explicitly
     brief = state.get("analysis_brief") or {}
-    selected_categories = [item.get("id") for item in brief.get("dimensions", []) if item.get("id")]
-    queries = build_search_queries(target_products, categories=selected_categories or None, complexity=complexity)
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    selected_categories = [item.get("id") for item in selected_dimensions if isinstance(item, dict) and item.get("id")]
+    category_hints = {
+        str(item.get("id")): str(item.get("search_hint") or item.get("label") or item.get("id"))
+        for item in selected_dimensions
+        if isinstance(item, dict) and item.get("id")
+    }
+    queries = build_search_queries(target_products, categories=selected_categories or None, category_hints=category_hints or None, complexity=complexity)
 
     # Industry keyword injection (Layer 2 of §3.20)
     from competition.industry import get_industry_profile
     industry = state.get("industry", "general")
     profile = get_industry_profile(industry)
     industry_kw = profile.get("search_keywords", [])
-    if industry_kw and industry != "general":
+    if industry_kw and industry != "general" and not brief:
         # Append industry keywords to the first 2 queries per product for coverage
         extra = []
         for product in target_products:

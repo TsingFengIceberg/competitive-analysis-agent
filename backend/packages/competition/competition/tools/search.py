@@ -964,7 +964,12 @@ _CATEGORY_QUERY_TEMPLATES = {
 }
 
 
-def build_search_queries(products: list[str], categories: list[str] | None = None, complexity: str = "standard") -> list[str]:
+def build_search_queries(
+    products: list[str],
+    categories: list[str] | None = None,
+    complexity: str = "standard",
+    category_hints: dict[str, str] | None = None,
+) -> list[str]:
     """Generate search queries for each product × category.
 
     Uses 1 query per category (not 2+), since Volcengine web_search returns
@@ -977,7 +982,7 @@ def build_search_queries(products: list[str], categories: list[str] | None = Non
     """
     all_cats = categories or list(_CATEGORY_QUERY_TEMPLATES.keys())
 
-    if complexity == "quick":
+    if complexity == "quick" and categories is None:
         # Fewer categories for simple comparison
         cats = [c for c in all_cats if c in ("features", "pricing")]
         if not cats:
@@ -990,8 +995,12 @@ def build_search_queries(products: list[str], categories: list[str] | None = Non
     queries = []
     for product in products:
         for cat in cats:
-            tmpl = _CATEGORY_QUERY_TEMPLATES.get(cat, ["{product}"])
-            queries.append(tmpl[0].format(product=product))
+            tmpl = _CATEGORY_QUERY_TEMPLATES.get(cat)
+            if tmpl:
+                queries.append(tmpl[0].format(product=product))
+            else:
+                hint = (category_hints or {}).get(cat, cat)
+                queries.append(f"{product} {hint} competitive analysis")
 
     # Deep mode: add extra strategic queries per product
     if complexity == "deep":

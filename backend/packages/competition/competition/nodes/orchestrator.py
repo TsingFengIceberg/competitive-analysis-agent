@@ -334,7 +334,7 @@ def orchestrator_node(state: dict) -> dict:
 def _build_return(orch: OrchestrationResult, brief: dict | None = None) -> dict:
     """Build the partial state return dict."""
     if brief:
-        dimensions = brief.get("dimensions") or []
+        dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
         orch.complexity = brief.get("complexity", orch.complexity)
         orch.schema_profile = "deep" if orch.complexity == "deep" else "baseline"
         from competition.schema import DimensionWeight

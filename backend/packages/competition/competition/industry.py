@@ -85,6 +85,31 @@ INDUSTRY_PROFILES: dict[str, dict] = {
 _VALID_INDUSTRIES = frozenset(INDUSTRY_PROFILES.keys())
 
 
+def get_industry_dimension_specs(industry: str) -> list[dict[str, str]]:
+    """Return stable, editable Layer-2 dimension candidates for an industry.
+
+    The existing profile labels remain the source of truth for compatibility;
+    IDs are generated from the stable profile order and therefore remain safe
+    for Collector categories and persisted Briefs.
+    """
+    profile = get_industry_profile(industry)
+    labels = profile.get("analyst_dimensions", []) or []
+    keywords = profile.get("search_keywords", []) or []
+    return [
+        {
+            "id": f"industry:{industry}:{index + 1}",
+            "label": str(label),
+            "description": f"{profile.get('label', industry)}场景下的专项分析维度",
+            "search_hint": " ".join(
+                part for part in (str(label), str(keywords[index]) if index < len(keywords) else "") if part
+            ),
+            "source": "industry",
+        }
+        for index, label in enumerate(labels)
+        if str(label).strip()
+    ]
+
+
 def get_industry_profile(industry: str) -> dict:
     """Return the profile for a given industry, defaulting to 'general'."""
     return INDUSTRY_PROFILES.get(industry, INDUSTRY_PROFILES["general"])

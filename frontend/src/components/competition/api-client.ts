@@ -31,17 +31,25 @@ export type AnalysisStatus =
   | "interrupted"
   | "approved"
   | "error";
-export type BriefDimensionId =
-  | "features"
-  | "pricing"
-  | "users"
-  | "market"
-  | "technology";
+export type BriefDimensionId = string;
 
 export interface BriefDimension {
   id: BriefDimensionId;
   label: string;
+  description: string;
+  search_hint: string;
+  source: "core" | "industry" | "model" | "user";
   weight: number;
+}
+
+export interface DynamicAnalysisBlock {
+  block_type: "kv_list" | "comparison_table" | "stat_chart" | "insight_text";
+  title: string;
+  dimension_source?: "model";
+  rationale?: string;
+  included?: boolean;
+  data: Record<string, unknown>;
+  source_data_point_ids: string[];
 }
 
 export interface BriefTimeRange {
@@ -72,6 +80,8 @@ export interface AnalysisBrief {
   market_scope: string;
   time_range: BriefTimeRange;
   dimensions: BriefDimension[];
+  dimension_candidates: BriefDimension[];
+  effective_dimensions: BriefDimension[];
   complexity: "quick" | "standard" | "deep";
   evidence_policy: "balanced" | "official_preferred" | "strict_multi_source";
   output_focus: string[];

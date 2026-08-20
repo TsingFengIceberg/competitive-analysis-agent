@@ -93,7 +93,7 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 
 ### 动态 Schema
 
-3 层 Schema 模型：通用固定层 + 行业专属层 + LLM 自适应动态层。Orchestrator 根据 query 复杂度和行业类型自动选择报告深度与专属分析维度。
+3 层分析维度模型：通用固定层 + 行业候选层 + LLM 自适应动态层。通用维度和行业候选会在 Analysis Brief 中展示，用户可以删除或调整权重；确认后的 `effective_dimensions` 是 Collector、Analyst、Reviewer 和 Writer 共同遵守的最终范围。Analyst 还可以根据已收集证据提出动态分析块，并记录提出理由、来源和是否纳入报告，避免模型静默扩大分析范围。
 
 ### 可观测面板
 

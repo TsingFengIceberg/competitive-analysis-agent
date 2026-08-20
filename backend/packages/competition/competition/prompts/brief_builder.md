@@ -6,7 +6,7 @@ one JSON object with these keys:
 
 Rules:
 - Never invent competitors for an open-ended request.
-- Use only the fixed dimension IDs: features, pricing, users, market, technology.
+- Suggest only Layer-1 core IDs here: features, pricing, users, market, technology. Layer-2 industry candidates are added by the server and remain user-editable.
 - Use audience values: product, strategy, procurement, executive, technical, general.
 - Use complexity values: quick, standard, deep.
 - Return raw JSON only. Do not include commentary, markdown, or reasoning.

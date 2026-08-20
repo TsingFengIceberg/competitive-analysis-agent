@@ -150,8 +150,13 @@ def _build_analyst_task(state: dict) -> str:
 
     categories_present = {dp.get("category", "") for dp in collected if isinstance(dp, dict)}
     brief = state.get("analysis_brief") or {}
-    if brief.get("dimensions"):
-        dimensions = [CATEGORY_DIMENSION_MAP.get(item.get("id"), item.get("id", "")) for item in brief["dimensions"]]
+    selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    if selected_dimensions:
+        dimensions = [
+            str(item.get("label") or CATEGORY_DIMENSION_MAP.get(item.get("id"), item.get("id", "")))
+            for item in selected_dimensions
+            if isinstance(item, dict) and item.get("id")
+        ]
         dimensions = [dim for dim in dimensions if dim]
         dim_weight_hint += (
             f"\nBRIEF SCOPE: market={brief.get('market_scope', 'Global / unspecified')}; "
@@ -170,11 +175,23 @@ def _build_analyst_task(state: dict) -> str:
     industry = state.get("industry", "general")
     industry_profile = get_industry_profile(industry)
     industry_dims = industry_profile.get("analyst_dimensions", [])
-    for dim in industry_dims:
-        if dim not in dimensions:
-            dimensions.append(dim)
+    if not selected_dimensions:
+        for dim in industry_dims:
+            if dim not in dimensions:
+                dimensions.append(dim)
+    selected_industry_labels = [
+        str(item.get("label"))
+        for item in selected_dimensions
+        if isinstance(item, dict) and item.get("source") == "industry" and item.get("label")
+    ]
     industry_bias = industry_profile.get("prompt_bias", "")
-    if industry_bias:
+    if selected_dimensions:
+        if selected_industry_labels:
+            emphasis_hint = (emphasis_hint or "") + (
+                f"\nCONFIRMED INDUSTRY DIMENSIONS: {', '.join(selected_industry_labels)}. "
+                "Do not add industry dimensions that are not in this confirmed list.\n"
+            )
+    elif industry_bias:
         emphasis_hint = (emphasis_hint or "") + f"\nINDUSTRY FOCUS ({industry_profile['label']}): {industry_bias}\n"
 
     # Tier 4: only available when replan has been attempted (review_round >= 1)
@@ -422,6 +439,9 @@ def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
         if bt not in ("kv_list", "comparison_table", "stat_chart", "insight_text"):
             logger.warning("dynamic_block[%d] unknown block_type '%s' — skipping", i, bt)
             continue
+        block["dimension_source"] = "model"
+        block["rationale"] = str(block.get("rationale") or "模型根据已收集证据提出的补充分析角度")[:300]
+        block["included"] = bool(block.get("included", True))
         validated_blocks.append(block)
     raw["dynamic_blocks"] = validated_blocks
 
@@ -447,7 +467,8 @@ def _empty_analysis_result(state: dict) -> dict:
 def _brief_dimensions(state: dict) -> list[str]:
     labels = {"features": "功能", "pricing": "定价", "users": "用户", "market": "市场", "technology": "技术"}
     brief = state.get("analysis_brief") or {}
-    return [labels.get(item.get("id"), item.get("id", "")) for item in brief.get("dimensions", []) if item.get("id")] if brief else []
+    dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
+    return [str(item.get("label") or labels.get(item.get("id"), item.get("id", ""))) for item in dimensions if isinstance(item, dict) and item.get("id")] if brief else []
 
 
 # ── Self-Check (§3.5.5) ──

@@ -1,6 +1,6 @@
 "use client";
 
-import type { AnalysisBrief, BriefDimensionId } from "./api-client";
+import type { AnalysisBrief, BriefDimension, BriefDimensionId } from "./api-client";
 import { normalizeDimensionWeights } from "./brief-utils";
 
 const DIMENSIONS: Array<[BriefDimensionId, string]> = [
@@ -10,6 +10,13 @@ const DIMENSIONS: Array<[BriefDimensionId, string]> = [
   ["market", "市场与竞争格局"],
   ["technology", "技术与集成能力"],
 ];
+
+const SOURCE_LABEL: Record<BriefDimension["source"], string> = {
+  core: "通用",
+  industry: "行业建议",
+  model: "模型建议",
+  user: "用户",
+};
 
 interface Props {
   brief: AnalysisBrief;
@@ -22,6 +29,16 @@ export default function BriefDimensionEditor({
   disabled,
   onChange,
 }: Props) {
+  const candidates = brief.dimension_candidates?.length
+    ? brief.dimension_candidates
+    : DIMENSIONS.map(([id, label]) => ({
+        id,
+        label,
+        description: "",
+        search_hint: "",
+        source: "core" as const,
+        weight: 0.2,
+      }));
   const selected = new Set(brief.dimensions.map((item) => item.id));
   const toggle = (id: BriefDimensionId) => {
     if (selected.has(id) && selected.size === 1) return;
@@ -29,11 +46,14 @@ export default function BriefDimensionEditor({
       ? brief.dimensions.filter((item) => item.id !== id)
       : [
           ...brief.dimensions,
-          {
+          { ...(candidates.find((item) => item.id === id) ?? {
             id,
-            label: DIMENSIONS.find(([key]) => key === id)?.[1] ?? id,
+            label: id,
+            description: "",
+            search_hint: "",
+            source: "user" as const,
             weight: 1,
-          },
+          }), weight: 1 },
         ];
     const equal: AnalysisBrief["dimensions"] = next.map((item) => ({
       ...item,
@@ -57,7 +77,8 @@ export default function BriefDimensionEditor({
         </span>
       </legend>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        {DIMENSIONS.map(([id, label]) => {
+        {candidates.map((candidate) => {
+          const { id, label } = candidate;
           const item = brief.dimensions.find(
             (dimension) => dimension.id === id,
           );
@@ -69,7 +90,12 @@ export default function BriefDimensionEditor({
                 onChange={() => toggle(id)}
                 disabled={disabled}
               />
-              <span className="min-w-0 flex-1 break-words">{label}</span>
+              <span className="min-w-0 flex-1 break-words">
+                <span>{label}</span>
+                <span className="text-muted-foreground ml-1 text-[10px]">
+                  {SOURCE_LABEL[candidate.source]}
+                </span>
+              </span>
               {item && (
                 <>
                   <input
