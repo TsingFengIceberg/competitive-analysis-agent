@@ -4,8 +4,6 @@
 
 <h1 align="center">Competitive-Analysis-Agent</h1>
 
-An AI-powered competitive intelligence and analysis agent collaboration system.
-
 <p align="center"><a href="./README_en.md">English</a> | <a href="./README.md">中文</a></p>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
@@ -15,6 +13,8 @@ An AI-powered competitive intelligence and analysis agent collaboration system.
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
+
+<p align="center"><strong>An AI-powered competitive intelligence and analysis agent collaboration system.</strong></p>
 
 ## Contents
 

@@ -69,6 +69,16 @@ export default function SourceInspector({
               : source.published_at || "发布时间未记录"}{" "}
             · 采集 {source.collected_at || source.timestamp || "未知"}
           </div>
+          {source.content_ref ? (
+            <div className="mt-2 rounded border border-dashed px-2 py-1.5 text-[10px] text-foreground/75">
+              <div className="font-medium text-emerald-700 dark:text-emerald-400">已保存历史快照</div>
+              <div className="mt-0.5 break-words text-muted-foreground [overflow-wrap:anywhere]">
+                抓取 {source.snapshot_fetched_at || "未知"} · {source.snapshot_char_count ?? 0} 字符 · SHA-256 {source.snapshot_sha256?.slice(0, 12) || "未知"}…
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 text-[10px] text-muted-foreground">当前版本没有保存原文快照</div>
+          )}
           {source.snippet && (
             <div className="text-muted-foreground mt-1 line-clamp-3">
               {source.snippet}

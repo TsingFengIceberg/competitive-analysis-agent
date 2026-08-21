@@ -1,7 +1,7 @@
 "use client";
 
 import { BarChart3, RefreshCw, Table2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,10 @@ function dimensionWeight(report: ReportData, dimension: string): number {
 
 export default function StructuredAnalysisPanel({ report, onRequestRework }: Props) {
   const [query, setQuery] = useState("");
+  const [weightOverrides, setWeightOverrides] = useState<Record<string, number>>({});
+  useEffect(() => {
+    setWeightOverrides({});
+  }, [report]);
   if (!report) {
     return <div className="ui-inset p-3 text-xs text-muted-foreground">报告尚未生成，暂无结构化分析。</div>;
   }
@@ -43,6 +47,18 @@ export default function StructuredAnalysisPanel({ report, onRequestRework }: Pro
   const products = Array.isArray(matrix.products) ? matrix.products.map(String) : report.products;
   const dimensions = Array.isArray(matrix.dimensions) ? matrix.dimensions.map(String) : [];
   const cells = (Array.isArray(matrix.cells) ? matrix.cells : []) as MatrixCell[];
+  const originalWeights = Object.fromEntries(
+    dimensions.map((dimension) => [dimension, dimensionWeight(report, dimension)]),
+  );
+  const hasWeightOverrides = Object.keys(weightOverrides).length > 0;
+  const rawWeightTotal = dimensions.reduce(
+    (sum, dimension) => sum + (weightOverrides[dimension] ?? originalWeights[dimension] ?? 1),
+    0,
+  );
+  const effectiveWeight = (dimension: string) => {
+    const raw = weightOverrides[dimension] ?? originalWeights[dimension] ?? 1;
+    return rawWeightTotal > 0 ? raw / rawWeightTotal : 0;
+  };
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleProducts = products.filter((product) => !normalizedQuery || product.toLocaleLowerCase().includes(normalizedQuery));
   const visibleDimensions = dimensions.filter((dimension) => !normalizedQuery || dimension.toLocaleLowerCase().includes(normalizedQuery));
@@ -54,7 +70,7 @@ export default function StructuredAnalysisPanel({ report, onRequestRework }: Pro
       let totalWeight = 0;
       for (const dimension of dimensions) {
         const rating = cells.find((cell) => cell.product === product && cell.dimension === dimension)?.rating;
-        const weight = dimensionWeight(report, dimension);
+        const weight = effectiveWeight(dimension);
         if (typeof rating === "number") {
           weighted += rating * weight;
           totalWeight += weight;
@@ -97,6 +113,51 @@ export default function StructuredAnalysisPanel({ report, onRequestRework }: Pro
           <div className="space-y-1.5">{ranking.map((item) => <div key={item.product} className="flex items-center gap-2"><span className="w-24 truncate">{item.product}</span><div className="h-1.5 min-w-0 flex-1 rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, item.score / 5 * 100)}%` }} /></div><span className="w-10 text-right font-medium">{item.score.toFixed(2)}</span></div>)}</div>
           <div className="border-subtle border-t pt-2 text-[10px] text-muted-foreground">敏感性检查：如果只看某一个维度，推荐可能变化。</div>
           <div className="grid gap-1 sm:grid-cols-2">{sensitivity.map((item) => <div key={item.dimension} className="flex items-center justify-between gap-2 rounded border px-2 py-1.5"><span className="truncate">{item.dimension}</span><span className="shrink-0">{item.winner?.product ?? "暂无"} · {item.winner?.rating ?? 0}/5</span></div>)}</div>
+        </div>
+      )}
+
+      {dimensions.length > 0 && (
+        <div className="ui-inset space-y-3 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-semibold">推荐权重推演</div>
+              <div className="mt-1 text-[10px] text-muted-foreground">拖动权重查看当前报告下的即时排名，不会修改已生成报告。</div>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={!hasWeightOverrides}
+              onClick={() => setWeightOverrides({})}
+            >
+              恢复报告权重
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {dimensions.map((dimension) => {
+              const raw = weightOverrides[dimension] ?? originalWeights[dimension] ?? 1;
+              const original = originalWeights[dimension] ?? 1;
+              return (
+                <label key={dimension} className="grid grid-cols-[minmax(0,1fr)_minmax(7rem,2fr)_3.5rem] items-center gap-2 text-[11px]">
+                  <span className="min-w-0 truncate" title={dimension}>{dimension}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={Math.round(raw * 100)}
+                    aria-label={`${dimension} 推演权重`}
+                    onChange={(event) => setWeightOverrides((current) => ({ ...current, [dimension]: Number(event.target.value) / 100 }))}
+                    className="min-w-0 accent-primary"
+                  />
+                  <span className="text-right tabular-nums">{Math.round(effectiveWeight(dimension) * 100)}%</span>
+                  <span className="col-span-3 text-[10px] text-muted-foreground">报告原始权重 {Math.round(original * 100)}%</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="text-[10px] text-muted-foreground">当前推演权重总和：{Math.round(rawWeightTotal * 100)}%（排名按归一化权重计算）</div>
         </div>
       )}
 

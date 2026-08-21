@@ -12,14 +12,17 @@ from competition.db import (
     CREDIBILITY_DELTA,
     DEFAULT_CREDIBILITY_SCORE,
     claim_analysis_start,
+    delete_analysis_template,
     get_all_credibilities,
     get_analysis,
     get_baseline,
     get_credibility,
     get_phases,
     init_db,
+    list_analysis_templates,
     list_history,
     record_analysis,
+    save_analysis_template,
     save_phase,
     set_baseline,
     update_credibility,
@@ -73,6 +76,15 @@ def conn():
             analysis_brief TEXT,
             confirmation_source TEXT,
             confirmed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS analysis_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            template_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, name)
         );
     """)
     c.commit()
@@ -230,6 +242,28 @@ class TestAnalysisHistory:
             results = list(pool.map(attempt, range(2)))
         assert results.count("claimed") == 1
         assert results.count("idempotent") == 1
+
+
+class TestAnalysisTemplates:
+    def test_save_update_and_list_are_user_scoped(self, conn):
+        first = save_analysis_template("alice", "开发者工具", {"target_products": ["Cursor"]}, conn=conn)
+        assert first["name"] == "开发者工具"
+        save_analysis_template("alice", "开发者工具", {"target_products": ["Cursor", "Codex"]}, conn=conn)
+        save_analysis_template("bob", "开发者工具", {"target_products": ["A", "B"]}, conn=conn)
+
+        alice = list_analysis_templates("alice", conn=conn)
+        bob = list_analysis_templates("bob", conn=conn)
+        assert len(alice) == 1
+        assert alice[0]["brief"]["target_products"] == ["Cursor", "Codex"]
+        assert len(bob) == 1
+        assert bob[0]["brief"]["target_products"] == ["A", "B"]
+
+    def test_delete_cannot_cross_user_boundary(self, conn):
+        saved = save_analysis_template("alice", "私有", {"objective": "x"}, conn=conn)
+        assert delete_analysis_template("bob", saved["id"], conn=conn) is False
+        assert len(list_analysis_templates("alice", conn=conn)) == 1
+        assert delete_analysis_template("alice", saved["id"], conn=conn) is True
+        assert list_analysis_templates("alice", conn=conn) == []
 
 
 class TestInitDb:

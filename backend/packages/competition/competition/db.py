@@ -115,7 +115,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """)
 
     # User settings: per-user config overrides (API keys, model, search toggles, etc.)
-    conn.execute("""
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id TEXT PRIMARY KEY,
             active_group TEXT DEFAULT 'groupA',
@@ -128,6 +128,17 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             config_groups TEXT DEFAULT '[]',
             updated_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS analysis_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            template_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_templates_user ON analysis_templates(user_id, updated_at DESC);
     """)
     # Migrations
     for col, default in [("provider_bases", "'{}'"), ("config_groups", "'[]'")]:
@@ -744,6 +755,64 @@ def get_content(content_ref: str, conn: sqlite3.Connection | None = None) -> dic
         "content_ref": row[0], "url": row[1], "full_text": row[2],
         "char_count": row[3], "fetched_at": row[4],
     }
+
+
+# ── Analysis Brief templates ──
+
+
+def list_analysis_templates(user_id: str, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Return the current user's reusable Analysis Brief templates."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    rows = conn.execute(
+        "SELECT id, name, template_json, created_at, updated_at FROM analysis_templates WHERE user_id = ? ORDER BY updated_at DESC",
+        (user_id,),
+    ).fetchall()
+    if close_conn:
+        conn.close()
+    result = []
+    for row in rows:
+        try:
+            brief = json.loads(row[2])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        result.append({"id": row[0], "name": row[1], "brief": brief, "created_at": row[3], "updated_at": row[4]})
+    return result
+
+
+def save_analysis_template(user_id: str, name: str, brief: dict, conn: sqlite3.Connection | None = None) -> dict:
+    """Create or update one user-owned Analysis Brief template."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        """INSERT INTO analysis_templates (user_id, name, template_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, name) DO UPDATE SET template_json = excluded.template_json, updated_at = excluded.updated_at""",
+        (user_id, name, json.dumps(brief, ensure_ascii=False), now, now),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, created_at, updated_at FROM analysis_templates WHERE user_id = ? AND name = ?",
+        (user_id, name),
+    ).fetchone()
+    if close_conn:
+        conn.close()
+    return {"id": row[0], "name": name, "brief": brief, "created_at": row[1], "updated_at": row[2]}
+
+
+def delete_analysis_template(user_id: str, template_id: int, conn: sqlite3.Connection | None = None) -> bool:
+    """Delete one template only when it belongs to the requesting user."""
+    close_conn = conn is None
+    if conn is None:
+        conn = init_db()
+    cursor = conn.execute("DELETE FROM analysis_templates WHERE id = ? AND user_id = ?", (template_id, user_id))
+    conn.commit()
+    if close_conn:
+        conn.close()
+    return cursor.rowcount > 0
 
 
 # ── User Settings (per-user config overrides) ──

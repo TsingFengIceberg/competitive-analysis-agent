@@ -928,6 +928,30 @@ def test_traceability_map_keeps_legacy_fields_and_adds_source_metadata():
     assert trace["1"]["publication_date_status"] == "known"
 
 
+def test_traceability_map_includes_reproducible_snapshot_metadata(monkeypatch, tmp_path):
+    import hashlib
+
+    from competition import db
+
+    db_path = tmp_path / "snapshot.db"
+    original_init_db = db.init_db
+    connection = original_init_db(db_path)
+    text = "Historical pricing page captured for reproducible review."
+    content_ref = hashlib.sha256(b"https://a.example/pricing").hexdigest()[:16]
+    db.save_content(content_ref, "https://a.example/pricing", text, conn=connection)
+    connection.close()
+    monkeypatch.setattr(db, "init_db", lambda: original_init_db(db_path))
+
+    trace = _build_traceability_map([{
+        "id": "dp-1", "product": "A", "category": "pricing", "label": "Pro",
+        "value": "$20", "source_url": "https://a.example/pricing", "source_type": "official",
+        "collected_at": "2026-08-14T00:00:00Z",
+    }])
+    assert trace["1"]["content_ref"] == content_ref
+    assert trace["1"]["snapshot_char_count"] == len(text)
+    assert trace["1"]["snapshot_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+
+
 # ═══════════════════════════════════════════════════════════════
 # HITL Gate Node (§5.2)
 # ═══════════════════════════════════════════════════════════════

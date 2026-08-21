@@ -237,6 +237,10 @@ export interface ReportData {
         | "unknown"
         | "outside_range"
         | "outdated";
+      content_ref?: string;
+      snapshot_fetched_at?: string;
+      snapshot_char_count?: number;
+      snapshot_sha256?: string;
     }
   >;
   quality_summary: Record<string, unknown>;
@@ -455,6 +459,29 @@ export { API_BASE };
 export function useCompetitionAPI() {
   const [loading, setLoading] = useState(false);
 
+  const listAnalysisTemplates = useCallback(async (): Promise<Array<{ id: number; name: string; brief: AnalysisBrief; created_at: string; updated_at: string }>> => {
+    const res = await fetch(`${API_BASE}/templates`, { credentials: "include", cache: "no-store" });
+    if (!res.ok) throw new Error(`Template fetch failed: ${res.status}`);
+    const payload = await res.json();
+    return payload.templates ?? [];
+  }, []);
+
+  const saveAnalysisTemplate = useCallback(async (name: string, brief: AnalysisBrief) => {
+    const res = await fetch(`${API_BASE}/templates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      credentials: "include",
+      body: JSON.stringify({ name, brief }),
+    });
+    if (!res.ok) throw new Error(`Template save failed: ${res.status}`);
+    return res.json();
+  }, []);
+
+  const deleteAnalysisTemplate = useCallback(async (id: number) => {
+    const res = await fetch(`${API_BASE}/templates/${id}`, { method: "DELETE", headers: csrfHeaders(), credentials: "include" });
+    if (!res.ok) throw new Error(`Template delete failed: ${res.status}`);
+  }, []);
+
   const startAnalysis = useCallback(
     async (req: AnalyzeRequest): Promise<AnalyzeResponse> => {
       setLoading(true);
@@ -653,6 +680,9 @@ export function useCompetitionAPI() {
 
   return {
     loading,
+    listAnalysisTemplates,
+    saveAnalysisTemplate,
+    deleteAnalysisTemplate,
     startAnalysis,
     confirmAnalysis,
     cancelAnalysis,

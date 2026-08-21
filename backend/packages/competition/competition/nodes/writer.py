@@ -864,11 +864,35 @@ def _build_traceability_map(collected: list[dict]) -> dict:
         return "weak"
 
     trace = {}
+    content_cache: dict[str, dict | None] = {}
     for i, dp in enumerate(collected):
         if isinstance(dp, dict):
             url = dp.get("source_url", "")
             domain = urlparse(url).netloc if url else ""
             score = domain_scores.get(domain, 0.5)
+            snapshot: dict | None = None
+            if url:
+                try:
+                    import hashlib
+
+                    from competition.db import get_content, init_db
+                    content_ref = hashlib.sha256(url.encode()).hexdigest()[:16]
+                    if content_ref not in content_cache:
+                        conn = init_db()
+                        content_cache[content_ref] = get_content(content_ref, conn=conn)
+                        conn.close()
+                    snapshot = content_cache[content_ref]
+                except Exception:
+                    snapshot = None
+            snapshot_fields = {}
+            if snapshot:
+                import hashlib
+                snapshot_fields = {
+                    "content_ref": snapshot.get("content_ref"),
+                    "snapshot_fetched_at": snapshot.get("fetched_at"),
+                    "snapshot_char_count": snapshot.get("char_count", 0),
+                    "snapshot_sha256": hashlib.sha256(str(snapshot.get("full_text", "")).encode()).hexdigest(),
+                }
             trace[str(i + 1)] = {
                 "url": url,
                 "timestamp": dp.get("collected_at", ""),
@@ -885,6 +909,7 @@ def _build_traceability_map(collected: list[dict]) -> dict:
                 "collected_at": dp.get("collected_at", ""),
                 "published_at": dp.get("published_at"),
                 "publication_date_status": _publication_date_status(dp.get("published_at"), None),
+                **snapshot_fields,
             }
     return trace
 

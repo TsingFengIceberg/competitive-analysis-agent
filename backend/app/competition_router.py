@@ -100,6 +100,11 @@ class SettingsConnectionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
 
 
+class AnalysisTemplateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    brief: dict
+
+
 class StreamEvent(BaseModel):
     """Single SSE event payload."""
 
@@ -2111,6 +2116,35 @@ async def list_history(limit: int = Query(default=10, le=50), fastapi_request: R
     except Exception:
         logger.exception("Failed to merge persisted competition history")
     return {"history": history, "total": len(history), "user_id": user_id}
+
+
+@router.get("/templates")
+async def list_analysis_templates(fastapi_request: Request):
+    """List reusable Analysis Brief templates for the current user."""
+    from competition.db import list_analysis_templates as _list_templates
+
+    user_id = _get_user_id(fastapi_request)
+    return {"templates": _list_templates(user_id)}
+
+
+@router.post("/templates")
+async def save_analysis_template(body: AnalysisTemplateRequest, fastapi_request: Request):
+    """Create or update a reusable Analysis Brief template."""
+    from competition.db import save_analysis_template as _save_template
+
+    user_id = _get_user_id(fastapi_request)
+    return {"template": _save_template(user_id, body.name.strip(), body.brief)}
+
+
+@router.delete("/templates/{template_id}")
+async def delete_analysis_template(template_id: int, fastapi_request: Request):
+    """Delete a user-owned Analysis Brief template."""
+    from competition.db import delete_analysis_template as _delete_template
+
+    user_id = _get_user_id(fastapi_request)
+    if not _delete_template(user_id, template_id):
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"ok": True, "template_id": template_id}
 
 
 @router.get("/me")

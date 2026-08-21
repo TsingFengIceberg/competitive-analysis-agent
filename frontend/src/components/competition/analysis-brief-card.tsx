@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { StatusNotice } from "@/components/ui/status-badge";
 
-import type { AnalysisBrief } from "./api-client";
+import { useCompetitionAPI, type AnalysisBrief } from "./api-client";
 import BriefChipEditor from "./brief-chip-editor";
 import BriefDimensionEditor from "./brief-dimension-editor";
 import {
@@ -32,6 +32,14 @@ interface Props {
   onConfirm?: () => void;
   onCancel?: () => void;
 }
+
+type TemplateRecord = {
+  id?: number;
+  name: string;
+  brief: AnalysisBrief;
+  created_at?: string;
+  updated_at?: string;
+};
 
 function BriefSelect({
   label,
@@ -72,16 +80,34 @@ export default function AnalysisBriefCard({
   onCancel,
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [templates, setTemplates] = useState<Array<{ name: string; brief: AnalysisBrief }>>([]);
+  const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [templateName, setTemplateName] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const { listAnalysisTemplates, saveAnalysisTemplate, deleteAnalysisTemplate } = useCompetitionAPI();
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("ci-agent-analysis-brief-templates");
-      if (raw) setTemplates(JSON.parse(raw) as Array<{ name: string; brief: AnalysisBrief }>);
-    } catch {
-      setTemplates([]);
-    }
-  }, []);
+    if (readOnly) return;
+    let cancelled = false;
+    const loadTemplates = async () => {
+      try {
+        const remote = await listAnalysisTemplates();
+        if (!cancelled && remote.length > 0) {
+          setTemplates(remote);
+          return;
+        }
+      } catch {
+        // Debug/offline mode can still use the browser fallback below.
+      }
+      try {
+        const raw = window.localStorage.getItem("ci-agent-analysis-brief-templates");
+        if (!cancelled && raw) setTemplates(JSON.parse(raw) as TemplateRecord[]);
+      } catch {
+        if (!cancelled) setTemplates([]);
+      }
+    };
+    void loadTemplates();
+    return () => { cancelled = true; };
+  }, [listAnalysisTemplates, readOnly]);
   const update = (patch: Partial<AnalysisBrief>) =>
     onChange?.({ ...brief, ...patch });
   const validationErrors = useMemo(() => briefValidationErrors(brief), [brief]);
@@ -161,14 +187,55 @@ export default function AnalysisBriefCard({
           onClick={() => {
             const name = window.prompt("模板名称", `${brief.target_products.join(" / ")} 分析范围`);
             if (!name?.trim()) return;
-            const next = [...templates.filter((template) => template.name !== name.trim()), { name: name.trim(), brief: { ...brief } }];
-            setTemplates(next);
-            setTemplateName(name.trim());
-            window.localStorage.setItem("ci-agent-analysis-brief-templates", JSON.stringify(next));
+            const normalizedName = name.trim();
+            const nextTemplate = { name: normalizedName, brief: { ...brief } };
+            setTemplateBusy(true);
+            setTemplateError(null);
+            void saveAnalysisTemplate(normalizedName, nextTemplate.brief)
+              .then((response: { template?: TemplateRecord }) => {
+                const saved = response.template ?? nextTemplate;
+                setTemplates((current) => [saved, ...current.filter((item) => item.name !== normalizedName)]);
+                setTemplateName(normalizedName);
+              })
+              .catch(() => {
+                const next = [...templates.filter((template) => template.name !== normalizedName), nextTemplate];
+                setTemplates(next);
+                setTemplateName(normalizedName);
+                window.localStorage.setItem("ci-agent-analysis-brief-templates", JSON.stringify(next));
+                setTemplateError("服务端模板不可用，已保存到当前浏览器");
+              })
+              .finally(() => setTemplateBusy(false));
           }}
+          aria-busy={templateBusy}
         >
-          <Save className="size-3.5" />保存当前范围
+          {templateBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}保存当前范围
         </Button>
+        {templateName && templates.some((template) => template.name === templateName && template.id != null) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            title="删除当前模板"
+            aria-label="删除当前模板"
+            disabled={pending || templateBusy}
+            onClick={() => {
+              const selected = templates.find((template) => template.name === templateName);
+              if (selected?.id == null) return;
+              setTemplateBusy(true);
+              setTemplateError(null);
+              void deleteAnalysisTemplate(selected.id)
+                .then(() => {
+                  setTemplates((current) => current.filter((item) => item.id !== selected.id));
+                  setTemplateName("");
+                })
+                .catch(() => setTemplateError("模板删除失败，请稍后重试"))
+                .finally(() => setTemplateBusy(false));
+            }}
+          >
+            <X className="size-3.5" />
+          </Button>
+        )}
+        {templateError && <span className="text-[10px] text-amber-600">{templateError}</span>}
       </div>
 
       <div className="mt-5 grid gap-4">
