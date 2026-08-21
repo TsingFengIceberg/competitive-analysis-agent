@@ -1,0 +1,7 @@
+[submodule "reference-submodules/VerdaAI-Investigator"]
+	path = reference-submodules/VerdaAI-Investigator
+	url = https://github.com/kangjiayao14/VerdaAI-Investigator.git
+
+[submodule "reference-submodules/daily_stock_analysis"]
+	path = reference-submodules/daily_stock_analysis
+	url = https://github.com/ZhuLinsen/daily_stock_analysis.git
