@@ -122,7 +122,31 @@ export interface ReportResponse {
   token_usage: TokenEntry[];
   created_at: string | null;
   phases?: PhaseHistoryEntry[];
+  stage_results?: StageResult[];
   analysis_brief: AnalysisBrief | null;
+}
+
+export interface StageResult {
+  stage: string;
+  run_id?: string | null;
+  attempt: number;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  token_usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  llm_calls: number;
+  tool_calls: number;
+  source_count: number;
+  metrics: Record<string, unknown>;
+  error_code?: string | null;
+  error_message?: string | null;
+  degraded_reason?: string | null;
+  output_ref?: string | null;
 }
 
 export interface PhaseHistoryEntry {

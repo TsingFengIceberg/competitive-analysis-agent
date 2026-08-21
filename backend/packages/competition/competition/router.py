@@ -10,6 +10,13 @@ execution depth (search budget, review rounds) — never skips nodes.
 
 from __future__ import annotations
 
+from competition.stage_result import TERMINAL_FAILURE_STATUSES, latest_stage_result
+
+
+def _stage_failed(state: dict, stage: str) -> bool:
+    result = latest_stage_result(state, stage)
+    return bool(result and result.get("status") in TERMINAL_FAILURE_STATUSES)
+
 
 # ── Orchestrator Routing `[v4]` ──
 
@@ -20,7 +27,7 @@ def route_after_orchestrator(state: dict) -> str:
     Pipeline structure is fixed. Complexity tier only affects execution
     parameters — not which nodes run.
     """
-    if state.get("error"):
+    if state.get("error") or _stage_failed(state, "orchestrator"):
         return "error_handler"
     return "collector"
 
@@ -30,7 +37,7 @@ def route_after_orchestrator(state: dict) -> str:
 
 def route_after_collector(state: dict) -> str:
     """Collector → Analyst (normal) or error_handler (no data / error)."""
-    if state.get("error"):
+    if state.get("error") or _stage_failed(state, "collector"):
         return "error_handler"
     collected = state.get("collected_data") or []
     if len(collected) == 0:
@@ -40,7 +47,7 @@ def route_after_collector(state: dict) -> str:
 
 def route_after_analyst(state: dict) -> str:
     """Analyst → Reviewer (always)."""
-    if state.get("error"):
+    if state.get("error") or _stage_failed(state, "analyst"):
         return "error_handler"
     return "reviewer"
 
@@ -51,7 +58,7 @@ def route_after_reviewer(state: dict) -> str:
     v4: max rounds is complexity-driven:
       quick: 1 round / standard: 2 rounds / deep: 3 rounds
     """
-    if state.get("error"):
+    if state.get("error") or _stage_failed(state, "reviewer"):
         return "error_handler"
 
     verdict = state.get("review_verdict") or {}
@@ -72,13 +79,15 @@ def route_after_reviewer(state: dict) -> str:
 
 def route_after_writer(state: dict) -> str:
     """Writer → HITL Gate (always)."""
-    if state.get("error"):
+    if state.get("error") or _stage_failed(state, "writer"):
         return "error_handler"
     return "hitl_gate"
 
 
 def route_after_hitl(state: dict) -> str:
     """HITL Gate → END / Collector / Analyst / Writer."""
+    if state.get("error") or _stage_failed(state, "hitl_gate"):
+        return "error_handler"
     decision = state.get("hitl_decision") or {}
     action = decision.get("action", "approve")
 

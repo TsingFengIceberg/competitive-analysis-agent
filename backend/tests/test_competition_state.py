@@ -60,10 +60,10 @@ class TestCompetitionStateFields:
         assert "error" in hints
 
     def test_total_field_count(self):
-        """25 custom fields (v4: +orchestration_result, +complexity) + inherited messages = 26 total annotations."""
+        """Runtime stage tracking adds four custom fields to the business state."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 26, f"Expected 26 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 30, f"Expected 30 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:
@@ -75,6 +75,12 @@ class TestReducers:
         assert "collected_data" in hints
         metadata = getattr(hints["collected_data"], "__metadata__", None)
         assert metadata is not None, "collected_data must be Annotated[list, op_add]"
+
+    def test_stage_results_is_add_reducer(self):
+        """Stage attempts must accumulate across rework rounds."""
+        hints = get_type_hints(CompetitionState, include_extras=True)
+        metadata = getattr(hints["stage_results"], "__metadata__", None)
+        assert metadata is not None, "stage_results must be Annotated[list, op_add]"
 
 class TestOptionalFields:
     """Most fields should be NotRequired (graph nodes return partial updates)."""

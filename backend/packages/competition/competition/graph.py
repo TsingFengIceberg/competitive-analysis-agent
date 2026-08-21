@@ -21,6 +21,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from langgraph.graph import END, StateGraph
@@ -30,9 +31,11 @@ from competition.router import (
     route_after_analyst,
     route_after_collector,
     route_after_hitl,
+    route_after_orchestrator,
     route_after_reviewer,
     route_after_writer,
 )
+from competition.stage_result import build_stage_result, next_attempt, summarize_stage_results, utc_now_iso
 from competition.state import CompetitionState
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,121 @@ def _placeholder(name: str) -> Callable[[dict], dict]:
         return {}
     _node.__name__ = name
     return _node
+
+
+_AGENT_NAMES = {
+    "orchestrator": "Orchestrator",
+    "collector": "Collector",
+    "analyst": "Analyst",
+    "reviewer": "Reviewer",
+    "writer": "Writer",
+    "hitl_gate": "HITL",
+    "error_handler": "ErrorHandler",
+}
+
+
+def _instrument_node(stage: str, fn: Callable) -> Callable:
+    """Wrap one business node with a compact, checkpoint-safe StageResult."""
+    agent_name = _AGENT_NAMES.get(stage, stage)
+
+    def _wrapped(state: dict) -> dict:
+        started_at = utc_now_iso()
+        started_monotonic = time.monotonic()
+        try:
+            from competition.executor import get_agent_call_counts, get_agent_tokens
+
+            before_tokens = get_agent_tokens()
+            before_calls = get_agent_call_counts()
+        except Exception:  # pragma: no cover - executor is optional in graph unit tests
+            before_tokens = {}
+            before_calls = {}
+
+        try:
+            update = fn(state) or {}
+            if not isinstance(update, dict):
+                raise TypeError(f"Node '{stage}' must return a dict, got {type(update).__name__}")
+            status = "failed" if update.get("error") else "completed"
+            error_message = str(update.get("error") or "")[:500] or None
+            error_code = "node_error" if error_message else None
+        except Exception as exc:  # noqa: BLE001 - graph failures become routable state
+            logger.exception("Competition stage '%s' failed", stage)
+            update = {"error": f"{stage} failed: {str(exc)[:500]}"}
+            status = "failed"
+            error_code = "node_exception"
+            error_message = str(exc)[:500] or exc.__class__.__name__
+
+        try:
+            from competition.executor import get_agent_call_counts, get_agent_tokens
+
+            after_tokens = get_agent_tokens()
+            after_calls = get_agent_call_counts()
+        except Exception:  # pragma: no cover - executor is optional in graph unit tests
+            after_tokens = {}
+            after_calls = {}
+
+        token_delta = max(0, int(after_tokens.get(agent_name, 0) or 0) - int(before_tokens.get(agent_name, 0) or 0))
+        call_delta = max(0, int(after_calls.get(agent_name, 0) or 0) - int(before_calls.get(agent_name, 0) or 0))
+        summary = update.get("collection_summary") if isinstance(update.get("collection_summary"), dict) else {}
+        collected = update.get("collected_data") if isinstance(update.get("collected_data"), list) else []
+        source_urls = {
+            str(item.get("source_url"))
+            for item in collected
+            if isinstance(item, dict) and item.get("source_url")
+        }
+        source_count = len(source_urls)
+        metrics: dict = {}
+        if collected:
+            metrics["data_point_count"] = len(collected)
+        for key in ("coverage_warning", "review_round", "gap_coverage_improvement"):
+            if key in update and update.get(key) is not None:
+                metrics[key] = update[key]
+        if summary:
+            metrics.update({
+                "source_types": summary.get("source_types", {}),
+                "stopped_by": summary.get("stopped_by"),
+            })
+
+        result = build_stage_result(
+            stage=stage,
+            run_id=state.get("thread_id") or state.get("run_id"),
+            attempt=next_attempt(state, stage),
+            started_at=started_at,
+            status=status,
+            duration_ms=round((time.monotonic() - started_monotonic) * 1000),
+            token_usage={"total_tokens": token_delta},
+            llm_calls=call_delta,
+            source_count=source_count,
+            metrics=metrics,
+            error_code=error_code,
+            error_message=error_message,
+            degraded_reason=error_message if status == "failed" else None,
+            output_ref=_output_ref(stage, update),
+        )
+        existing_results = state.get("stage_results") or []
+        merged_results = list(existing_results) + [result]
+        update["stage_results"] = [result]
+        update["current_stage"] = stage
+        update["run_status"] = "failed" if status == "failed" else "running"
+        update["usage_summary"] = summarize_stage_results(merged_results)
+        return update
+
+    _wrapped.__name__ = getattr(fn, "__name__", stage)
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    return _wrapped
+
+
+def _output_ref(stage: str, update: dict) -> str | None:
+    """Return a stable pointer to a stage's business output, never the payload."""
+    candidates = {
+        "orchestrator": "orchestration_result",
+        "collector": "collected_data",
+        "analyst": "analysis_result",
+        "reviewer": "review_verdict",
+        "writer": "report_data",
+        "hitl_gate": "hitl_decision",
+    }
+    key = candidates.get(stage)
+    return f"state.{key}" if key and key in update else None
 
 
 _NODE_IMPLEMENTATIONS: dict[str, Callable] = {
@@ -92,19 +210,22 @@ def build_competition_graph(
     builder = StateGraph(CompetitionState)
 
     # ── Orchestrator entry `[v4 新增]` ──
-    builder.add_node("orchestrator", _NODE_IMPLEMENTATIONS["orchestrator"])
+    builder.add_node("orchestrator", _instrument_node("orchestrator", _NODE_IMPLEMENTATIONS["orchestrator"]))
 
     # ── Normal mode nodes ──
-    builder.add_node("collector", _NODE_IMPLEMENTATIONS["collector"])
-    builder.add_node("analyst", _NODE_IMPLEMENTATIONS["analyst"])
-    builder.add_node("reviewer", _NODE_IMPLEMENTATIONS["reviewer"])
-    builder.add_node("writer", _NODE_IMPLEMENTATIONS["writer"])
-    builder.add_node("hitl_gate", _NODE_IMPLEMENTATIONS["hitl_gate"])
-    builder.add_node("error_handler", _NODE_IMPLEMENTATIONS["error_handler"])
+    builder.add_node("collector", _instrument_node("collector", _NODE_IMPLEMENTATIONS["collector"]))
+    builder.add_node("analyst", _instrument_node("analyst", _NODE_IMPLEMENTATIONS["analyst"]))
+    builder.add_node("reviewer", _instrument_node("reviewer", _NODE_IMPLEMENTATIONS["reviewer"]))
+    builder.add_node("writer", _instrument_node("writer", _NODE_IMPLEMENTATIONS["writer"]))
+    builder.add_node("hitl_gate", _instrument_node("hitl_gate", _NODE_IMPLEMENTATIONS["hitl_gate"]))
+    builder.add_node("error_handler", _instrument_node("error_handler", _NODE_IMPLEMENTATIONS["error_handler"]))
 
     # ── Normal mode edges ──
     builder.set_entry_point("orchestrator")  # v4: Orchestrator as entry
-    builder.add_edge("orchestrator", "collector")  # fixed: O→C always
+    builder.add_conditional_edges("orchestrator", route_after_orchestrator, {
+        "collector": "collector",
+        "error_handler": "error_handler",
+    })
     builder.add_conditional_edges("collector", route_after_collector, {
         "analyst": "analyst",
         "error_handler": "error_handler",
@@ -127,6 +248,7 @@ def build_competition_graph(
         "collector": "collector",
         "analyst": "analyst",
         "writer": "writer",
+        "error_handler": "error_handler",
     })
     builder.add_edge("error_handler", END)
 

@@ -163,6 +163,12 @@ def _record_agent_call(agent_name: str, task_preview: str) -> None:
     # Keep only the last 10 entries
     if len(_get_call_history()) > 10:
         _get_call_history()[:] = _get_call_history()[-10:]
+    counts = getattr(_tl, "agent_call_counts", None)
+    if counts is None:
+        counts = {}
+        _tl.agent_call_counts = counts
+    if agent_name:
+        counts[agent_name] = counts.get(agent_name, 0) + 1
 
 
 def _check_circuit_breaker(agent_name: str, task_preview: str) -> str | None:
@@ -185,6 +191,7 @@ def _check_circuit_breaker(agent_name: str, task_preview: str) -> str | None:
 def _reset_call_history() -> None:
     """Clear call history for a new analysis run."""
     _tl.call_history = []
+    _tl.agent_call_counts = {}
 
 
 def reset_reliability_state() -> None:
@@ -314,6 +321,12 @@ def _record_token_usage(agent_name: str, usage: int) -> None:
         _total_tokens_used += usage
         if agent_name:
             _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + usage
+
+
+def get_agent_call_counts() -> dict[str, int]:
+    """Return per-agent LLM call counts for the current execution thread."""
+    counts = getattr(_tl, "agent_call_counts", None) or {}
+    return dict(counts)
 
 
 def _sanitize_stream_chunk(text: str) -> str:

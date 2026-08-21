@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  CircleAlert,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -33,13 +34,31 @@ interface PhaseState {
   key: string;
   label: string;
   icon: string;
-  status: "running" | "completed";
+  status: PhaseStatus;
   startTime: number;
   endTime: number | null;
   tokens: number;
   content: Record<string, string>;
   details: Record<string, unknown>[];
 }
+
+type PhaseStatus =
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "timeout"
+  | "skipped"
+  | "cancelled";
+
+const TERMINAL_PHASE_STATUSES = new Set<PhaseStatus>([
+  "completed",
+  "partial",
+  "failed",
+  "timeout",
+  "skipped",
+  "cancelled",
+]);
 
 // Map agent names (from streaming) to phase keys
 const AGENT_TO_PHASE: Record<string, string> = {
@@ -378,12 +397,13 @@ const PhaseMessage = memo(function PhaseMessage({
   tick: number;
   streamingContent: Record<string, string>;
 }) {
-  const isCompleted = phase.status === "completed";
-  const [open, setOpen] = useState(!isCompleted);
+  const isTerminal = TERMINAL_PHASE_STATUSES.has(phase.status);
+  const isFailed = ["failed", "timeout", "cancelled"].includes(phase.status);
+  const [open, setOpen] = useState(!isTerminal);
 
   // Merge stored content with live streaming — memoized to avoid re-scanning on every tick
   const { mergedEntries, hasContent, liveEntries } = useMemo(() => {
-    const live = !isCompleted
+    const live = !isTerminal
       ? Object.entries(streamingContent).filter(
           ([name]) => AGENT_TO_PHASE[name] === phase.key && name.trim(),
         )
@@ -398,10 +418,10 @@ const PhaseMessage = memo(function PhaseMessage({
       hasContent: merged.length > 0 || phase.details.length > 0,
       liveEntries: live,
     };
-  }, [phase.content, phase.details, phase.key, isCompleted, streamingContent]);
+  }, [phase.content, phase.details, phase.key, isTerminal, streamingContent]);
 
   const now = Date.now();
-  const elapsed = isCompleted
+  const elapsed = isTerminal
     ? Math.round(((phase.endTime ?? phase.startTime) - phase.startTime) / 1000)
     : Math.round((now - phase.startTime) / 1000);
 
@@ -410,7 +430,12 @@ const PhaseMessage = memo(function PhaseMessage({
       <div className="ui-panel w-full max-w-[85%] px-4 py-2.5">
         {/* Header row */}
         <div className="flex items-center gap-2">
-          {isCompleted ? (
+          {isFailed ? (
+            <CircleAlert
+              className="size-3.5 shrink-0 text-[var(--status-danger)]"
+              aria-label="阶段失败"
+            />
+          ) : isTerminal ? (
             <CheckCircle2
               className="size-3.5 shrink-0 text-[var(--status-success)]"
               aria-label="已完成"
@@ -432,7 +457,13 @@ const PhaseMessage = memo(function PhaseMessage({
             );
           })()}
           <span className="text-sm font-bold">
-            {isCompleted ? phase.label : `正在${phase.label}`}
+            {phase.status === "failed"
+              ? `${phase.label}失败`
+              : phase.status === "partial"
+                ? `${phase.label}部分完成`
+                : isTerminal
+                  ? phase.label
+                  : `正在${phase.label}`}
           </span>
           {phase.tokens > 0 && (
             <span className="text-muted-foreground text-[10px]">
@@ -445,7 +476,7 @@ const PhaseMessage = memo(function PhaseMessage({
         </div>
 
         {/* Running skeleton — pulse animation while agent is working */}
-        {!isCompleted && !hasContent && (
+        {!isTerminal && !hasContent && (
           <div className="mt-2 animate-pulse space-y-1.5">
             <div className="bg-muted-foreground/20 h-2 w-3/4 rounded" />
             <div className="bg-muted-foreground/20 h-2 w-1/2 rounded" />
@@ -501,7 +532,7 @@ const PhaseMessage = memo(function PhaseMessage({
               const cleaned = text.replace(/^\*\*\[.*?\]\*\*\s*/gm, "").trim();
               if (!cleaned) return null;
               const isLive =
-                !isCompleted && liveEntries.some(([n]) => n === name);
+                !isTerminal && liveEntries.some(([n]) => n === name);
               // Strip opening ```json fence — ContentRenderer will handle fenced blocks,
               // but during live streaming the closing fence may not have arrived yet.
               const content = cleaned

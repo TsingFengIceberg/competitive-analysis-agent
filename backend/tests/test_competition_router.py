@@ -105,3 +105,8 @@ class TestRouteAfterHitl:
 
     def test_none_decision_defaults_approve(self):
         assert route_after_hitl({"hitl_decision": None}) == "__end__"
+
+    def test_stage_failure_routes_to_error_handler(self):
+        assert route_after_hitl({
+            "stage_results": [{"stage": "hitl_gate", "status": "failed"}],
+        }) == "error_handler"

@@ -51,6 +51,8 @@ class TestBuildCompetitionGraph:
             hitl_decision={"action": "approve"},     # skip HITL loop
         ))
         assert result is not None
+        assert result.get("stage_results")
+        assert result.get("usage_summary", {}).get("stage_count", 0) >= 1
 
     def test_graph_invocation_error_path(self):
         """Error in collector → error_handler → END."""

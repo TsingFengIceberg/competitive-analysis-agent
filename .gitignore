@@ -47,6 +47,7 @@ log/
 AGENTS.md
 .hanoff/
 .agent-plans/
+.plan/
 
 # Locally installed custom skills
 skills/custom/*

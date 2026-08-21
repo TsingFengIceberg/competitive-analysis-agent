@@ -74,12 +74,37 @@ interface PhaseState {
   key: string;
   label: string;
   icon: string;
-  status: "running" | "completed";
+  status: PhaseStatus;
   startTime: number;
   endTime: number | null;
   tokens: number;
   content: Record<string, string>; // agent → text
   details: Record<string, unknown>[]; // progress event payloads
+}
+
+type PhaseStatus =
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "timeout"
+  | "skipped"
+  | "cancelled";
+
+const TERMINAL_PHASE_STATUSES = new Set<PhaseStatus>([
+  "completed",
+  "partial",
+  "failed",
+  "timeout",
+  "skipped",
+  "cancelled",
+]);
+
+function normalizePhaseStatus(value: unknown): PhaseStatus {
+  const candidate = String(value || "completed") as PhaseStatus;
+  return TERMINAL_PHASE_STATUSES.has(candidate) || candidate === "running"
+    ? candidate
+    : "completed";
 }
 
 const PHASE_INFO: Record<string, { label: string; icon: string }> = {
@@ -380,7 +405,7 @@ export default function CompetitionPage() {
           const next = new Map(prev);
           const existing = next.get(phaseKey);
           const phaseIdx = PHASE_ORDER.indexOf(phaseKey);
-          if (existing?.status === "completed" && phaseIdx >= 0) {
+          if (existing && TERMINAL_PHASE_STATUSES.has(existing.status) && phaseIdx >= 0) {
             for (const [key, value] of next) {
               if (
                 PHASE_ORDER.indexOf(key) > phaseIdx &&
@@ -389,11 +414,12 @@ export default function CompetitionPage() {
                 next.delete(key);
             }
           }
+          const phaseStatus = normalizePhaseStatus(data.status);
           next.set(phaseKey, {
             key: phaseKey,
             label: existing?.label ?? eventLabel ?? info.label,
             icon: existing?.icon ?? eventIcon ?? info.icon,
-            status: "completed",
+            status: phaseStatus,
             startTime: existing?.startTime ?? Date.now(),
             endTime: Date.now(),
             tokens: perPhaseTokens,
@@ -782,9 +808,7 @@ export default function CompetitionPage() {
             key: phase.phase_key,
             label: info.label,
             icon: phase.icon || info.icon,
-            status: (phase.status === "completed" ? "completed" : "running") as
-              | "running"
-              | "completed",
+            status: normalizePhaseStatus(phase.status),
             startTime: phase.start_time
               ? new Date(phase.start_time).getTime()
               : (existing?.startTime ?? Date.now()),

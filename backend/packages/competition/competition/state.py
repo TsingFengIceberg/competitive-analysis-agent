@@ -87,3 +87,13 @@ class CompetitionState(AgentState):
     # ── Error ──
     error: NotRequired[str | None]
     """Non-empty triggers Graph-level routing to error_handler node (§3.15.6.3)."""
+
+    # ── Runtime execution facts ──
+    stage_results: Annotated[list[dict], op_add]
+    """Compact per-node execution records; business outputs stay in their own fields."""
+    current_stage: NotRequired[str | None]
+    """Most recently completed graph stage, for progress and recovery UI."""
+    run_status: NotRequired[str | None]
+    """Overall execution status: running, completed, partial, or failed."""
+    usage_summary: NotRequired[dict | None]
+    """Aggregate runtime cost derived from ``stage_results``."""

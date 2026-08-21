@@ -80,6 +80,7 @@ class ReportResponse(BaseModel):
     token_usage: list[dict] = []
     created_at: str | None = None
     phases: list[dict] = []
+    stage_results: list[dict] = []
     analysis_brief: dict | None = None
 
 
@@ -1140,6 +1141,13 @@ async def get_report(
         history = _list_history(thread_id)
         record_status = db_record.get("status", "unknown")
         compact = summary and record_status not in {"completed", "approved", "failed", "interrupted", "error"}
+        restored_phases = [] if compact else _load_phases(thread_id)
+        restored_stage_results = [
+            detail
+            for phase in restored_phases
+            for detail in (phase.get("details") or [])
+            if isinstance(detail, dict) and detail.get("stage")
+        ]
         return ReportResponse(
             thread_id=thread_id,
             status=record_status,
@@ -1151,7 +1159,8 @@ async def get_report(
             history_count=len(history),
             token_usage=[] if compact else db_record.get("token_usage", []),
             created_at=db_record.get("created_at"),
-            phases=[] if compact else _load_phases(thread_id),
+            phases=restored_phases,
+            stage_results=restored_stage_results,
             analysis_brief=db_record.get("analysis_brief"),
         )
 
@@ -1175,6 +1184,7 @@ async def get_report(
         token_usage=[] if compact else token_usage_list,
         created_at=entry.get("created_at"),
         phases=[] if compact else _load_phases(thread_id),
+        stage_results=[] if compact else (entry.get("state", {}).get("stage_results") or []),
         analysis_brief=entry.get("state", {}).get("analysis_brief"),
     )
 
@@ -1488,6 +1498,11 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
         conn.close()
 
         for p in phases:
+            details = p.get("details") or []
+            if isinstance(details, list):
+                for detail in details:
+                    if isinstance(detail, dict) and detail.get("stage"):
+                        state.setdefault("stage_results", []).append(detail)
             jo = p.get("json_output")
             if not jo:
                 continue
@@ -1511,6 +1526,13 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
                 # ReportData stored as json_output; keep as backup if report_data missing
                 if not state.get("report_data"):
                     state["report_data"] = jo
+
+        if state.get("stage_results"):
+            from competition.stage_result import summarize_stage_results
+
+            state["current_stage"] = state["stage_results"][-1].get("stage")
+            state["usage_summary"] = summarize_stage_results(state["stage_results"])
+            state["run_status"] = "completed" if db_record.get("status") in {"completed", "approved"} else db_record.get("status", "running")
 
         entry = {
             "state": state,
@@ -1613,6 +1635,7 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest, fastapi
         report_data=report_data,
         metrics=metrics,
         error=error,
+        stage_results=state.get("stage_results") or [],
     )
 
 
@@ -1724,26 +1747,31 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 "message": f"{display_label} 开始…",
             })
 
-            from competition.executor import get_total_tokens
-            tokens_before = get_total_tokens()
+            from competition.graph import _instrument_node
             try:
-                result = node_fn(st)
+                instrumented_node = _instrument_node(node_key, node_fn)
+                result = instrumented_node(st)
             except Exception:
                 logger.exception("%s node failed", node_key)
-                result = {}
+                result = {"error": f"{node_key} failed during re-execution"}
             _stop_if_cancelled()
+            stage_result = (result.get("stage_results") or [{}])[-1]
+            prior_stage_results = st.get("stage_results") or []
+            result["stage_results"] = list(prior_stage_results) + [stage_result]
             st.update(result)
-            tokens_after = get_total_tokens()
-            delta_tokens = max(tokens_after - tokens_before, 0)
+            delta_tokens = int((stage_result.get("token_usage") or {}).get("total_tokens", 0) or 0)
             end_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
             _emit_event(thread_id, "node_end", {
                 "node": phase_key,
                 "label": display_label,
                 "icon": icon,
-                "status": "done",
+                "status": stage_result.get("status", "completed"),
                 "progress": f"{display_label} 完成",
                 "tokens": delta_tokens,
+                "duration_ms": stage_result.get("duration_ms", 0),
+                "llm_calls": stage_result.get("llm_calls", 0),
+                "error_code": stage_result.get("error_code"),
             })
 
             # Extract structured JSON output from the node result
@@ -1761,9 +1789,10 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             from competition.db import save_phase
             save_phase(
                 thread_id=thread_id, phase_key=phase_key,
-                label=display_label, icon=icon, status="completed",
+                label=display_label, icon=icon, status=stage_result.get("status", "completed"),
                 start_time=start_time, end_time=end_time,
-                tokens=delta_tokens, content=dict(_re_content), details=[],
+                tokens=delta_tokens, content=dict(_re_content),
+                details=[stage_result] if stage_result else [],
                 json_output=_json_output,
                 version=round_num,
                 generation_id=generation_id,
@@ -2398,23 +2427,48 @@ async def get_checkpoint_state(thread_id: str, checkpoint_id: str):
 
 
 def _add_token_entry(thread_id: str, label: str) -> None:
-    """Snapshot current cumulative tokens and record a labelled entry.
+    """Record a labelled token entry using StageResult as the source of truth.
 
     Called after each graph run or HITL action so the frontend can render a
     segmented token bar coloured by version.
     """
-    from competition.executor import get_agent_tokens, get_total_tokens
+    state = _store[thread_id].get("state") or {}
+    stage_results = state.get("stage_results") or []
+    if stage_results:
+        from competition.stage_result import summarize_stage_results
 
-    total = get_total_tokens()
-    agents = get_agent_tokens()
+        summary = summarize_stage_results(stage_results)
+        total = int(summary.get("total_tokens", 0) or 0)
+        agents: dict[str, int] = {}
+        stage_labels = {
+            "orchestrator": "Orchestrator",
+            "collector": "Collector",
+            "analyst": "Analyst",
+            "reviewer": "Reviewer",
+            "writer": "Writer",
+            "hitl_gate": "HITL",
+            "error_handler": "ErrorHandler",
+        }
+        for result in stage_results:
+            stage = str(result.get("stage") or "unknown")
+            usage = result.get("token_usage") or {}
+            label = stage_labels.get(stage, stage)
+            agents[label] = agents.get(label, 0) + int(usage.get("total_tokens", 0) or 0)
+    else:
+        # Compatibility fallback for legacy runs/checkpoints without stage results.
+        from competition.executor import get_agent_tokens, get_total_tokens
+
+        total = get_total_tokens()
+        agents = get_agent_tokens()
     entries: list[dict] = _store[thread_id].setdefault("token_usage", [])
-    prev_total = entries[-1]["cumulative"] if entries else 0
+    prev_total = entries[-1].get("stage_total_tokens", entries[-1].get("cumulative", 0)) if entries else 0
     delta = total - prev_total
     entries.append({
         "label": label,
         "tokens": max(delta, 0),
         "cumulative": total,
         "agents": agents,
+        "stage_total_tokens": total,
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     })
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
@@ -2720,11 +2774,11 @@ def _run_graph_sync(thread_id: str) -> None:
         # Stream execution — updates store + DB on each node completion (§18)
         event_num = 0
         prev_state: dict = {}
-        prev_total_tokens = 0
         _NODE_LABELS = {
             "orchestrator": "解析意图", "collector": "信息采集",
             "analyst": "对比分析", "reviewer": "质量审查",
             "writer": "报告生成", "hitl_gate": "等待审批",
+            "error_handler": "错误处理",
         }
         for event in graph.stream(initial_state, {"configurable": {"thread_id": thread_id}}, stream_mode=["values"]):
             event_num += 1
@@ -2744,11 +2798,41 @@ def _run_graph_sync(thread_id: str) -> None:
             if isinstance(update, dict):
                 _store[thread_id]["state"] = update
 
-                # Detect which node just completed by diffing against previous state
+                # StageResult is the source of truth for node completion. The
+                # legacy payload diff remains a compatibility fallback for
+                # checkpoints created before stage_results existed.
                 current_node = None
                 progress = None
                 node_json: dict | None = None
-                if update.get("orchestration_result") and not prev_state.get("orchestration_result"):
+                stage_result = None
+                current_results = update.get("stage_results") or []
+                previous_results = prev_state.get("stage_results") or []
+                if len(current_results) > len(previous_results) and isinstance(current_results[-1], dict):
+                    stage_result = current_results[-1]
+                    current_node = stage_result.get("stage")
+                    status = stage_result.get("status", "completed")
+                    if current_node == "orchestrator":
+                        node_json = _safe_dict(update.get("orchestration_result"))
+                    elif current_node == "collector":
+                        progress = f"已采集 {(update.get('collection_summary') or {}).get('total_data_points', 0)} 条数据"
+                        node_json = {"summary": _safe_dict(update.get("collection_summary")), "data_points_count": len(update.get("collected_data") or [])}
+                    elif current_node == "analyst":
+                        progress = "对比矩阵+SWOT已生成"
+                        node_json = _safe_dict(update.get("analysis_result"))
+                    elif current_node == "reviewer":
+                        progress = "质量审查完成"
+                        node_json = _safe_dict(update.get("review_verdict"))
+                    elif current_node == "writer":
+                        progress = "报告已生成"
+                        node_json = _safe_dict(update.get("report_data"))
+                    elif current_node == "hitl_gate":
+                        progress = "人工确认完成"
+                        node_json = _safe_dict(update.get("hitl_decision"))
+                    elif current_node == "error_handler":
+                        progress = "错误处理完成"
+                    if status not in {"completed", "partial"}:
+                        progress = f"{progress or _NODE_LABELS.get(current_node, current_node)}（{status}）"
+                elif update.get("orchestration_result") and not prev_state.get("orchestration_result"):
                     current_node = "orchestrator"
                     node_json = _safe_dict(update.get("orchestration_result"))
                 elif update.get("collection_summary") and not prev_state.get("collection_summary"):
@@ -2771,10 +2855,7 @@ def _run_graph_sync(thread_id: str) -> None:
 
                 if current_node:
                     from competition.db import upsert_analysis
-                    from competition.executor import get_total_tokens
-                    current_total = get_total_tokens()
-                    delta_tokens = current_total - prev_total_tokens
-                    prev_total_tokens = current_total
+                    delta_tokens = int((stage_result or {}).get("token_usage", {}).get("total_tokens", 0) or 0)
                     upsert_analysis(
                         thread_id=thread_id, status="running",
                         current_node=current_node, progress=progress or _NODE_LABELS.get(current_node, ""),
@@ -2782,9 +2863,14 @@ def _run_graph_sync(thread_id: str) -> None:
                     # SSE event (§19)
                     _emit_event(thread_id, "node_end", {
                         "node": current_node,
-                        "status": "done",
+                        "status": (stage_result or {}).get("status", "done"),
                         "progress": progress or _NODE_LABELS.get(current_node, ""),
                         "tokens": max(delta_tokens, 0),
+                        "duration_ms": (stage_result or {}).get("duration_ms", 0),
+                        "llm_calls": (stage_result or {}).get("llm_calls", 0),
+                        "tool_calls": (stage_result or {}).get("tool_calls", 0),
+                        "error_code": (stage_result or {}).get("error_code"),
+                        "degraded_reason": (stage_result or {}).get("degraded_reason"),
                         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
                     })
                     # Persist phase content for history reconstruction
@@ -2794,11 +2880,11 @@ def _run_graph_sync(thread_id: str) -> None:
                     _sp(
                         thread_id=thread_id, phase_key=current_node,
                         label=_NODE_LABELS.get(current_node, current_node),
-                        icon="⚙️", status="completed",
+                        icon="⚙️", status=(stage_result or {}).get("status", "completed"),
                         start_time=_node_start_time, end_time=_now,
                         tokens=max(delta_tokens, 0),
                         content=dict(_phase_content),
-                        details=[],
+                        details=[stage_result] if stage_result else [],
                         json_output=node_json,
                         version=0,
                         generation_id=generation_id,
@@ -2819,6 +2905,7 @@ def _run_graph_sync(thread_id: str) -> None:
             failure_message = terminal_error.removeprefix("FATAL:").strip() or "分析未生成有效结果"
             _add_token_entry(thread_id, "初始分析")
             _store[thread_id]["status"] = "failed"
+            state["run_status"] = "failed"
 
             from competition.db import upsert_analysis
             rd = state.get("report_data")
@@ -2839,6 +2926,7 @@ def _run_graph_sync(thread_id: str) -> None:
             return
 
         # Emit completion
+        state["run_status"] = "completed"
         _emit_event(thread_id, "end", {"status": "completed"})
         clear_stream_callback()
         clear_cancel_checker()
