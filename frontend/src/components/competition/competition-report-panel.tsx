@@ -581,11 +581,11 @@ export default function CompetitionReportPanel({
                           style={{
                             height: `${Math.max(6, (v / 5) * 72)}px`,
                             backgroundColor: [
-                              "#3b82f6",
-                              "#ef4444",
-                              "#22c55e",
-                              "#f59e0b",
-                              "#8b5cf6",
+                              "var(--chart-1)",
+                              "var(--chart-2)",
+                              "var(--chart-3)",
+                              "var(--chart-4)",
+                              "var(--chart-5)",
                             ][vi % 5],
                             opacity: 0.75,
                           }}
@@ -683,7 +683,7 @@ export default function CompetitionReportPanel({
         {displayReport?.sections?.length ? (
           <nav
             aria-label="报告目录"
-            className="border-subtle bg-background/95 sticky top-0 z-10 mb-4 flex gap-1 overflow-x-auto border-b py-2 backdrop-blur-sm"
+            className="border-subtle bg-background mb-4 flex max-w-full gap-1 overflow-x-auto border-b py-2"
           >
             {flattenSections(displayReport.sections).map(
               ({ section, depth }) => (

@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { Send, Square } from "lucide-react";
+import { BriefcaseBusiness, Send, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -30,7 +30,7 @@ interface Props {
   disabled?: boolean;
   industry: string;
   onIndustryChange: (industry: string) => void;
-  onSubmit: (message: CompetitionPromptMessage) => void;
+  onSubmit: (message: CompetitionPromptMessage) => void | boolean | Promise<void | boolean>;
   onStop: () => void;
   analysisRunning?: boolean;
   mode?: "submit" | "stop";
@@ -69,28 +69,30 @@ export default function CompetitionQueryInput({
     explicitCanStop ??
     (mode === "stop" || status === "streaming" || status === "submitted");
   const canSubmit =
-    explicitCanSubmit ??
-    (text.trim().length > 0 && !disabled && !analysisRunning);
+    text.trim().length > 0 &&
+    (explicitCanSubmit ?? (!disabled && !analysisRunning));
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     if (isStreaming) {
       onStop();
       return;
     }
     if (!canSubmit) return;
-    onSubmit({ text: text.trim(), files: [] });
-    setText("");
+    // Keep the draft until the request is accepted so transient failures are
+    // recoverable without forcing the user to retype the analysis request.
+    const accepted = await onSubmit({ text: text.trim(), files: [] });
+    if (accepted !== false) setText("");
   }, [canSubmit, isStreaming, onStop, onSubmit, text]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    submit();
+    void submit();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submit();
+      void submit();
     }
   };
 
@@ -103,7 +105,7 @@ export default function CompetitionQueryInput({
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={handleKeyDown}
-        disabled={disabled || isStreaming || (!canSubmit && !isStreaming)}
+        disabled={disabled || isStreaming}
         aria-describedby={
           disabledReason ? "query-input-disabled-reason" : undefined
         }
@@ -113,15 +115,19 @@ export default function CompetitionQueryInput({
       />
       <div className="border-subtle bg-surface-sunken flex min-h-11 items-center justify-between gap-3 border-t px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="text-muted-foreground shrink-0 text-[11px]">
-            行业
+          <span className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs font-medium">
+            <BriefcaseBusiness className="size-3.5" aria-hidden="true" />
+            <span>分析行业</span>
           </span>
           <Select
             value={industry}
             onValueChange={onIndustryChange}
             disabled={disabled}
           >
-            <SelectTrigger className="h-7 min-w-[120px] text-xs">
+            <SelectTrigger
+              className="h-8 w-[min(13rem,45vw)] min-w-0 border-transparent bg-background/70 text-xs shadow-none hover:border-border focus:ring-1"
+              aria-label="选择分析行业"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

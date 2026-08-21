@@ -45,7 +45,7 @@ export function SourceCard({
 
   return (
     <div
-      className="border-border bg-card fixed z-50 w-80 rounded-lg border p-3 shadow-xl"
+      className="border-border bg-card fixed z-50 w-80 max-w-[calc(100vw-2rem)] rounded-lg border p-3 shadow-xl"
       style={{ top: position.top, left: position.left }}
       onMouseEnter={onOpen}
       onMouseLeave={onClose}

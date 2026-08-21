@@ -62,9 +62,12 @@ const PHASE_ICONS = {
 } as const;
 
 interface UserMessage {
+  id?: string;
   text: string;
   timestamp: string;
   generation: number;
+  status?: "sending" | "sent" | "failed";
+  error?: string;
 }
 
 interface ReportCardData {
@@ -254,7 +257,7 @@ export default function CompetitionChatArea({
               {userMessages
                 .filter((msg) => msg.generation === gen)
                 .map((msg, i) => (
-                  <UserBubble key={`user-${gen}-${i}`} message={msg} />
+                  <UserBubble key={msg.id ?? `user-${gen}-${i}`} message={msg} />
                 ))}
               {genPhases.map((phase) => (
                 <PhaseMessage
@@ -354,7 +357,11 @@ function UserBubble({ message }: { message: UserMessage }) {
         <p className="text-sm whitespace-pre-wrap">{message.text}</p>
       </div>
       <span className="text-muted-foreground px-2 text-[10px]">
-        {message.timestamp}
+        {message.status === "sending"
+          ? "发送中…"
+          : message.status === "failed"
+            ? message.error || "发送失败，可重试"
+            : message.timestamp}
       </span>
     </div>
   );

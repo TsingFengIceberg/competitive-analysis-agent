@@ -70,7 +70,7 @@ BACKEND_PID=$!
         if [[ "$MODE" == "watch" ]]; then
             exec pnpm dev --hostname 0.0.0.0 --port "$FRONTEND_PORT"
         fi
-        if [[ ! -f .next/BUILD_ID ]]; then
+        if [[ ! -f .next/BUILD_ID && ! -f .next/server/app-paths-manifest.json ]]; then
             echo "Frontend build missing. Run 'make build' before 'make start'." >&2
             exit 1
         fi
@@ -86,7 +86,7 @@ BACKEND_PID=$!
     if [[ "$MODE" == "watch" ]]; then
         exec "$NEXT_BIN" dev --turbo --hostname 0.0.0.0 --port "$FRONTEND_PORT"
     fi
-    if [[ ! -f .next/BUILD_ID ]]; then
+    if [[ ! -f .next/BUILD_ID && ! -f .next/server/app-paths-manifest.json ]]; then
         echo "Frontend build missing. Run 'make build' before 'make start'." >&2
         exit 1
     fi

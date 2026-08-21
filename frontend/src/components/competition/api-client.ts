@@ -440,15 +440,27 @@ export function useCompetitionAPI() {
   const startAnalysis = useCallback(
     async (req: AnalyzeRequest): Promise<AnalyzeResponse> => {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...csrfHeaders() },
-        body: JSON.stringify(req),
-        credentials: "include",
-      });
-      setLoading(false);
-      if (!res.ok) throw new Error(`Analysis failed: ${res.status}`);
-      return res.json();
+      try {
+        const res = await fetch(`${API_BASE}/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify(req),
+          credentials: "include",
+        });
+        if (!res.ok) {
+          let detail = `分析启动失败（${res.status}）`;
+          try {
+            const payload = await res.json();
+            if (typeof payload.detail === "string") detail = payload.detail;
+          } catch {
+            /* use status fallback */
+          }
+          throw new Error(detail);
+        }
+        return res.json();
+      } finally {
+        setLoading(false);
+      }
     },
     [],
   );
@@ -497,8 +509,17 @@ export function useCompetitionAPI() {
   );
 
   const pollReport = useCallback(
-    async (threadId: string): Promise<ReportResponse> => {
-      const res = await fetch(`${API_BASE}/report/${threadId}`);
+    async (
+      threadId: string,
+      signal?: AbortSignal,
+      summary = false,
+    ): Promise<ReportResponse> => {
+      const query = summary ? "?summary=true" : "";
+      const res = await fetch(`${API_BASE}/report/${threadId}${query}`, {
+        signal,
+        cache: "no-store",
+        credentials: "include",
+      });
       if (!res.ok) throw new Error(`Report fetch failed: ${res.status}`);
       return res.json();
     },
@@ -543,13 +564,27 @@ export function useCompetitionAPI() {
   );
 
   const submitDecision = useCallback(
-    async (threadId: string, decision: HitlDecisionData): Promise<void> => {
+    async (
+      threadId: string,
+      decision: HitlDecisionData,
+    ): Promise<ReportResponse> => {
       const res = await fetch(`${API_BASE}/report/${threadId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
         body: JSON.stringify(decision),
+        credentials: "include",
       });
-      if (!res.ok) throw new Error(`Decision submission failed: ${res.status}`);
+      if (!res.ok) {
+        let detail = `操作失败（${res.status}）`;
+        try {
+          const payload = await res.json();
+          if (typeof payload.detail === "string") detail = payload.detail;
+        } catch {
+          /* use status fallback */
+        }
+        throw new Error(detail);
+      }
+      return res.json();
     },
     [],
   );

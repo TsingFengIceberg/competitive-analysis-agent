@@ -275,6 +275,9 @@
   --status-warning-bg: oklch(0.95 0.055 85);
   --status-danger: oklch(0.54 0.18 25);
   --status-danger-bg: oklch(0.95 0.045 25);
+  --chart-positive: oklch(0.58 0.16 155);
+  --chart-negative: oklch(0.58 0.18 25);
+  --chart-neutral: oklch(0.58 0.02 250);
 }
 
 .dark {
@@ -326,6 +329,9 @@
   --status-warning-bg: oklch(0.3 0.045 85);
   --status-danger: oklch(0.78 0.14 25);
   --status-danger-bg: oklch(0.3 0.04 25);
+  --chart-positive: oklch(0.72 0.14 155);
+  --chart-negative: oklch(0.72 0.16 25);
+  --chart-neutral: oklch(0.72 0.03 250);
 }
 
 @layer base {

@@ -41,7 +41,7 @@ export default function SourceInspector({
           className={`ui-inset cursor-pointer p-3 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 ${selectedSourceId === id ? "border-primary bg-primary/5" : "hover:bg-surface-hover"}`}
         >
           <div className="flex items-start justify-between gap-2">
-            <span className="min-w-0 font-semibold">
+            <span className="min-w-0 break-words font-semibold [overflow-wrap:anywhere]">
               [{id}] {source.title || source.label || source.product || "来源"}
             </span>
             {/^https?:\/\//i.test(source.url) && (
@@ -62,7 +62,7 @@ export default function SourceInspector({
           <div className="text-muted-foreground mt-1 text-[10px] break-all">
             {source.url || "无 URL"}
           </div>
-          <div className="text-muted-foreground mt-1 text-[10px]">
+          <div className="text-muted-foreground mt-1 break-words text-[10px] [overflow-wrap:anywhere]">
             {source.source_type || "未知类型"} ·{" "}
             {source.publication_date_status === "unknown"
               ? "发布时间未知"

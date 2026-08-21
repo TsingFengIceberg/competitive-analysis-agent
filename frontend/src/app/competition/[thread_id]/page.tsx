@@ -26,7 +26,6 @@ import CompetitionQueryInput from "@/components/competition/competition-query-in
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { StatusNotice } from "@/components/ui/status-badge";
-import { cn } from "@/lib/utils";
 import {
   analysisSessionReducer,
   canStopAnalysis,
@@ -513,7 +512,14 @@ export default function CompetitionPage() {
     useState<WorkbenchTab>("report");
   const [editorOpen, setEditorOpen] = useState(false);
   const [userMessages, setUserMessages] = useState<
-    { text: string; timestamp: string; generation: number }[]
+    {
+      id: string;
+      text: string;
+      timestamp: string;
+      generation: number;
+      status?: "sending" | "sent" | "failed";
+      error?: string;
+    }[]
   >([]);
   const titleRefreshedRef = useRef(false);
 
@@ -573,20 +579,24 @@ export default function CompetitionPage() {
   }, [status]);
 
   const handleSubmit = useCallback(
-    async (message: CompetitionPromptMessage) => {
+    async (message: CompetitionPromptMessage): Promise<boolean> => {
       const text = message.text.trim();
-      if (!text) return;
+      if (!text) return false;
 
       setQuery(text);
       dispatchSession({ type: "START_REQUESTED" });
-      setUserMessages([
+      const messageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setUserMessages((previous) => [
+        ...previous,
         {
+          id: messageId,
           text,
           timestamp: new Date().toLocaleTimeString("zh-CN", {
             hour: "2-digit",
             minute: "2-digit",
           }),
           generation: 0,
+          status: "sending",
         },
       ]);
       setStatus("submitting");
@@ -609,18 +619,35 @@ export default function CompetitionPage() {
         });
         setAnalysisBrief(res.analysis_brief);
         setStatus(res.status);
+        dispatchSession({ type: "START_RESOLVED", status: res.status });
+        setUserMessages((previous) =>
+          previous.map((item) =>
+            item.id === messageId ? { ...item, status: "sent" } : item,
+          ),
+        );
         setThreadId(res.thread_id);
         window.history.replaceState(null, "", `/competition/${res.thread_id}`);
         // Notify sidebar to refresh history list immediately
         window.dispatchEvent(new CustomEvent("competition:refresh-history"));
+        return true;
       } catch (err) {
+        const messageText =
+          err instanceof Error ? err.message : "分析启动失败，请检查网络后重试。";
         dispatchSession({
           type: "ACTION_FAILED",
           operation: "start",
-          message: "分析启动失败，请检查网络后重试。",
+          message: messageText,
         });
         setStatus("error");
+        setUserMessages((previous) =>
+          previous.map((item) =>
+            item.id === messageId
+              ? { ...item, status: "failed", error: messageText }
+              : item,
+          ),
+        );
         console.error("Analysis start failed:", err);
+        return false;
       }
     },
     [persona, industry, api],
@@ -646,6 +673,7 @@ export default function CompetitionPage() {
       briefDirtyRef.current = false;
       setAnalysisBrief(response.analysis_brief);
       setStatus(response.status);
+      dispatchSession({ type: "ACTION_RESOLVED", status: response.status });
       window.dispatchEvent(new CustomEvent("competition:refresh-history"));
     } catch (error) {
       dispatchSession({
@@ -690,6 +718,10 @@ export default function CompetitionPage() {
     try {
       const response = await api.cancelAnalysis(threadId);
       setStatus(response.status || "interrupted");
+      dispatchSession({
+        type: "ACTION_RESOLVED",
+        status: response.status || "interrupted",
+      });
     } catch {
       dispatchSession({
         type: "ACTION_FAILED",
@@ -785,7 +817,7 @@ export default function CompetitionPage() {
   const pollReport = useCallback(
     async (currentThreadId: string, signal: AbortSignal) => {
       const response = await fetch(
-        `/api/competition/report/${currentThreadId}`,
+        `/api/competition/report/${currentThreadId}?summary=true`,
         { signal, cache: "no-store" },
       );
       if (!response.ok) {
@@ -844,6 +876,7 @@ export default function CompetitionPage() {
     if (query && userMessages.length === 0) {
       setUserMessages([
         {
+          id: `restored-${threadId}`,
           text: query,
           timestamp: reportData?.generated_at
             ? new Date(reportData.generated_at).toLocaleTimeString("zh-CN", {
@@ -921,6 +954,7 @@ export default function CompetitionPage() {
     query,
     userMessages.length,
     reportData,
+    threadId,
   ]);
 
   const handleToggleDiff = useCallback((version: number) => {
@@ -1146,7 +1180,7 @@ export default function CompetitionPage() {
     [handleViewHistory],
   );
 
-  const handleApprove = useCallback(() => {
+  const handleApprove = useCallback(async () => {
     if (threadId) {
       const qualityGate = displayReport?.quality_gate;
       if (qualityGate?.status === "blocked") {
@@ -1155,62 +1189,91 @@ export default function CompetitionPage() {
         );
         if (!confirmed) return;
       }
-      api
-        .submitDecision(threadId, {
+      dispatchSession({ type: "APPROVE_REQUESTED" });
+      setHitlSubmitting(true);
+      try {
+        const response = await api.submitDecision(threadId, {
           action: "approve",
           comment: "",
           target_focus: null,
           fork_version: viewingHistory ? viewingHistory.version : null,
-        })
-        .catch((err) => console.error("Approve submit failed:", err));
-      setHitlVisible(false);
+        });
+        setStatus(response.status || "approved");
+        dispatchSession({
+          type: "ACTION_RESOLVED",
+          status: response.status || "approved",
+        });
+        setHitlVisible(false);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "批准失败，请稍后重试";
+        dispatchSession({ type: "ACTION_FAILED", operation: "approve", message });
+      } finally {
+        setHitlSubmitting(false);
+      }
     }
   }, [threadId, api, viewingHistory, displayReport]);
 
   const handleReanalyze = useCallback(
-    (action: string, comment: string, cardVersion: number) => {
-      if (!threadId) return;
+    async (action: string, comment: string, cardVersion: number): Promise<boolean> => {
+      if (!threadId) return false;
       dispatchSession({ type: "REWORK_REQUESTED" });
       setHitlSubmitting(true);
-      api
-        .submitDecision(threadId, {
+      try {
+        const response = await api.submitDecision(threadId, {
           action,
           comment,
           target_focus: null,
           fork_version: cardVersion,
-        })
-        .then(() => {
-          setStatus("running");
-          setHitlVisible(false);
-        })
-        .catch((err) => {
-          console.error("HITL submit failed:", err);
-          setHitlSubmitting(false);
         });
+        setStatus(response.status || "running");
+        dispatchSession({ type: "ACTION_RESOLVED", status: response.status || "running" });
+        setHitlVisible(false);
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "操作失败，请稍后重试";
+        dispatchSession({ type: "ACTION_FAILED", operation: "rework", message });
+        return false;
+      } finally {
+        setHitlSubmitting(false);
+      }
     },
     [threadId, api],
   );
 
   const handleConversationSubmit = useCallback(
-    (message: CompetitionPromptMessage) => {
+    async (message: CompetitionPromptMessage): Promise<boolean> => {
       const text = message.text.trim();
-      if (!text) return;
+      if (!text) return false;
       if (canSubmitRework) {
+        const messageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         setUserMessages((prev) => [
           ...prev,
           {
+            id: messageId,
             text,
             timestamp: new Date().toLocaleTimeString("zh-CN", {
               hour: "2-digit",
               minute: "2-digit",
             }),
             generation: reworkForkVersion,
+            status: "sending",
           },
         ]);
-        handleReanalyze("auto", text, reworkForkVersion);
-        return;
+        const accepted = await handleReanalyze("auto", text, reworkForkVersion);
+        setUserMessages((previous) =>
+          previous.map((item) =>
+            item.id === messageId
+              ? {
+                  ...item,
+                  status: accepted ? "sent" : "failed",
+                  error: accepted ? undefined : "操作失败，请重试",
+                }
+              : item,
+          ),
+        );
+        return accepted;
       }
-      void handleSubmit(message);
+      return handleSubmit(message);
     },
     [canSubmitRework, handleReanalyze, handleSubmit, reworkForkVersion],
   );
@@ -1245,17 +1308,10 @@ export default function CompetitionPage() {
         </div>
       )}
       {/* Main area: chat column [+ inline report panel when open] */}
-      <div
-        className={cn(
-          "grid w-full min-w-0 flex-1 overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out",
-          reportPanelOpen
-            ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
-            : "grid-cols-[minmax(0,1fr)]",
-        )}
-      >
+      <div className="grid w-full min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden">
         {/* Chat column */}
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <main className="flex min-h-0 w-full max-w-full min-w-0 grow flex-col overflow-hidden">
+          <main className="relative flex min-h-0 w-full max-w-full min-w-0 grow flex-col overflow-hidden">
             {/* Messages */}
             <div className="flex min-h-0 flex-1 justify-center">
               <div className="flex min-h-0 w-full flex-1 flex-col">
@@ -1295,8 +1351,8 @@ export default function CompetitionPage() {
 
             {/* Input — centered in welcome mode, bottom in chat mode */}
             {isWelcome ? (
-              <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
-                <div className="relative w-full max-w-(--container-width-sm) -translate-y-[calc(50vh-96px)]">
+              <div className="absolute inset-0 z-30 flex items-center justify-center overflow-y-auto px-4 py-8">
+                <div className="w-full max-w-(--container-width-sm)">
                   <div className="mb-6 text-center">
                     <img
                       src="/logo.png"
@@ -1341,9 +1397,7 @@ export default function CompetitionPage() {
                 </div>
               </div>
             )}
-            {session.userError &&
-              (session.stream !== "inactive" ||
-                reportPoll.consecutiveFailures >= 2) && (
+            {session.userError && (
                 <StatusNotice tone="warning" className="mx-4 mb-3 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span>{session.userError.message}</span>
@@ -1380,36 +1434,34 @@ export default function CompetitionPage() {
 
         {/* Unified research workbench */}
         {reportPanelOpen && (
-          <div className="h-full min-w-0 overflow-hidden opacity-100 transition-opacity duration-300 ease-in-out">
-            <LazyWorkbench
-              open={reportPanelOpen}
-              onClose={handleCloseReport}
-              threadId={threadId}
-              displayReport={displayReport}
-              historyEntries={historyEntries}
-              viewingHistory={viewingHistory}
-              isViewingLatest={isViewingLatest}
-              onViewHistory={handleViewHistory}
-              selectedForDiff={selectedForDiff}
-              onToggleDiff={handleToggleDiff}
-              onCompare={handleCompare}
-              diffVersions={diffVersions}
-              diffViewMode={diffViewMode}
-              setDiffViewMode={setDiffViewMode}
-              setDiffVersions={setDiffVersions}
-              setSelectedForDiff={setSelectedForDiff}
-              dbLoadedThreadId={dbLoadedThreadId}
-              dbLoadedReport={dbLoadedReport}
-              hitlVisible={hitlVisible}
-              status={status}
-              threadIdForApi={threadId}
-              getTrace={api.getTrace}
-              onEdit={displayReport && isViewingLatest ? handleEdit : undefined}
-              onExportMD={handleExportMD}
-              onExportJSON={handleExportJSON}
-              initialTab={workbenchInitialTab}
-            />
-          </div>
+          <LazyWorkbench
+            open={reportPanelOpen}
+            onClose={handleCloseReport}
+            threadId={threadId}
+            displayReport={displayReport}
+            historyEntries={historyEntries}
+            viewingHistory={viewingHistory}
+            isViewingLatest={isViewingLatest}
+            onViewHistory={handleViewHistory}
+            selectedForDiff={selectedForDiff}
+            onToggleDiff={handleToggleDiff}
+            onCompare={handleCompare}
+            diffVersions={diffVersions}
+            diffViewMode={diffViewMode}
+            setDiffViewMode={setDiffViewMode}
+            setDiffVersions={setDiffVersions}
+            setSelectedForDiff={setSelectedForDiff}
+            dbLoadedThreadId={dbLoadedThreadId}
+            dbLoadedReport={dbLoadedReport}
+            hitlVisible={hitlVisible}
+            status={status}
+            threadIdForApi={threadId}
+            getTrace={api.getTrace}
+            onEdit={displayReport && isViewingLatest ? handleEdit : undefined}
+            onExportMD={handleExportMD}
+            onExportJSON={handleExportJSON}
+            initialTab={workbenchInitialTab}
+          />
         )}
 
         {/* Human correction editor (R6) */}

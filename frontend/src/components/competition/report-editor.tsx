@@ -4,7 +4,7 @@ import { X, Pencil, Check, RotateCcw } from "lucide-react";
 import { useState, useCallback, useMemo } from "react";
 import SafeMarkdown from "@/components/competition/safe-markdown";
 
-import type { ReportData, ReportSection } from "./api-client";
+import { csrfHeaders, type ReportData, type ReportSection } from "./api-client";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -75,14 +75,32 @@ export default function ReportEditor({
     setSubmitting(true);
     setMessage(null);
     try {
-      const updated = sections.map((s) => ({ id: s.id, content: s.content }));
+      // An open textarea is part of the submission; no hidden local-save step.
+      const mergedSections = sections.map((section) => ({
+        ...section,
+        content: drafts.get(section.id) ?? section.content,
+      }));
+      const updated = mergedSections.map((s) => ({ id: s.id, content: s.content }));
       const res = await fetch(`/api/competition/report/${threadId}/sections`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
         body: JSON.stringify({ sections: updated }),
+        credentials: "include",
       });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      if (!res.ok) {
+        let detail = `提交失败（${res.status}）`;
+        try {
+          const payload = await res.json();
+          if (typeof payload.detail === "string") detail = payload.detail;
+        } catch {
+          // Keep the status fallback when the gateway did not return JSON.
+        }
+        throw new Error(detail);
+      }
       const data = await res.json();
+      setSections(mergedSections);
+      setDrafts(new Map());
+      setEditingSection(null);
       setImprovementRatio(data.improvement_ratio ?? null);
       setMessage({
         type: "success",
@@ -95,11 +113,20 @@ export default function ReportEditor({
       });
     }
     setSubmitting(false);
-  }, [threadId, sections]);
+  }, [drafts, sections, threadId]);
 
   const editableSections = useMemo(
     () => sections.filter((s) => s.content_type === "text"),
     [sections],
+  );
+  const changedCount = useMemo(
+    () =>
+      sections.filter((section) => {
+        const original = reportData.sections.find((item) => item.id === section.id);
+        const effectiveContent = drafts.get(section.id) ?? section.content;
+        return original?.content !== effectiveContent;
+      }).length,
+    [drafts, reportData.sections, sections],
   );
 
   if (!open) return null;
@@ -108,8 +135,9 @@ export default function ReportEditor({
     <Sheet open={open} onOpenChange={(value) => !value && onClose()}>
       <SheetContent
         side="right"
+        showCloseButton={false}
         aria-describedby="report-editor-description"
-        className="h-dvh w-full max-w-none gap-0 overflow-hidden p-0 sm:w-[42%] sm:max-w-[640px]"
+        className="h-dvh w-full max-w-none gap-0 overflow-hidden p-0 sm:w-[min(720px,62vw)] sm:max-w-none"
       >
         <SheetTitle className="sr-only">人工修正</SheetTitle>
         <SheetDescription id="report-editor-description" className="sr-only">
@@ -117,26 +145,37 @@ export default function ReportEditor({
         </SheetDescription>
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between border-b px-4 py-3">
-            <div className="flex items-center gap-2">
-              <h2 className="font-semibold">人工修正</h2>
+          <div className="border-subtle flex items-start justify-between gap-4 border-b px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">人工修正</h2>
+                <StatusBadge
+                  tone={changedCount > 0 ? "warning" : "neutral"}
+                  label={changedCount > 0 ? `${changedCount} 个章节待提交` : "未修改"}
+                />
+              </div>
+              <p className="text-muted-foreground mt-1 text-xs">
+                修改正文后统一提交，表格和图表章节保持只读。
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
               {improvementRatio !== null && (
                 <StatusBadge
                   tone="success"
                   label={`R6 改善率: ${(improvementRatio * 100).toFixed(1)}%`}
                 />
               )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={onClose}
+                aria-label="关闭人工修正"
+                title="关闭人工修正"
+              >
+                <X className="size-4" />
+              </Button>
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              onClick={onClose}
-              aria-label="关闭人工修正"
-              title="关闭人工修正"
-            >
-              <X className="size-4" />
-            </Button>
           </div>
 
           {/* Message */}
@@ -150,7 +189,7 @@ export default function ReportEditor({
           )}
 
           {/* Sections */}
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-surface-sunken/30 p-4">
             {editableSections.map((section) => {
               const isEditing = editingSection === section.id;
               const draft = drafts.get(section.id);
@@ -158,7 +197,12 @@ export default function ReportEditor({
               return (
                 <div key={section.id} className="ui-panel overflow-hidden">
                   <div className="bg-muted/20 flex items-center justify-between border-b px-3 py-1.5">
-                    <span className="text-xs font-medium">{section.title}</span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+                        {String(editableSections.indexOf(section) + 1).padStart(2, "0")}
+                      </span>
+                      <span className="truncate text-xs font-medium">{section.title}</span>
+                    </div>
                     <div className="flex items-center gap-1">
                       {isEditing ? (
                         <>
@@ -229,7 +273,10 @@ export default function ReportEditor({
 
           {/* Footer with submit button */}
           {editableSections.length > 0 && (
-            <div className="flex justify-end border-t px-4 py-3">
+            <div className="border-subtle flex items-center justify-between gap-3 border-t bg-background px-4 py-3">
+              <span className="text-muted-foreground min-w-0 text-xs">
+                {changedCount > 0 ? `${changedCount} 个章节将写入当前报告版本` : "尚未产生修改"}
+              </span>
               <Button
                 type="button"
                 onClick={handleSubmit}
@@ -237,7 +284,7 @@ export default function ReportEditor({
                 size="sm"
                 className="text-xs"
               >
-                {submitting ? "提交中..." : "提交修正"}
+                {submitting ? "提交中..." : "保存并提交修正"}
               </Button>
             </div>
           )}

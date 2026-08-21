@@ -10,7 +10,9 @@ export async function GET(
   const backend = "http://127.0.0.1:8001";
   const url = `${backend}/api/competition/stream/${thread_id}`;
 
-  const lastEventId = request.headers.get("Last-Event-ID");
+  const lastEventId =
+    request.headers.get("Last-Event-ID") ??
+    request.nextUrl.searchParams.get("last_event_id");
 
   // Use Node.js http for true streaming (no buffering)
   const http = await import("node:http");

@@ -19,7 +19,13 @@ export type StreamConnection =
   | "degraded"
   | "offline";
 
-export type PendingAction = "start" | "confirm" | "cancel" | "rework" | null;
+export type PendingAction =
+  | "start"
+  | "confirm"
+  | "cancel"
+  | "rework"
+  | "approve"
+  | null;
 
 export interface SessionError {
   operation: string;
@@ -45,6 +51,8 @@ export type AnalysisSessionAction =
   | { type: "CONFIRM_REQUESTED" }
   | { type: "CANCEL_REQUESTED" }
   | { type: "REWORK_REQUESTED" }
+  | { type: "APPROVE_REQUESTED" }
+  | { type: "ACTION_RESOLVED"; status?: string }
   | { type: "SERVER_SYNCED"; status: string; syncedAt?: number }
   | { type: "POLL_FAILED"; message?: string }
   | { type: "STREAM_CONNECTING"; attempt?: number }
@@ -160,9 +168,37 @@ export function analysisSessionReducer(
         stream: "connecting",
         userError: null,
       };
+    case "APPROVE_REQUESTED":
+      return {
+        ...state,
+        pendingAction: "approve",
+        userError: null,
+      };
+    case "ACTION_RESOLVED":
+      return lifecycleFromServer(
+        { ...state, pendingAction: null, userError: null },
+        action.status ?? state.lifecycle,
+      );
     case "SERVER_SYNCED":
       return {
-        ...lifecycleFromServer(state, action.status),
+        // A poll response can race an in-flight mutation. Keep the local
+        // operation lock until its request resolves so stale data cannot
+        // re-enable controls or overwrite the user's pending action.
+        ...lifecycleFromServer(
+          { ...state, pendingAction: state.pendingAction },
+          action.status,
+        ),
+        pendingAction: state.pendingAction,
+        // A successful poll confirms server state but does not explain or
+        // resolve a failed user mutation. Keep action errors visible until
+        // the next explicit action or a matching resolution.
+        userError:
+          state.userError &&
+          !["sync", "poll", "stream", "network"].includes(
+            state.userError.operation,
+          )
+            ? state.userError
+            : null,
         consecutivePollFailures: 0,
         lastSuccessfulSyncAt: action.syncedAt ?? Date.now(),
       };

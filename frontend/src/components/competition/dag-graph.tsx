@@ -22,11 +22,11 @@ const STATUS_STYLES: Record<
   string,
   { bg: string; border: string; text: string }
 > = {
-  waiting: { bg: "#F5F5F5", border: "#9E9E9E", text: "#757575" },
-  active: { bg: "#E8F5E9", border: "#4CAF50", text: "#2E7D32" },
-  done: { bg: "#E3F2FD", border: "#2196F3", text: "#1565C0" },
-  error: { bg: "#FFEBEE", border: "#F44336", text: "#C62828" },
-  hitl_pending: { bg: "#FFF3E0", border: "#FF9800", text: "#E65100" },
+  waiting: { bg: "var(--surface-sunken)", border: "var(--border-strong)", text: "var(--text-muted)" },
+  active: { bg: "var(--status-success-bg)", border: "var(--status-success)", text: "var(--status-success)" },
+  done: { bg: "var(--status-info-bg)", border: "var(--status-info)", text: "var(--status-info)" },
+  error: { bg: "var(--status-danger-bg)", border: "var(--status-danger)", text: "var(--status-danger)" },
+  hitl_pending: { bg: "var(--status-warning-bg)", border: "var(--status-warning)", text: "var(--status-warning)" },
 };
 
 // ── Edge color/type config ──
@@ -35,11 +35,11 @@ const EDGE_STYLES: Record<
   string,
   { stroke: string; dash: string; label: string }
 > = {
-  main: { stroke: "#2196F3", dash: "", label: "" },
-  feedback: { stroke: "#FF9800", dash: "8 4", label: "打回重做" },
-  hitl_replan: { stroke: "#9C27B0", dash: "6 4", label: "重新采集" },
-  hitl_rewrite: { stroke: "#9C27B0", dash: "6 4", label: "重新生成" },
-  hitl_reanalyze: { stroke: "#9C27B0", dash: "6 4", label: "重新分析" },
+  main: { stroke: "var(--status-info)", dash: "", label: "" },
+  feedback: { stroke: "var(--status-warning)", dash: "8 4", label: "打回重做" },
+  hitl_replan: { stroke: "var(--chart-4)", dash: "6 4", label: "重新采集" },
+  hitl_rewrite: { stroke: "var(--chart-4)", dash: "6 4", label: "重新生成" },
+  hitl_reanalyze: { stroke: "var(--chart-4)", dash: "6 4", label: "重新分析" },
 };
 
 // ── Main pipeline order (left → right) ──
@@ -156,10 +156,10 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
       const sa = dn.self_assessment;
       const saDotColor =
         sa?.tier === "green"
-          ? "#4CAF50"
+          ? "var(--status-success)"
           : sa?.tier === "yellow"
-            ? "#FF9800"
-            : "#F44336";
+            ? "var(--status-warning)"
+            : "var(--status-danger)";
 
       return {
         id: dn.id,
@@ -222,23 +222,23 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
           sourceHandle: isFeedback ? "bottom-out" : "source",
           targetHandle: isFeedback ? "bottom-in" : "target",
           style: {
-            stroke: isActive ? cfg.stroke : "#BDBDBD",
+            stroke: isActive ? cfg.stroke : "var(--border-strong)",
             strokeWidth: isActive ? 2.5 : 1.5,
             strokeDasharray: cfg.dash || undefined,
           },
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: isActive ? cfg.stroke : "#BDBDBD",
+            color: isActive ? cfg.stroke : "var(--border-strong)",
             width: 16,
             height: 16,
           },
           label: cfg.label ? cfg.label : (e.annotation ?? ""),
           labelStyle: {
             fontSize: 10,
-            fill: isActive ? cfg.stroke : "#9E9E9E",
+            fill: isActive ? cfg.stroke : "var(--text-muted)",
             fontWeight: 600,
           },
-          labelBgStyle: { fill: "#FFFFFF", fillOpacity: 0.85 },
+          labelBgStyle: { fill: "var(--surface-raised)", fillOpacity: 0.9 },
           labelBgPadding: [6, 3] as [number, number],
           labelBgBorderRadius: 4,
           pathOptions: isFeedback
@@ -273,13 +273,13 @@ export default function DagGraph({ dagState, onNodeClick }: DagGraphProps) {
         minZoom={0.3}
         maxZoom={1.5}
       >
-        <Background color="#E8E8E8" gap={24} size={1} />
+        <Background color="var(--border-subtle)" gap={24} size={1} />
         <Controls showInteractive={false} />
         <MiniMap
           nodeColor={(n) => {
             const dn = dagState.nodes.find((x) => x.id === n.id);
-            if (!dn) return "#9E9E9E";
-            return STATUS_STYLES[dn.status]?.border ?? "#9E9E9E";
+            if (!dn) return "var(--border-strong)";
+            return STATUS_STYLES[dn.status]?.border ?? "var(--border-strong)";
           }}
           maskColor="rgba(0,0,0,0.08)"
         />

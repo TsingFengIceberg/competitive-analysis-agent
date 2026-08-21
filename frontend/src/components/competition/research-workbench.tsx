@@ -281,9 +281,9 @@ export default function ResearchWorkbench(props: Props) {
               </Button>
             ))}
           </nav>
-          <div className="grid min-h-0 flex-1 lg:grid-cols-[250px_minmax(0,1fr)_360px]">
+          <div className="grid min-h-0 min-w-0 flex-1 lg:grid-cols-[250px_minmax(0,1fr)_360px]">
             <aside
-              className={`border-subtle min-h-0 overflow-y-auto border-r p-3 ${tab === "versions" ? "block" : "hidden lg:block"}`}
+              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-r p-3 ${tab === "versions" ? "block" : "hidden lg:block"}`}
             >
               <div className="ui-section-header mb-3">
                 <h2 className="ui-section-title text-xs">版本与运行</h2>
@@ -318,7 +318,7 @@ export default function ResearchWorkbench(props: Props) {
               )}
             </aside>
             <main
-              className={`min-h-0 overflow-y-auto ${tab === "report" ? "block" : "hidden lg:block"}`}
+              className={`min-h-0 min-w-0 overflow-y-auto ${tab === "report" ? "block" : "hidden lg:block"}`}
             >
               <CompetitionReportPanel
                 open
@@ -348,7 +348,7 @@ export default function ResearchWorkbench(props: Props) {
               />
             </main>
             <aside
-              className={`border-subtle min-h-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "process" ? "block" : "hidden lg:block"}`}
+              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "process" ? "block" : "hidden lg:block"}`}
             >
               <div className="border-subtle mb-3 flex gap-1 border-b pb-2 text-xs lg:flex">
                 <Button

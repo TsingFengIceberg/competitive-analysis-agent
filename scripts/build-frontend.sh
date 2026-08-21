@@ -44,7 +44,10 @@ if command -v pnpm >/dev/null 2>&1; then
     build_command=(pnpm build)
 elif [[ -x "$FRONTEND_ROOT/node_modules/.bin/next" ]]; then
     echo "pnpm is unavailable; using the installed Next.js binary."
-    build_command=("$FRONTEND_ROOT/node_modules/.bin/next" build)
+    # Next 16's default Turbopack build may require an internal port for CSS
+    # processing in restricted environments; Webpack produces the same
+    # production artifact without that requirement.
+    build_command=("$FRONTEND_ROOT/node_modules/.bin/next" build --webpack)
 else
     echo "Neither pnpm nor frontend/node_modules/.bin/next is available. Run 'make install' first." >&2
     exit 1

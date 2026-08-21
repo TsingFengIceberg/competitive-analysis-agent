@@ -361,6 +361,27 @@ def _get_user_threads(user_id: str) -> list[str]:
     return [tid for tid, uid in _thread_owners.items() if uid == user_id]
 
 
+def _assert_thread_access(thread_id: str, request: Request | None = None) -> None:
+    """Reject cross-user access while preserving the local debug-mode fallback."""
+    user_id = _get_user_id(request)
+    if user_id == "default":
+        return
+    owner = _thread_owners.get(thread_id)
+    if owner is None:
+        try:
+            from competition.db import get_analysis, init_db
+            conn = init_db()
+            record = get_analysis(thread_id, conn=conn)
+            conn.close()
+            owner = record.get("user_id") if record else None
+            if owner:
+                _thread_owners[thread_id] = owner
+        except Exception:
+            owner = None
+    if owner != user_id:
+        raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
+
+
 def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
     """Read a single version from history store and attach report data from runtime state."""
     meta = _history_store.get(thread_id, version)
@@ -992,10 +1013,12 @@ def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, use
 
 
 @router.post("/{thread_id}/confirm", response_model=AnalyzeResponse)
-async def confirm_analysis(thread_id: str, body: ConfirmAnalysisRequest) -> AnalyzeResponse:
+async def confirm_analysis(thread_id: str, body: ConfirmAnalysisRequest, fastapi_request: Request) -> AnalyzeResponse:
     """Validate and atomically start a waiting Analysis Brief."""
     from competition.brief import validate_confirmation_brief
     from competition.db import claim_analysis_start, init_db
+
+    _assert_thread_access(thread_id, fastapi_request)
 
     entry = _store.get(thread_id)
     if entry is None:
@@ -1027,12 +1050,13 @@ async def confirm_analysis(thread_id: str, body: ConfirmAnalysisRequest) -> Anal
 
 
 @router.post("/{thread_id}/cancel")
-async def cancel_analysis(thread_id: str) -> dict:
+async def cancel_analysis(thread_id: str, fastapi_request: Request) -> dict:
     """Cancel a running analysis. Data is preserved with status='interrupted'.
 
     Uses cooperative cancellation — the background thread checks the flag
     at node boundaries and exits gracefully, saving current state to DB.
     """
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
     if entry is None:
         entry = _restore_state_from_db(thread_id)
@@ -1091,8 +1115,13 @@ async def cancel_analysis(thread_id: str) -> dict:
 
 
 @router.get("/report/{thread_id}", response_model=ReportResponse)
-async def get_report(thread_id: str) -> ReportResponse:
+async def get_report(
+    thread_id: str,
+    summary: bool = Query(False, description="Return a lightweight polling payload while analysis is active"),
+    fastapi_request: Request = None,
+) -> ReportResponse:
     """Get the generated report for a completed analysis."""
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
     if entry is None:
         # Fallback: load from SQLite (survives gateway restart)
@@ -1104,18 +1133,20 @@ async def get_report(thread_id: str) -> ReportResponse:
             raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
         history = _list_history(thread_id)
+        record_status = db_record.get("status", "unknown")
+        compact = summary and record_status not in {"completed", "approved", "failed", "interrupted", "error"}
         return ReportResponse(
             thread_id=thread_id,
-            status=db_record.get("status", "unknown"),
+            status=record_status,
             query=db_record.get("query", ""),
             title=db_record.get("title", ""),
-            report_data=db_record.get("report_data"),
-            metrics=db_record.get("metrics"),
+            report_data=None if compact else db_record.get("report_data"),
+            metrics=None if compact else db_record.get("metrics"),
             error=None,
             history_count=len(history),
-            token_usage=db_record.get("token_usage", []),
+            token_usage=[] if compact else db_record.get("token_usage", []),
             created_at=db_record.get("created_at"),
-            phases=_load_phases(thread_id),
+            phases=[] if compact else _load_phases(thread_id),
             analysis_brief=db_record.get("analysis_brief"),
         )
 
@@ -1126,25 +1157,27 @@ async def get_report(thread_id: str) -> ReportResponse:
     history = _list_history(thread_id)
     token_usage_list = entry.get("token_usage", [])
 
+    compact = summary and status not in {"completed", "approved", "failed", "interrupted", "error"}
     return ReportResponse(
         thread_id=thread_id,
         status=status,
         query=entry.get("query", ""),
         title=entry.get("title", ""),
-        report_data=report_data,
-        metrics=metrics,
+        report_data=None if compact else report_data,
+        metrics=None if compact else metrics,
         error=error,
         history_count=len(history),
-        token_usage=token_usage_list,
+        token_usage=[] if compact else token_usage_list,
         created_at=entry.get("created_at"),
-        phases=_load_phases(thread_id),
+        phases=[] if compact else _load_phases(thread_id),
         analysis_brief=entry.get("state", {}).get("analysis_brief"),
     )
 
 
 @router.get("/report/{thread_id}/history")
-async def get_report_history(thread_id: str):
+async def get_report_history(thread_id: str, fastapi_request: Request = None):
     """Get report revision history (from persisted BranchSnapshotStore)."""
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
     if entry is None:
         # Fallback: return history from DB even when _store is gone (gateway restart)
@@ -1161,8 +1194,9 @@ async def get_report_history(thread_id: str):
 
 
 @router.get("/report/{thread_id}/trace")
-async def get_execution_trace(thread_id: str) -> dict:
+async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -> dict:
     """Return per-phase trace data for ALL analysis generations (R9/R10 process viewer)."""
+    _assert_thread_access(thread_id, fastapi_request)
     from competition.db import get_phases, init_db
 
     conn = init_db()
@@ -1490,7 +1524,7 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
 
 
 @router.put("/report/{thread_id}", response_model=ReportResponse)
-async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> ReportResponse:
+async def submit_decision(thread_id: str, decision: HitlDecisionRequest, fastapi_request: Request) -> ReportResponse:
     """Handle HITL decision or what-if rewrite request.
 
     For "rewrite" (what-if): runs Writer with the existing analysis + user's
@@ -1498,6 +1532,7 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest) -> Repo
     """
     import asyncio
 
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
     if entry is None:
         # Try to restore state from DB (survives gateway restart)
@@ -2008,6 +2043,7 @@ async def stream(
     Events are formatted with event:, data:, and id: fields matching
     the standard SSE wire format.
     """
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
     if entry is None:
         # Try to restore from DB (survives gateway restart)
@@ -2183,8 +2219,9 @@ async def list_db_history(limit: int = Query(default=20, le=100), fastapi_reques
 
 
 @router.get("/db-report/{thread_id}")
-async def get_db_report(thread_id: str):
+async def get_db_report(thread_id: str, fastapi_request: Request = None):
     """Retrieve a saved (approved) report from the SQLite database."""
+    _assert_thread_access(thread_id, fastapi_request)
     try:
         from competition.db import get_analysis, init_db
 
@@ -2202,8 +2239,9 @@ async def get_db_report(thread_id: str):
 
 
 @router.delete("/db-report/{thread_id}")
-async def delete_db_report(thread_id: str):
+async def delete_db_report(thread_id: str, fastapi_request: Request = None):
     """Delete a saved report from the SQLite database."""
+    _assert_thread_access(thread_id, fastapi_request)
     try:
         from competition.db import delete_analysis, delete_phase_history, init_db
 
@@ -2222,8 +2260,9 @@ async def delete_db_report(thread_id: str):
 
 
 @router.patch("/db-report/{thread_id}/pin")
-async def pin_db_report(thread_id: str, pinned: bool = True):
+async def pin_db_report(thread_id: str, pinned: bool = True, fastapi_request: Request = None):
     """Pin or unpin a saved report (pinned reports sort first and cannot be deleted)."""
+    _assert_thread_access(thread_id, fastapi_request)
     try:
         from competition.db import init_db, pin_analysis
 
@@ -2245,8 +2284,9 @@ class RenameRequest(BaseModel):
 
 
 @router.patch("/db-report/{thread_id}/title")
-async def rename_db_report(thread_id: str, body: RenameRequest):
+async def rename_db_report(thread_id: str, body: RenameRequest, fastapi_request: Request = None):
     """Rename a saved report."""
+    _assert_thread_access(thread_id, fastapi_request)
     try:
         from competition.db import get_analysis, init_db, upsert_analysis
 
