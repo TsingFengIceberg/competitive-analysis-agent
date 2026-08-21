@@ -6,6 +6,8 @@
 
 AI 驱动的竞品分析 Agent 协作系统
 
+[English](./README_en.md) | 中文
+
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -67,9 +69,17 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 正式分析前先生成可编辑的 **Analysis Brief**，明确竞品、决策目标、分析维度与权重、行业、面向对象、时间范围、分析深度和证据策略。只有范围歧义消除并确认至少两个具体竞品和一个决策目标后，才会进入竞品解析与资料采集，避免用户意图在执行过程中被错误解释。
 
+### 会话可靠性与恢复
+
+分析状态由实时 SSE 和轻量轮询共同维护。轮询不会覆盖正在进行的确认、停止、批准或返工操作；网络异常时会保留输入草稿和失败原因，支持手动重试。SSE 断线后会使用事件 ID 继续接收未完成的进度，页面刷新也能从持久化状态恢复会话。
+
 ### 研究工作台
 
-报告完成后可在统一的研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。
+报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
+
+### 报告人工修订
+
+人工修订面板支持正文章节草稿、修改数量提示和统一提交。打开编辑框但未实际修改不会被标记为变更；提交时会自动包含当前仍在编辑的草稿，并返回更新数量和改善率。表格与图表章节保持只读，避免破坏结构化报告数据。
 
 ### 证据图谱
 
@@ -168,6 +178,8 @@ make test               # 运行测试
 make lint               # 代码检查
 make build              # 重新构建前端
 ```
+
+在没有 pnpm 或受限服务器环境中，回退构建路径会使用已安装的 Next.js 二进制和 Webpack 产物；生产启动会复用 `.next` 构建，不要求开发服务器监听文件变化。
 
 如需使用其他端口：
 
@@ -608,7 +620,8 @@ competitive-analysis-agent/
 ├── .env.example                       # 环境变量模板
 ├── config.example.yaml                # Agent 配置模板
 ├── Makefile                           # 构建/启动/测试快捷命令
-└── README.md
+├── README.md                           # 中文项目说明
+└── README_en.md                        # English project documentation
 ```
 
 ---
@@ -650,6 +663,8 @@ competitive-analysis-agent/
 | GET | `/api/competition/report/{thread_id}/export` | 导出报告（Markdown / JSON） |
 | GET | `/api/competition/me` | 获取当前用户信息 |
 | GET | `/api/competition/history` | 获取历史分析列表 |
+
+报告轮询可使用 `?summary=true` 获取轻量状态响应；分析进入终态后接口仍返回完整报告内容。
 
 后端 FastAPI 自动生成 Swagger 文档：`http://localhost:8001/docs`
 
