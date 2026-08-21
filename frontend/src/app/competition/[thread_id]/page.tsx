@@ -455,6 +455,8 @@ export default function CompetitionPage() {
 
       if (event === "end") {
         const currentContent = { ...streamingRef.current };
+        const endStatus = data.status === "interrupted" ? "cancelled" : data.status;
+        const normalizedEndStatus = normalizePhaseStatus(endStatus);
         setPhaseMap((prev) => {
           const next = new Map(prev);
           let flushed = false;
@@ -465,7 +467,7 @@ export default function CompetitionPage() {
               updated.content = { ...updated.content, ...currentContent };
               flushed = true;
             }
-            updated.status = "completed";
+            updated.status = normalizedEndStatus;
             updated.endTime = Date.now();
             next.set(key, updated);
           }

@@ -7,6 +7,7 @@ export type AnalysisLifecycle =
   | "cancelling"
   | "interrupted"
   | "failed"
+  | "partial"
   | "completed"
   | "approved"
   | "error";
@@ -83,6 +84,7 @@ const TERMINAL_STATUSES = new Set<AnalysisLifecycle>([
   "idle",
   "interrupted",
   "failed",
+  "partial",
   "completed",
   "approved",
   "error",
@@ -100,6 +102,7 @@ export function parseAnalysisLifecycle(
     case "cancelling":
     case "interrupted":
     case "failed":
+    case "partial":
     case "completed":
     case "approved":
     case "error":

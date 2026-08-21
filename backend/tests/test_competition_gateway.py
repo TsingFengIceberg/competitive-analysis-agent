@@ -100,6 +100,34 @@ class TestGetReport:
         assert data["status"] == "awaiting_confirmation"
         assert data["analysis_brief"]["target_products"] == ["A"]
 
+    @pytest.mark.asyncio
+    async def test_report_exposes_stage_results_for_runtime_audit(self, client):
+        import app.competition_router as competition_router
+
+        thread_id = "comp-test-stage-report"
+        competition_router._store[thread_id] = {
+            "status": "completed",
+            "query": "test",
+            "products": ["A"],
+            "state": {
+                "stage_results": [{
+                    "stage": "writer",
+                    "status": "partial",
+                    "attempt": 1,
+                    "token_usage": {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10},
+                    "llm_calls": 1,
+                    "tool_calls": 0,
+                }],
+            },
+            "token_usage": [],
+        }
+        try:
+            response = await client.get(f"/api/competition/report/{thread_id}")
+            assert response.status_code == 200
+            assert response.json()["stage_results"][0]["status"] == "partial"
+        finally:
+            competition_router._store.pop(thread_id, None)
+
 
 class TestStream:
     @pytest.mark.asyncio
@@ -271,6 +299,32 @@ class TestStream:
             with pytest.raises(StopIteration):
                 next(terminal_reconnect)
             terminal_reconnect.close()
+        finally:
+            competition_router._store.pop(thread_id, None)
+            competition_router._stream_subscribers.pop(thread_id, None)
+            competition_router._stream_queues.pop(thread_id, None)
+            competition_router._event_buffers.pop(thread_id, None)
+            competition_router._event_counters.pop(thread_id, None)
+
+    def test_sse_preserves_stage_runtime_fields(self):
+        import app.competition_router as competition_router
+
+        thread_id = "comp-test-sse-stage-runtime"
+        competition_router._store[thread_id] = {"status": "running", "query": "test", "products": []}
+        try:
+            stream = competition_router._stream_events_sync(thread_id)
+            next(stream)
+            next(stream)
+            competition_router._emit_event(thread_id, "node_end", {
+                "node": "collector", "status": "partial", "tokens": 10,
+                "duration_ms": 1200, "llm_calls": 2, "tool_calls": 1,
+                "error_code": "coverage_warning",
+            })
+            frame = next(stream)
+            assert "\"status\": \"partial\"" in frame
+            assert "\"duration_ms\": 1200" in frame
+            assert "\"tool_calls\": 1" in frame
+            stream.close()
         finally:
             competition_router._store.pop(thread_id, None)
             competition_router._stream_subscribers.pop(thread_id, None)

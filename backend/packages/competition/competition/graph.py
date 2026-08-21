@@ -72,38 +72,44 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
         started_at = utc_now_iso()
         started_monotonic = time.monotonic()
         try:
-            from competition.executor import get_agent_call_counts, get_agent_tokens
+            from competition.executor import get_agent_call_counts, get_agent_usage
 
-            before_tokens = get_agent_tokens()
+            before_usage = get_agent_usage()
             before_calls = get_agent_call_counts()
         except Exception:  # pragma: no cover - executor is optional in graph unit tests
-            before_tokens = {}
+            before_usage = {}
             before_calls = {}
 
         try:
             update = fn(state) or {}
             if not isinstance(update, dict):
                 raise TypeError(f"Node '{stage}' must return a dict, got {type(update).__name__}")
-            status = "failed" if update.get("error") else "completed"
+            status = _status_for_update(update)
             error_message = str(update.get("error") or "")[:500] or None
             error_code = "node_error" if error_message else None
         except Exception as exc:  # noqa: BLE001 - graph failures become routable state
             logger.exception("Competition stage '%s' failed", stage)
             update = {"error": f"{stage} failed: {str(exc)[:500]}"}
-            status = "failed"
-            error_code = "node_exception"
+            status = _exception_status(exc)
+            error_code = status if status in {"timeout", "cancelled"} else "node_exception"
             error_message = str(exc)[:500] or exc.__class__.__name__
 
         try:
-            from competition.executor import get_agent_call_counts, get_agent_tokens
+            from competition.executor import get_agent_call_counts, get_agent_usage
 
-            after_tokens = get_agent_tokens()
+            after_usage = get_agent_usage()
             after_calls = get_agent_call_counts()
         except Exception:  # pragma: no cover - executor is optional in graph unit tests
-            after_tokens = {}
+            after_usage = {}
             after_calls = {}
 
-        token_delta = max(0, int(after_tokens.get(agent_name, 0) or 0) - int(before_tokens.get(agent_name, 0) or 0))
+        usage_before = before_usage.get(agent_name, {})
+        usage_after = after_usage.get(agent_name, {})
+        usage_delta = {
+            key: max(0, int(usage_after.get(key, 0) or 0) - int(usage_before.get(key, 0) or 0))
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+        }
+        tool_delta = max(0, int(usage_after.get("tool_calls", 0) or 0) - int(usage_before.get("tool_calls", 0) or 0))
         call_delta = max(0, int(after_calls.get(agent_name, 0) or 0) - int(before_calls.get(agent_name, 0) or 0))
         summary = update.get("collection_summary") if isinstance(update.get("collection_summary"), dict) else {}
         collected = update.get("collected_data") if isinstance(update.get("collected_data"), list) else []
@@ -132,26 +138,52 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
             started_at=started_at,
             status=status,
             duration_ms=round((time.monotonic() - started_monotonic) * 1000),
-            token_usage={"total_tokens": token_delta},
+            token_usage=usage_delta,
             llm_calls=call_delta,
+            tool_calls=tool_delta,
             source_count=source_count,
             metrics=metrics,
             error_code=error_code,
             error_message=error_message,
-            degraded_reason=error_message if status == "failed" else None,
+            degraded_reason=(error_message if status in {"failed", "timeout", "cancelled"} else update.get("degraded_reason")),
             output_ref=_output_ref(stage, update),
         )
         existing_results = state.get("stage_results") or []
         merged_results = list(existing_results) + [result]
         update["stage_results"] = [result]
         update["current_stage"] = stage
-        update["run_status"] = "failed" if status == "failed" else "running"
+        update["run_status"] = status if status in {"failed", "timeout", "cancelled", "partial"} else "running"
         update["usage_summary"] = summarize_stage_results(merged_results)
         return update
 
     _wrapped.__name__ = getattr(fn, "__name__", stage)
     _wrapped.__doc__ = getattr(fn, "__doc__", None)
     return _wrapped
+
+
+def _status_for_update(update: dict) -> str:
+    """Infer a degraded status from a node's explicit partial output."""
+    if update.get("error"):
+        return "failed"
+    if update.get("partial") or update.get("degraded_reason") or update.get("coverage_warning"):
+        return "partial"
+    if update.get("unresolved_issues"):
+        return "partial"
+    return "completed"
+
+
+def _exception_status(exc: Exception) -> str:
+    """Classify cancellation and timeout exceptions for the runtime contract."""
+    try:
+        from competition.executor import is_cancelled
+
+        if is_cancelled():
+            return "cancelled"
+    except Exception:
+        pass
+    if isinstance(exc, TimeoutError) or "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+        return "timeout"
+    return "failed"
 
 
 def _output_ref(stage: str, update: dict) -> str | None:

@@ -74,10 +74,12 @@ def build_stage_result(
     """Build the compact serialisable stage record stored in graph state."""
     finished = finished_at or utc_now_iso()
     usage = token_usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    total_tokens = max(0, int(usage.get("total_tokens", 0) or 0))
+    input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+    output_tokens = max(0, int(usage.get("output_tokens", 0) or 0))
+    total_tokens = max(0, int(usage.get("total_tokens", 0) or 0), input_tokens + output_tokens)
     normalized_usage = {
-        "input_tokens": max(0, int(usage.get("input_tokens", 0) or 0)),
-        "output_tokens": max(0, int(usage.get("output_tokens", 0) or 0)),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "total_tokens": total_tokens,
     }
     return {
@@ -104,6 +106,8 @@ def summarize_stage_results(results: Iterable[dict[str, Any]] | None) -> dict[st
     """Aggregate terminal stage facts without duplicating business outputs."""
     items = [item for item in (results or []) if isinstance(item, dict)]
     total_tokens = 0
+    input_tokens = 0
+    output_tokens = 0
     total_duration = 0
     total_llm_calls = 0
     total_tool_calls = 0
@@ -113,6 +117,8 @@ def summarize_stage_results(results: Iterable[dict[str, Any]] | None) -> dict[st
         if stage:
             statuses[stage] = str(item.get("status") or "completed")
         usage = item.get("token_usage") or {}
+        input_tokens += max(0, int(usage.get("input_tokens", 0) or 0))
+        output_tokens += max(0, int(usage.get("output_tokens", 0) or 0))
         total_tokens += max(0, int(usage.get("total_tokens", 0) or 0))
         total_duration += max(0, int(item.get("duration_ms", 0) or 0))
         total_llm_calls += max(0, int(item.get("llm_calls", 0) or 0))
@@ -123,6 +129,8 @@ def summarize_stage_results(results: Iterable[dict[str, Any]] | None) -> dict[st
         "statuses": statuses,
         "failed_stages": failed,
         "total_tokens": total_tokens,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "total_duration_ms": total_duration,
         "total_llm_calls": total_llm_calls,
         "total_tool_calls": total_tool_calls,

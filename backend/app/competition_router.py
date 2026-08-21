@@ -2439,6 +2439,9 @@ def _add_token_entry(thread_id: str, label: str) -> None:
 
         summary = summarize_stage_results(stage_results)
         total = int(summary.get("total_tokens", 0) or 0)
+        input_tokens = int(summary.get("input_tokens", 0) or 0)
+        output_tokens = int(summary.get("output_tokens", 0) or 0)
+        tool_calls = int(summary.get("total_tool_calls", 0) or 0)
         agents: dict[str, int] = {}
         stage_labels = {
             "orchestrator": "Orchestrator",
@@ -2459,6 +2462,9 @@ def _add_token_entry(thread_id: str, label: str) -> None:
         from competition.executor import get_agent_tokens, get_total_tokens
 
         total = get_total_tokens()
+        input_tokens = 0
+        output_tokens = 0
+        tool_calls = 0
         agents = get_agent_tokens()
     entries: list[dict] = _store[thread_id].setdefault("token_usage", [])
     prev_total = entries[-1].get("stage_total_tokens", entries[-1].get("cumulative", 0)) if entries else 0
@@ -2469,6 +2475,9 @@ def _add_token_entry(thread_id: str, label: str) -> None:
         "cumulative": total,
         "agents": agents,
         "stage_total_tokens": total,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "tool_calls": tool_calls,
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
     })
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
@@ -2478,8 +2487,26 @@ def _finalize_cancelled(thread_id: str) -> None:
     """Mark an analysis as interrupted and persist current state to DB."""
     if thread_id not in _store:
         return
-    _store[thread_id]["status"] = "interrupted"
-    _store[thread_id]["state"]["error"] = "用户手动终止分析"
+    entry = _store[thread_id]
+    state = entry.setdefault("state", {})
+    from competition.stage_result import build_stage_result, summarize_stage_results
+
+    stage = state.get("current_stage") or "pipeline"
+    marker = build_stage_result(
+        stage=stage,
+        run_id=thread_id,
+        started_at=__import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+        status="cancelled",
+        error_code="cancelled",
+        error_message="用户手动终止分析",
+        degraded_reason="用户手动终止分析",
+    )
+    state["stage_results"] = list(state.get("stage_results") or []) + [marker]
+    state["current_stage"] = stage
+    state["run_status"] = "cancelled"
+    state["usage_summary"] = summarize_stage_results(state["stage_results"])
+    entry["status"] = "interrupted"
+    state["error"] = "用户手动终止分析"
     try:
         from competition.db import upsert_analysis
         upsert_analysis(
@@ -2830,7 +2857,7 @@ def _run_graph_sync(thread_id: str) -> None:
                         node_json = _safe_dict(update.get("hitl_decision"))
                     elif current_node == "error_handler":
                         progress = "错误处理完成"
-                    if status not in {"completed", "partial"}:
+                    if status != "completed":
                         progress = f"{progress or _NODE_LABELS.get(current_node, current_node)}（{status}）"
                 elif update.get("orchestration_result") and not prev_state.get("orchestration_result"):
                     current_node = "orchestrator"
@@ -2925,9 +2952,13 @@ def _run_graph_sync(thread_id: str) -> None:
             logger.error("Analysis %s failed at graph termination: %s", thread_id, failure_message)
             return
 
-        # Emit completion
-        state["run_status"] = "completed"
-        _emit_event(thread_id, "end", {"status": "completed"})
+        # Emit completion, preserving a partial/degraded terminal state.
+        summary = state.get("usage_summary") or {}
+        final_status = "partial" if any(
+            status == "partial" for status in (summary.get("statuses") or {}).values()
+        ) else "completed"
+        state["run_status"] = final_status
+        _emit_event(thread_id, "end", {"status": final_status})
         clear_stream_callback()
         clear_cancel_checker()
         clear_progress_callback()

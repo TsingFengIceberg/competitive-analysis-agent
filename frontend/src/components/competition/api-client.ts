@@ -212,6 +212,9 @@ export interface TokenEntry {
   cumulative: number;
   timestamp: string;
   agents: Record<string, number>;
+  input_tokens?: number;
+  output_tokens?: number;
+  tool_calls?: number;
 }
 
 export interface ReportHistoryItem {

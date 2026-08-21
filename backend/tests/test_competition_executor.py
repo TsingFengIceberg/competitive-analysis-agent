@@ -9,6 +9,7 @@ from unittest import mock
 
 import competition.executor as executor_module
 from competition.executor import (
+    _extract_usage_details,
     _raw_chat_completion,
     _record_token_usage,
     _resolve_provider_context,
@@ -25,6 +26,19 @@ from competition.executor import (
     set_thread_context,
     set_user_context,
 )
+
+
+def test_extract_usage_details_normalizes_input_output_and_tool_calls():
+    response = SimpleNamespace(
+        usage_metadata={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        tool_calls=[{"name": "search"}],
+    )
+    assert _extract_usage_details(response) == {
+        "input_tokens": 12,
+        "output_tokens": 8,
+        "total_tokens": 20,
+        "tool_calls": 1,
+    }
 
 
 def test_thinking_control_allowlist_is_conservative():

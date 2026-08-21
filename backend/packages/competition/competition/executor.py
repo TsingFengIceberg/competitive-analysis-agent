@@ -28,6 +28,7 @@ DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "")
 # Global token counter for competition analysis session
 _total_tokens_used = 0
 _agent_tokens: dict[str, int] = {}
+_agent_usage: dict[str, dict[str, int]] = {}
 _token_lock = threading.Lock()
 
 # Thread-local storage for SSE streaming callback (§19)
@@ -314,13 +315,33 @@ def get_agent_tokens() -> dict[str, int]:
         return dict(_agent_tokens)
 
 
-def _record_token_usage(agent_name: str, usage: int) -> None:
-    """Atomically account for a completed LLM call."""
-    global _total_tokens_used
+def get_agent_usage() -> dict[str, dict[str, int]]:
+    """Return cumulative input/output/total token and tool-call usage per agent."""
     with _token_lock:
-        _total_tokens_used += usage
+        return {agent: dict(usage) for agent, usage in _agent_usage.items()}
+
+
+def _record_token_usage(agent_name: str, usage: int) -> None:
+    """Atomically account for a completed LLM call with legacy total-only data."""
+    _record_usage(agent_name, {"total_tokens": usage})
+
+
+def _record_usage(agent_name: str, usage: dict[str, int]) -> None:
+    """Atomically account for detailed usage while preserving total counters."""
+    global _total_tokens_used
+    total = max(0, int(usage.get("total_tokens", 0) or 0))
+    with _token_lock:
+        _total_tokens_used += total
         if agent_name:
-            _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + usage
+            _agent_tokens[agent_name] = _agent_tokens.get(agent_name, 0) + total
+            current = _agent_usage.setdefault(agent_name, {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "tool_calls": 0,
+            })
+            for key in ("input_tokens", "output_tokens", "total_tokens", "tool_calls"):
+                current[key] += max(0, int(usage.get(key, 0) or 0))
 
 
 def get_agent_call_counts() -> dict[str, int]:
@@ -582,7 +603,7 @@ def execute_agent(
 
             # Streaming mode — yield token chunks to the callback
             full_content: list[str] = []
-            last_chunk_usage = 0
+            last_chunk_usage: dict[str, int] = {}
             for chunk in llm.stream(messages):
                 # Check cancellation flag — allows responsive termination
                 if cancel_checker and cancel_checker():
@@ -596,14 +617,15 @@ def execute_agent(
                     except Exception:
                         pass  # callback failure shouldn't break the LLM call
                 # Try to extract usage from every chunk (last chunk often has it)
-                chunk_usage = _extract_usage(chunk)
-                if chunk_usage:
+                chunk_usage = _extract_usage_details(chunk)
+                if chunk_usage.get("total_tokens"):
                     last_chunk_usage = chunk_usage
 
             content = "".join(full_content)
             # Prefer usage from last chunk, fall back to character-based estimate
             # (Doubao API often doesn't include usage in streaming responses)
-            usage = last_chunk_usage if last_chunk_usage > 0 else (len(content) // 4)
+            usage_details = last_chunk_usage or {"total_tokens": len(content) // 4}
+            usage = usage_details.get("total_tokens", 0)
 
             # Fallback: if streaming produced empty content (thinking models may
             # put output in reasoning_content, inaccessible via streaming chunks),
@@ -614,6 +636,7 @@ def execute_agent(
                     model, api_base, api_key, messages, max_tokens, temperature,
                     disable_thinking, timeout_seconds, provider_name=provider_name,
                 )
+                usage_details = {"total_tokens": usage}
                 # Stream the fallback content through the callback so SSE clients
                 # receive it (the streaming loop above produced nothing).
                 if content and cb is not None:
@@ -625,7 +648,8 @@ def execute_agent(
             # Non-streaming mode (original behavior)
             response = llm.invoke(messages)
             content = _extract_content(response)
-            usage = _extract_usage(response)
+            usage_details = _extract_usage_details(response)
+            usage = usage_details.get("total_tokens", 0)
 
             # If LangChain dropped the content (thinking model), retry via raw HTTP
             if not content and allow_empty_content_fallback:
@@ -634,9 +658,10 @@ def execute_agent(
                     model, api_base, api_key, messages, max_tokens, temperature,
                     disable_thinking, timeout_seconds, provider_name=provider_name,
                 )
+                usage_details = {"total_tokens": usage}
 
         logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
-        _record_token_usage(agent_name, usage)
+        _record_usage(agent_name, usage_details)
         return (str(content) if content else None, usage)
 
     except Exception as e:
@@ -685,13 +710,36 @@ def _extract_content(response) -> str:
 
 def _extract_usage(response) -> int:
     """Extract token usage from various LangChain response formats."""
+    return _extract_usage_details(response).get("total_tokens", 0)
+
+
+def _extract_usage_details(response) -> dict[str, int]:
+    """Extract normalized token and tool usage from LangChain responses."""
     meta = getattr(response, "response_metadata", {}) or {}
     token_info = meta.get("token_usage", {}) or {}
-    if token_info:
-        return token_info.get("total_tokens", 0)
-    if hasattr(response, "usage_metadata"):
-        u = response.usage_metadata
-        return u.get("total_tokens", 0) if u else 0
+    usage = {**(getattr(response, "usage_metadata", {}) or {}), **token_info}
+    input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+    output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+    total_tokens = int(usage.get("total_tokens", 0) or 0)
+    if not total_tokens:
+        total_tokens = input_tokens + output_tokens
+    tool_calls = _extract_tool_calls(response)
+    return {
+        "input_tokens": max(0, input_tokens),
+        "output_tokens": max(0, output_tokens),
+        "total_tokens": max(0, total_tokens),
+        "tool_calls": tool_calls,
+    }
+
+
+def _extract_tool_calls(response) -> int:
+    """Count tool calls in common AIMessage and streamed chunk shapes."""
+    calls = getattr(response, "tool_calls", None)
+    if calls is None:
+        additional = getattr(response, "additional_kwargs", {}) or {}
+        calls = additional.get("tool_calls")
+    if isinstance(calls, list):
+        return len(calls)
     return 0
 
 

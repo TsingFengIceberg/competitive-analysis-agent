@@ -44,10 +44,19 @@ def test_instrumented_node_converts_exception_to_routable_failure():
     result = _instrument_node("collector", node)({"thread_id": "run-2", "stage_results": []})
     stage = result["stage_results"][0]
     assert result["error"].startswith("collector failed:")
-    assert stage["status"] == "failed"
-    assert stage["error_code"] == "node_exception"
+    assert stage["status"] == "timeout"
+    assert stage["error_code"] == "timeout"
     assert stage["degraded_reason"] == stage["error_message"]
     assert stage["status"] in TERMINAL_FAILURE_STATUSES
+
+
+def test_instrumented_node_marks_explicit_degradation_as_partial():
+    def node(_state):
+        return {"unresolved_issues": [{"description": "missing source"}]}
+
+    result = _instrument_node("reviewer", node)({"stage_results": []})
+    assert result["stage_results"][0]["status"] == "partial"
+    assert result["run_status"] == "partial"
 
 
 def test_stage_summary_uses_latest_status_and_aggregates_cost():
@@ -58,5 +67,7 @@ def test_stage_summary_uses_latest_status_and_aggregates_cost():
     assert latest_stage_result(state, "collector")["attempt"] == 2
     summary = summarize_stage_results(state["stage_results"])
     assert summary["total_tokens"] == 22
+    assert summary["input_tokens"] == 0
+    assert summary["output_tokens"] == 0
     assert summary["total_duration_ms"] == 90
     assert summary["statuses"] == {"collector": "completed", "analyst": "completed"}
