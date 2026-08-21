@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowRight, ExternalLink, FileText, Link2, ShieldCheck } from "lucide-react";
+import { ArrowRight, ExternalLink, FileText, Link2, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -11,6 +12,7 @@ interface Props {
   selectedSourceId?: string | null;
   onSelectSource?: (id: string) => void;
   onSelectSection?: (id: string) => void;
+  onRequestRework?: (action: string, comment: string) => void;
 }
 
 type Claim = {
@@ -60,15 +62,28 @@ export default function EvidenceGraph({
   selectedSourceId,
   onSelectSource,
   onSelectSection,
+  onRequestRework,
 }: Props) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "unsupported" | "single" | "multi">("all");
+  const [expandedClaimId, setExpandedClaimId] = useState<string | null>(null);
+  const claims = useMemo(() => (report ? buildClaims(report) : []), [report]);
+  const sources = report?.traceability_map ?? {};
+  const filteredClaims = useMemo(() => claims.filter((claim) => {
+    const normalized = query.trim().toLocaleLowerCase();
+    const matchesText = !normalized || `${claim.sectionTitle} ${claim.text}`.toLocaleLowerCase().includes(normalized);
+    const matchesStatus = statusFilter === "all" ||
+      (statusFilter === "unsupported" && claim.sourceIds.length === 0) ||
+      (statusFilter === "single" && claim.sourceIds.length === 1) ||
+      (statusFilter === "multi" && claim.sourceIds.length > 1);
+    return matchesText && matchesStatus;
+  }), [claims, query, statusFilter]);
+  const linkedClaims = claims.filter((claim) => claim.sourceIds.length > 0).length;
+  const unsupportedClaims = claims.length - linkedClaims;
+
   if (!report) {
     return <div className="ui-inset p-3 text-xs text-muted-foreground">报告尚未生成，暂无证据图谱。</div>;
   }
-
-  const claims = buildClaims(report);
-  const sources = report.traceability_map ?? {};
-  const linkedClaims = claims.filter((claim) => claim.sourceIds.length > 0).length;
-  const unsupportedClaims = claims.length - linkedClaims;
 
   return (
     <div className="space-y-3 text-xs">
@@ -81,6 +96,10 @@ export default function EvidenceGraph({
             </div>
           </div>
           <Link2 className="size-4 shrink-0 text-primary" aria-hidden="true" />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-40 flex-1"><Search className="text-muted-foreground absolute top-1/2 left-2 size-3.5 -translate-y-1/2" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索论断或章节" className="border-input bg-background h-7 w-full rounded-md border pr-2 pl-7 text-[11px] outline-none focus:ring-1 focus:ring-primary" aria-label="搜索论断或章节" /></div>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className="border-input bg-background h-7 rounded-md border px-2 text-[11px]" aria-label="证据状态筛选"><option value="all">全部状态</option><option value="unsupported">待补证据</option><option value="single">单源</option><option value="multi">多源</option></select>
         </div>
         <div className="grid grid-cols-3 gap-2 text-center">
           <div className="rounded-md border bg-background p-2">
@@ -101,7 +120,7 @@ export default function EvidenceGraph({
       </div>
 
       <div className="space-y-2">
-        {claims.map((claim) => (
+        {filteredClaims.map((claim) => (
           <article key={claim.id} className="rounded-lg border bg-card p-2.5 shadow-xs">
             <div className="flex items-start gap-2">
               <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -124,7 +143,13 @@ export default function EvidenceGraph({
                     />
                   )}
                 </div>
-                <p className="leading-5 text-foreground/85">{claim.text || "（空论断）"}</p>
+                <button type="button" className="w-full text-left leading-5 text-foreground/85 hover:text-primary" onClick={() => setExpandedClaimId((current) => current === claim.id ? null : claim.id)}>{claim.text || "（空论断）"}</button>
+                {expandedClaimId === claim.id && (
+                  <div className="ui-inset mt-2 space-y-1.5 p-2 text-[10px]">
+                    <div className="font-medium">证据详情</div>
+                    {claim.sourceIds.length === 0 ? <div className="text-amber-700">该论断没有找到可用引用，建议补采并交叉验证。</div> : claim.sourceIds.map((id) => <div key={id} className="break-words text-muted-foreground">[{id}] {sources[id]?.snippet || "暂无原文摘录"} · 可信度 {typeof sources[id]?.confidence === "number" ? `${Math.round(sources[id]!.confidence * 100)}%` : "未知"} · {sources[id]?.credibility_tier || "未知层级"}</div>)}
+                  </div>
+                )}
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <ArrowRight className="size-3 text-muted-foreground" aria-hidden="true" />
                   {claim.sourceIds.length ? (
@@ -157,10 +182,14 @@ export default function EvidenceGraph({
                   )}
                 </div>
               </div>
+              {onRequestRework && claim.sourceIds.length === 0 && (
+                <Button type="button" variant="ghost" size="icon-sm" className="mt-1 size-6 shrink-0 text-amber-700" title="只补采这条论断的证据" aria-label="只补采这条论断的证据" onClick={() => onRequestRework("replan", `请只补采论断“${claim.text}”在章节“${claim.sectionTitle}”中的证据，至少提供两个独立来源。`)}><RefreshCw className="size-3.5" /></Button>
+              )}
             </div>
           </article>
         ))}
       </div>
+      {filteredClaims.length === 0 && <div className="ui-inset p-3 text-center text-xs text-muted-foreground">没有符合当前筛选条件的论断。</div>}
     </div>
   );
 }

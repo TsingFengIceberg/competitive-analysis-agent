@@ -244,6 +244,24 @@ export interface ReportData {
   metrics: Record<string, number>;
   analysis_scope?: Record<string, unknown> | null;
   quality_gate?: QualityGateSnapshot | null;
+  structured_analysis?: {
+    comparison_matrix?: {
+      products?: string[];
+      dimensions?: string[];
+      cells?: Array<{
+        product?: string;
+        dimension?: string;
+        rating?: number | null;
+        evidence?: string;
+        source_data_point_ids?: string[];
+      }>;
+      summary?: string;
+    };
+    swot?: Record<string, unknown>;
+    trends?: unknown[];
+    forecast?: unknown;
+    dynamic_blocks?: unknown[];
+  };
 }
 
 export interface DimensionCoverage {

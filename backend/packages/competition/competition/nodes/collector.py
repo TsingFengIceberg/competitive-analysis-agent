@@ -113,9 +113,12 @@ def _build_collector_task(state: dict) -> str:
     user_request = state.get("user_request", "")
     target_products = state.get("target_products", [])
     gaps = state.get("knowledge_gaps") or []
+    target_focus = (state.get("hitl_decision") or {}).get("target_focus") or []
 
     if gaps:
         return _build_targeted_rework_task(state, gaps)
+    if target_focus:
+        return _build_focused_rework_task(state, target_focus)
 
     products_str = ", ".join(target_products) if target_products else "(from user request)"
 
@@ -171,6 +174,30 @@ Output format: a JSON array of objects, each with:
             task += "\nFocus on finding NEW or UPDATED data beyond the above, especially recent changes.\n"
 
     return task
+
+
+def _build_focused_rework_task(state: dict, focus: list[str]) -> str:
+    """Build a user-directed narrow collection task when no Reviewer gap exists."""
+    products = ", ".join(state.get("target_products", [])) or "(unknown)"
+    brief = state.get("analysis_brief") or {}
+    dimensions = [
+        item.get("label", item.get("id"))
+        for item in brief.get("dimensions", [])
+        if isinstance(item, dict)
+    ]
+    focus_lines = "\n".join(f"- {item}" for item in focus[:5])
+    return f"""TARGETED USER RESEARCH — do not rerun the full collection.
+Products: {products}
+
+Focus requested by the user:
+{focus_lines}
+
+Existing confirmed dimensions remain binding: {', '.join(str(item) for item in dimensions) or 'the current analysis scope'}.
+Collect only new evidence needed for the requested focus, preferably from at least two independent sources. Preserve unrelated existing data.
+Output format: a JSON array of objects, each with:
+  id, product, category, label, value, confidence (0.0-1.0),
+  source_url, source_type, collected_at (ISO 8601)
+"""
 
 
 def _build_targeted_rework_task(state: dict, gaps: list[dict]) -> str:

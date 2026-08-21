@@ -15,6 +15,7 @@ import CompetitionReportPanel from "./competition-report-panel";
 import EvidenceGraph from "./evidence-graph";
 import QualityGatePanel from "./quality-gate-panel";
 import SourceInspector from "./source-inspector";
+import StructuredAnalysisPanel from "./structured-analysis-panel";
 import { VersionTree } from "./version-tree";
 import {
   Dialog,
@@ -31,6 +32,7 @@ export type WorkbenchTab =
   | "quality"
   | "sources"
   | "evidence"
+  | "structured"
   | "process";
 
 const LazyProcessInspector = dynamic(() => import("./process-inspector"), {
@@ -64,6 +66,7 @@ interface Props {
   threadIdForApi: string | null;
   getTrace: (threadId: string) => Promise<TraceResponse>;
   onEdit?: () => void;
+  onReanalyze?: (action: string, comment: string, version: number) => void;
   onExportMD?: () => void;
   onExportJSON?: () => void;
   initialTab?: WorkbenchTab;
@@ -94,6 +97,7 @@ export default function ResearchWorkbench(props: Props) {
     threadIdForApi,
     getTrace,
     onEdit,
+    onReanalyze,
     onExportMD,
     onExportJSON,
     initialTab = "report",
@@ -193,10 +197,11 @@ export default function ResearchWorkbench(props: Props) {
     ["quality", "质量"],
     ["sources", "来源"],
     ["evidence", "证据图谱"],
+    ["structured", "结构化"],
     ["process", "流程"],
   ];
-  const inspectorTab: "quality" | "sources" | "evidence" | "process" =
-    tab === "sources" || tab === "evidence" || tab === "process" ? tab : "quality";
+  const inspectorTab: "quality" | "sources" | "evidence" | "structured" | "process" =
+    tab === "sources" || tab === "evidence" || tab === "structured" || tab === "process" ? tab : "quality";
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogContent
@@ -348,7 +353,7 @@ export default function ResearchWorkbench(props: Props) {
               />
             </main>
             <aside
-              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "process" ? "block" : "hidden lg:block"}`}
+              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "structured" || tab === "process" ? "block" : "hidden lg:block"}`}
             >
               <div className="border-subtle mb-3 flex gap-1 border-b pb-2 text-xs lg:flex">
                 <Button
@@ -385,6 +390,16 @@ export default function ResearchWorkbench(props: Props) {
                   type="button"
                   variant="ghost"
                   size="sm"
+                  onClick={() => setTab("structured")}
+                  className="ui-tab"
+                  data-active={inspectorTab === "structured"}
+                >
+                  结构化
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setTab("process")}
                   className="ui-tab"
                   data-active={inspectorTab === "process"}
@@ -415,6 +430,21 @@ export default function ResearchWorkbench(props: Props) {
                     setTab("sources");
                   }}
                   onSelectSection={selectEvidenceSection}
+                  onRequestRework={(action, comment) => {
+                    if (onReanalyze && isViewingLatest) {
+                      onReanalyze(action, comment, viewingHistory?.version ?? historyEntries.at(-1)?.version ?? 1);
+                    }
+                  }}
+                />
+              )}
+              {inspectorTab === "structured" && (
+                <StructuredAnalysisPanel
+                  report={displayReport}
+                  onRequestRework={(action, comment) => {
+                    if (onReanalyze && isViewingLatest) {
+                      onReanalyze(action, comment, viewingHistory?.version ?? historyEntries.at(-1)?.version ?? 1);
+                    }
+                  }}
                 />
               )}
               {inspectorTab === "process" &&

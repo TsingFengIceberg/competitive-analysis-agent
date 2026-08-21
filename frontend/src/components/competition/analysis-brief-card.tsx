@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, ChevronDown, Loader2, X } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Check, ChevronDown, Loader2, Save, X } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +72,16 @@ export default function AnalysisBriefCard({
   onCancel,
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [templates, setTemplates] = useState<Array<{ name: string; brief: AnalysisBrief }>>([]);
+  const [templateName, setTemplateName] = useState("");
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("ci-agent-analysis-brief-templates");
+      if (raw) setTemplates(JSON.parse(raw) as Array<{ name: string; brief: AnalysisBrief }>);
+    } catch {
+      setTemplates([]);
+    }
+  }, []);
   const update = (patch: Partial<AnalysisBrief>) =>
     onChange?.({ ...brief, ...patch });
   const validationErrors = useMemo(() => briefValidationErrors(brief), [brief]);
@@ -114,6 +124,51 @@ export default function AnalysisBriefCard({
           </p>
         </div>
         <span className="ui-meta">修订 {brief.revision}</span>
+      </div>
+
+      <div className="border-subtle mt-3 flex flex-wrap items-center gap-2 border-y py-2">
+        <span className="text-[10px] text-muted-foreground">可复用范围模板</span>
+        {templates.length > 0 && (
+          <select
+            value={templateName}
+            onChange={(event) => setTemplateName(event.target.value)}
+            className="border-input bg-background h-7 max-w-44 rounded-md border px-2 text-[11px]"
+            aria-label="选择范围模板"
+          >
+            <option value="">选择模板</option>
+            {templates.map((template) => <option key={template.name} value={template.name}>{template.name}</option>)}
+          </select>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 text-[11px]"
+          disabled={pending || !templateName}
+          onClick={() => {
+            const selected = templates.find((template) => template.name === templateName);
+            if (selected) onChange?.({ ...selected.brief, revision: brief.revision });
+          }}
+        >
+          应用
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 text-[11px]"
+          disabled={pending}
+          onClick={() => {
+            const name = window.prompt("模板名称", `${brief.target_products.join(" / ")} 分析范围`);
+            if (!name?.trim()) return;
+            const next = [...templates.filter((template) => template.name !== name.trim()), { name: name.trim(), brief: { ...brief } }];
+            setTemplates(next);
+            setTemplateName(name.trim());
+            window.localStorage.setItem("ci-agent-analysis-brief-templates", JSON.stringify(next));
+          }}
+        >
+          <Save className="size-3.5" />保存当前范围
+        </Button>
       </div>
 
       <div className="mt-5 grid gap-4">

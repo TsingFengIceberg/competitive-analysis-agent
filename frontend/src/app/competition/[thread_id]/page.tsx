@@ -1458,6 +1458,9 @@ export default function CompetitionPage() {
             threadIdForApi={threadId}
             getTrace={api.getTrace}
             onEdit={displayReport && isViewingLatest ? handleEdit : undefined}
+            onReanalyze={(action, comment, version) => {
+              void handleReanalyze(action, comment, version);
+            }}
             onExportMD={handleExportMD}
             onExportJSON={handleExportJSON}
             initialTab={workbenchInitialTab}

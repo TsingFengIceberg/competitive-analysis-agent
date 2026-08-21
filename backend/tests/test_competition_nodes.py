@@ -200,6 +200,20 @@ class TestBuildCollectorTask:
         assert "industry:devtools:1" in task
         assert "features" not in task
 
+    def test_user_focus_limits_recollection_without_reviewer_gaps(self):
+        task = _build_collector_task({
+            "user_request": "compare",
+            "target_products": ["A", "B"],
+            "hitl_decision": {
+                "action": "replan",
+                "target_focus": ["只补采 B 的企业采用成本"],
+            },
+            "analysis_brief": {"dimensions": [{"id": "pricing", "label": "定价"}]},
+        })
+        assert "TARGETED USER RESEARCH" in task
+        assert "只补采 B 的企业采用成本" in task
+        assert "do not rerun the full collection" in task
+
 
 # ═══════════════════════════════════════════════════════════════
 # Data Point Parsing
@@ -875,6 +889,7 @@ class TestWriterNarrative:
         })
         assert len(calls) == 1
         assert result["report_data"]["persona"] == "entrepreneur"
+        assert result["report_data"]["structured_analysis"]["comparison_matrix"]["summary"] == "矩阵结论"
         sections = result["report_data"]["sections"]
         assert next(s for s in sections if s["id"] == "sec-executive-summary")["content"] == "新的摘要 [2]"
         assert "优先行动 [1]" in next(s for s in sections if s["id"] == "sec-recommendations")["content"]

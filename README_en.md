@@ -6,7 +6,7 @@
 
 An AI-powered competitive intelligence and analysis agent collaboration system.
 
-[English](./README_en.md) | [中文](./README.md)
+<p align="center"><a href="./README_en.md">English</a> | <a href="./README.md">中文</a></p>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)

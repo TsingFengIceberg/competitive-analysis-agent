@@ -638,6 +638,13 @@ class ReportData(BaseModel):
         default=None,
         description="Version-specific deterministic quality gate; absent on legacy reports",
     )
+    structured_analysis: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Frontend-ready structured analysis payload. Contains comparison_matrix, "
+            "swot, trends, and dynamic_blocks without changing the existing section contract."
+        ),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

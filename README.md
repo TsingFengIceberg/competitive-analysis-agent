@@ -6,7 +6,7 @@
 
 AI 驱动的竞品分析 Agent 协作系统
 
-[English](./README_en.md) | 中文
+<p align="center"><a href="./README_en.md">English</a> | 中文</p>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)

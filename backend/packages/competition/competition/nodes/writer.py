@@ -171,6 +171,13 @@ def writer_node(state: dict) -> dict:
             "confirmation_source": brief.get("confirmation_source"),
         } if brief else None,
         "quality_gate": quality_gate,
+        "structured_analysis": {
+            "comparison_matrix": analysis.get("comparison_matrix") or {},
+            "swot": analysis.get("swot") or {},
+            "trends": analysis.get("trends") or [],
+            "forecast": forecast,
+            "dynamic_blocks": dynamic_blocks,
+        },
     }
 
     # Build ReviewPackage for HITL (§3.13.5)

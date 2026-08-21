@@ -1553,6 +1553,10 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest, fastapi
     action = decision.action
     comment = decision.comment
     target_focus = decision.target_focus
+    # Preserve a precise workbench comment as an explicit focus contract so a
+    # targeted collection does not degrade into a generic rework run.
+    if action == "replan" and not target_focus and comment.strip():
+        target_focus = [comment.strip()]
     if action == "auto":
         from competition.nodes.rework_intent import parse_rework_intent
         intent = parse_rework_intent(state, comment)
