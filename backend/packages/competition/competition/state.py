@@ -62,6 +62,8 @@ class CompetitionState(AgentState):
     """Collected survey responses (§14 questionnaire feedback loop)."""
 
     # ── Analyst Output ── [竞赛要求 R4]
+    analysis_context_pack: NotRequired[dict | None]
+    """Filtered durable/current evidence and explicit quality semantics for Analyst/Reviewer."""
     analysis_result: NotRequired[dict | None]
     """AnalysisResult: comparison_matrix + swot + trends + forecast + visualization_paths (§3.13.3)."""
 

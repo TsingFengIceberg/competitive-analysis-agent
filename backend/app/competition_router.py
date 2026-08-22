@@ -960,6 +960,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
         "status": "awaiting_confirmation",
         "state": {
             "messages": [],
+            "thread_id": thread_id,
             "user_request": request.query,
             "target_products": brief.target_products,
             "analysis_brief": brief.model_dump(),
@@ -1004,6 +1005,7 @@ def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, use
     if entry is not None:
         entry["status"] = "running"
         entry.setdefault("state", {})["analysis_brief"] = analysis_brief
+        entry["state"]["thread_id"] = thread_id
         entry["state"]["target_products"] = analysis_brief.get("target_products", [])
     try:
         asyncio.get_event_loop().run_in_executor(
@@ -1480,6 +1482,7 @@ def _restore_state_from_db(thread_id: str) -> dict | None:
 
         # Reconstruct state from phase json_output fields
         state: dict = {
+            "thread_id": thread_id,
             "report_data": report_data,
             "target_products": target_products,
             "user_request": db_record.get("query", ""),

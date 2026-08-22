@@ -12,6 +12,7 @@ from competition.nodes.collector import (
     _build_collector_task,
     _normalize_label,
     _parse_datapoints,
+    _persist_intelligence_items,
     _source_short,
     _values_similar,
     build_collection_summary,
@@ -261,6 +262,34 @@ class TestParseDatapoints:
         # First item fails validation → skipped; second passes
         assert len(result) == 1
         assert result[0].id == "dp-2"
+
+
+def test_collector_persists_evidence_without_blocking_analysis(monkeypatch):
+    captured = {}
+
+    class FakeRepository:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def ingest_collected_points(self, points, *, scope):
+            captured["points"] = points
+            captured["scope"] = scope
+            return {"inserted": len(points), "updated": 0, "unchanged": 0, "versions_created": len(points), "source_count": len(points)}
+
+    monkeypatch.setattr("competition.intelligence_repo.IntelligenceRepository", FakeRepository)
+    result = _persist_intelligence_items(
+        {"analysis_brief": {"market_scope": "Global"}},
+        [_make_dp("dp-1", source_url="https://a.example/a, https://b.example/b")],
+    )
+    assert result["inserted"] == 2
+    assert captured["scope"] == "Global"
+    assert {point["source_url"] for point in captured["points"]} == {
+        "https://a.example/a",
+        "https://b.example/b",
+    }
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -19,6 +19,14 @@ def reviewer_node(state: dict) -> dict:
     """
     analysis = state.get("analysis_result") or {}
     collected = state.get("collected_data") or []
+    context_pack = state.get("analysis_context_pack")
+    if not isinstance(context_pack, dict):
+        try:
+            from competition.context_pack import build_analysis_context_pack
+            context_pack = build_analysis_context_pack(state)
+        except Exception:
+            logger.exception("AnalysisContextPack build failed in Reviewer")
+            context_pack = None
     prev_gaps = _gaps_from_verdict(state.get("review_verdict"))
     review_round = state.get("review_round", 0)
 
@@ -36,7 +44,9 @@ def reviewer_node(state: dict) -> dict:
 
     # G7 (semantic contradiction) + G8 (low confidence) — LLM-assisted
     if _should_call_g7_g8(state):
-        g7_gaps, g8_verdicts = _run_g7_g8(analysis, collected, state.get("target_products", []))
+        g7_gaps, g8_verdicts = _run_g7_g8(
+            analysis, collected, state.get("target_products", []), context_pack=context_pack,
+        )
         gaps.extend(g7_gaps)
         gaps.extend(_g8_verdicts_to_gaps(g8_verdicts, collected))
         state["_g8_verdicts"] = g8_verdicts  # stored for confidence adjustment pass
@@ -61,6 +71,8 @@ def reviewer_node(state: dict) -> dict:
 
     # Build quality summary
     quality = _build_quality_summary(collected, gaps, improvement)
+    if isinstance(context_pack, dict):
+        quality["context_pack"] = context_pack.get("quality", {})
     if brief:
         selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
         quality["selected_dimensions"] = [item.get("id") for item in selected_dimensions if isinstance(item, dict)]
@@ -87,6 +99,7 @@ def reviewer_node(state: dict) -> dict:
 
     return {
         "review_verdict": verdict,
+        "analysis_context_pack": context_pack,
         "review_round": new_round,
         "gap_coverage_improvement": improvement,
         "round_metrics": round_metrics,
@@ -760,7 +773,12 @@ def _generate_notes(gaps: list[dict], improvement: float) -> str:
 # ── G7: Semantic Contradiction Detection (LLM-assisted) ──
 
 
-def check_semantic_contradictions(analysis: dict, collected: list[dict], target_products: list[str]) -> list[dict]:
+def check_semantic_contradictions(
+    analysis: dict,
+    collected: list[dict],
+    target_products: list[str],
+    context_pack: dict | None = None,
+) -> list[dict]:
     """G7: Use LLM to detect contradictions between Analyst conclusions and raw data.
 
     Returns list of gap dicts (same format as G1-G6).
@@ -813,6 +831,7 @@ def check_semantic_contradictions(analysis: dict, collected: list[dict], target_
         "trends": trends[:10] if isinstance(trends, list) else [],
         "data_index": {k: v for k, v in list(data_index.items())[:80]},
         "target_products": target_products,
+        "context_quality": (context_pack or {}).get("quality", {}),
     }, ensure_ascii=False, indent=2)
 
     prompt = load_prompt("reviewer-g7")
@@ -973,14 +992,19 @@ def _should_call_g7_g8(state: dict) -> bool:
     return True
 
 
-def _run_g7_g8(analysis: dict, collected: list[dict], target_products: list[str]) -> tuple[list[dict], list[dict]]:
+def _run_g7_g8(
+    analysis: dict,
+    collected: list[dict],
+    target_products: list[str],
+    context_pack: dict | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Run G7 + G8 in sequence, returning (gaps, g8_verdicts).
 
     G8 runs after G7 so that data points flagged by G7 as contradictory
     get extra scrutiny in G8's cross-validation pass.
     """
     logger.info("Reviewer G7+G8 LLM checks starting (%d data points)", len(collected))
-    g7_gaps = check_semantic_contradictions(analysis, collected, target_products)
+    g7_gaps = check_semantic_contradictions(analysis, collected, target_products, context_pack=context_pack)
     g8_verdicts = review_low_confidence(collected)
     logger.info("Reviewer G7: %d contradictions, G8: %d verdicts", len(g7_gaps), len(g8_verdicts))
     return g7_gaps, g8_verdicts

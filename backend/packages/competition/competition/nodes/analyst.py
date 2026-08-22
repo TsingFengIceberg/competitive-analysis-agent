@@ -35,15 +35,25 @@ def analyst_node(state: dict) -> dict:
     Returns partial state update with analysis_result + optional coverage_warning.
     """
     target_products = state.get("target_products", [])
+    context_pack = state.get("analysis_context_pack")
+    if not isinstance(context_pack, dict):
+        try:
+            from competition.context_pack import build_analysis_context_pack
+            context_pack = build_analysis_context_pack(state)
+        except Exception:
+            logger.exception("AnalysisContextPack build failed; using run-level evidence")
+            context_pack = None
 
     # ── Primary analysis ──
     try:
-        task = _build_analyst_task(state)
+        task_state = {**state, "analysis_context_pack": context_pack} if context_pack else state
+        task = _build_analyst_task(task_state)
         raw_output, _tokens = _execute_analyst(task, state)
     except Exception:
         logger.exception("Analyst execute_structured_agent failed, using empty result")
         return {"analysis_result": _empty_analysis_result(state),
-                "coverage_warning": None}
+                "coverage_warning": None,
+                "analysis_context_pack": context_pack}
 
     result = _build_analysis_result(raw_output, state)
     if not result.get("comparison_matrix", {}).get("cells"):
@@ -58,7 +68,7 @@ def analyst_node(state: dict) -> dict:
         missing_products = [e for e in errors if e.startswith("A1:")]
         if missing_products:
             logger.warning("Analyst retrying for missing products: %s", missing_products)
-            task_retry = _build_analyst_task(state)
+            task_retry = _build_analyst_task(task_state)
             # Add explicit focus on missing products
             mp_names = [e.split(": ")[1].split(" has ")[0] for e in missing_products]
             task_retry += (
@@ -114,6 +124,7 @@ def analyst_node(state: dict) -> dict:
 
     return {
         "analysis_result": result,
+        "analysis_context_pack": context_pack,
         "coverage_warning": coverage if coverage["na_products"] or coverage.get("low_coverage_products") else None,
         "analyst_self_assessment": self_assessment,
     }
@@ -295,8 +306,23 @@ Tier 3 "insufficient": Use only when NEITHER direct nor cross-inference is
 Products: {products_str}
 Dimensions: {", ".join(dimensions)}
 
+STRUCTURED ANALYSIS CONTEXT PACK (authoritative evidence scope and quality):
+{_context_excerpt(state)}
+
 Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with citation
 """
+
+
+def _context_excerpt(state: dict) -> str:
+    pack = state.get("analysis_context_pack")
+    if not isinstance(pack, dict):
+        return "{\"quality_state\": \"fallback\", \"evidence\": []}"
+    try:
+        from competition.context_pack import context_pack_prompt_excerpt
+        return context_pack_prompt_excerpt(pack)
+    except Exception:
+        logger.debug("Unable to serialize AnalysisContextPack", exc_info=True)
+        return "{\"quality_state\": \"fallback\", \"evidence\": []}"
 
 
 def _repair_json(text: str) -> str:

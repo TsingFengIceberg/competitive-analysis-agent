@@ -98,6 +98,61 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             generation_id TEXT,
             PRIMARY KEY (thread_id, phase_key)
         );
+
+        CREATE TABLE IF NOT EXISTS intelligence_sources (
+            source_key TEXT PRIMARY KEY,
+            canonical_url TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            source_domain TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT 'unknown',
+            product TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'Global / unspecified',
+            status TEXT NOT NULL DEFAULT 'healthy',
+            last_success_at TEXT,
+            last_fetched_at TEXT,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            avg_latency_ms INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS intelligence_items (
+            item_key TEXT PRIMARY KEY,
+            product TEXT NOT NULL,
+            dimension TEXT NOT NULL,
+            label TEXT NOT NULL,
+            value TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            canonical_url TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_domain TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT 'Global / unspecified',
+            published_at TEXT,
+            fetched_at TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            credibility_tier TEXT NOT NULL DEFAULT 'secondary',
+            status TEXT NOT NULL DEFAULT 'available',
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS intelligence_item_versions (
+            item_key TEXT NOT NULL,
+            version_no INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (item_key, version_no),
+            FOREIGN KEY (item_key) REFERENCES intelligence_items(item_key) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_intelligence_items_scope ON intelligence_items(product, dimension, scope, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_intelligence_items_source ON intelligence_items(source_type, source_domain);
+        CREATE INDEX IF NOT EXISTS idx_intelligence_items_status ON intelligence_items(status, fetched_at);
+        CREATE INDEX IF NOT EXISTS idx_intelligence_sources_status ON intelligence_sources(status, updated_at);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)

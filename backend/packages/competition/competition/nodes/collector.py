@@ -49,6 +49,7 @@ def collector_node(state: dict) -> dict:
     summary = build_collection_summary(data_points, state.get("target_products", []))
     summary["search_stats"] = _get_search_info()
     summary["complexity"] = state.get("complexity", "standard")
+    summary["intelligence_persistence"] = _persist_intelligence_items(state, data_points)
 
     # ── Self-assessment (§3.17.2) ──
     target_products = state.get("target_products", [])
@@ -98,6 +99,29 @@ def collector_node(state: dict) -> dict:
         "collector_self_assessment": self_assessment,
         "questionnaire": questionnaire,
     }
+
+
+def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -> dict:
+    """Persist fresh Collector evidence without making persistence a hard dependency."""
+    if not points:
+        return {"inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0}
+    try:
+        from competition.intelligence_repo import IntelligenceRepository
+
+        scope = str((state.get("analysis_brief") or {}).get("market_scope") or "Global / unspecified")
+        payload: list[dict] = []
+        for point in points:
+            item = point.model_dump()
+            # Collector dedup may merge equivalent evidence URLs into one field.
+            # Store each source as an independently traceable item.
+            urls = [url.strip() for url in str(item.get("source_url") or "").split(",") if url.strip()]
+            for url in urls or [""]:
+                payload.append({**item, "source_url": url})
+        with IntelligenceRepository() as repository:
+            return repository.ingest_collected_points(payload, scope=scope)
+    except Exception as exc:
+        logger.warning("Intelligence pool persistence degraded: %s", exc)
+        return {"status": "degraded", "error": str(exc)[:240], "inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0}
 
 
 # ── Task construction ──
