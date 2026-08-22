@@ -104,7 +104,7 @@ def collector_node(state: dict) -> dict:
 def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -> dict:
     """Persist fresh Collector evidence without making persistence a hard dependency."""
     if not points:
-        return {"inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0}
+        return {"inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0, "material_changes": 0, "change_events": []}
     try:
         from competition.intelligence_repo import IntelligenceRepository
 
@@ -118,10 +118,26 @@ def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -
             for url in urls or [""]:
                 payload.append({**item, "source_url": url})
         with IntelligenceRepository() as repository:
-            return repository.ingest_collected_points(payload, scope=scope)
+            stats = repository.ingest_collected_points(payload, scope=scope)
+            stats.setdefault("alerts_emitted", 0)
+            stats.setdefault("alerts_dispatched", 0)
+            try:
+                from competition.alerts import AlertEngine, AlertRepository, deliver_alert_events
+                if getattr(repository, "conn", None) is not None:
+                    alert_repository = AlertRepository(conn=repository.conn)
+                    events = AlertEngine(alert_repository).evaluate(stats.get("change_events") or [])
+                    stats["alerts_emitted"] = len(events)
+                    rules = {rule["rule_id"]: rule for rule in alert_repository.list_rules(enabled_only=True)}
+                    immediate = [event for event in events if rules.get(event["rule_id"], {}).get("delivery_mode") == "immediate"]
+                    deliveries = deliver_alert_events(alert_repository, immediate)
+                    stats["alerts_dispatched"] = sum(item.get("status") == "sent" for item in deliveries)
+            except Exception as alert_exc:
+                logger.warning("Alert evaluation degraded: %s", alert_exc)
+                stats["alert_error"] = str(alert_exc)[:240]
+            return stats
     except Exception as exc:
         logger.warning("Intelligence pool persistence degraded: %s", exc)
-        return {"status": "degraded", "error": str(exc)[:240], "inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0}
+        return {"status": "degraded", "error": str(exc)[:240], "inserted": 0, "updated": 0, "unchanged": 0, "versions_created": 0, "source_count": 0, "material_changes": 0, "change_events": []}
 
 
 # ── Task construction ──

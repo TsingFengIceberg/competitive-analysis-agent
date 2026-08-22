@@ -106,6 +106,30 @@ class AnalysisTemplateRequest(BaseModel):
     brief: dict
 
 
+class ObservationScheduleRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    products: list[str] = Field(default_factory=list, max_length=20)
+    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    market_scope: str = "Global / unspecified"
+    daily_times: list[str] = Field(default_factory=list, max_length=24)
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    enabled: bool = True
+
+
+class AlertRuleRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    event_types: list[str] = Field(default_factory=list, max_length=20)
+    products: list[str] = Field(default_factory=list, max_length=20)
+    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    min_severity: str = "major"
+    cooldown_minutes: int = Field(default=60, ge=0, le=43200)
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    timezone: str = "Asia/Shanghai"
+    delivery_mode: str = "immediate"
+    enabled: bool = True
+
+
 class StreamEvent(BaseModel):
     """Single SSE event payload."""
 
@@ -2216,6 +2240,190 @@ async def current_user(fastapi_request: Request):
     }
 
 
+# ── Observation schedules, change alerts, and notification observability ──
+
+
+@router.get("/intelligence/changes")
+async def list_intelligence_changes(
+    fastapi_request: Request,
+    product: str | None = None,
+    dimension: str | None = None,
+    material_only: bool = False,
+    limit: int = Query(default=100, le=500),
+):
+    from competition.intelligence_repo import IntelligenceRepository
+
+    repository = IntelligenceRepository()
+    try:
+        return {"changes": repository.list_changes(product=product, dimension=dimension, material_only=material_only, limit=limit)}
+    finally:
+        repository.close()
+
+
+def _run_scheduled_collection(schedule: dict) -> dict:
+    """Run the existing Collector for a watch schedule and return change stats."""
+    from competition.nodes.collector import collector_node
+
+    dimensions = [{"id": item, "label": item} for item in (schedule.get("dimensions") or ["features", "pricing", "users", "market"])]
+    state = {
+        "user_request": f"定期观察竞品：{', '.join(schedule.get('products') or [])}",
+        "target_products": schedule.get("products") or [],
+        "analysis_brief": {
+            "target_products": schedule.get("products") or [], "market_scope": schedule.get("market_scope") or "Global / unspecified",
+            "effective_dimensions": dimensions, "dimensions": dimensions, "evidence_policy": "official_preferred",
+            "time_range": {"mode": "latest", "label": "最新可用证据"},
+        },
+        "collected_data": [],
+        "industry": "general",
+        "complexity": "quick",
+    }
+    result = collector_node(state)
+    persistence = (result.get("collection_summary") or {}).get("intelligence_persistence") or {}
+    material = int(persistence.get("material_changes", 0) or 0)
+    return {
+        **persistence,
+        "status": "completed" if material else "skipped",
+        "skip_reason": None if material else "no_material_change",
+        "collection_summary": result.get("collection_summary") or {},
+    }
+
+
+def _run_scheduled_deep_analysis(schedule: dict, _collection_result: dict) -> dict:
+    """Start the normal graph only after the observation found material changes."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from competition.db import upsert_analysis
+
+    thread_id = f"comp-watch-{uuid.uuid4().hex[:12]}"
+    products = schedule.get("products") or []
+    dimensions = [{"id": item, "label": item} for item in (schedule.get("dimensions") or ["features", "pricing", "users", "market"])]
+    brief = {
+        "target_products": products, "market_scope": schedule.get("market_scope") or "Global / unspecified",
+        "effective_dimensions": dimensions, "dimensions": dimensions, "evidence_policy": "official_preferred",
+        "time_range": {"mode": "latest", "label": "最新可用证据"}, "complexity": "standard",
+    }
+    user_id = schedule.get("user_id") or "default"
+    _associate_thread(thread_id, user_id)
+    _store[thread_id] = {
+        "status": "running",
+        "state": {
+            "messages": [], "thread_id": thread_id,
+            "user_request": f"定期观察竞品：{', '.join(products)}",
+            "target_products": products, "analysis_brief": brief, "collected_data": [],
+            "industry": "general", "complexity": "standard",
+        },
+        "created_at": datetime.now(UTC).isoformat(), "query": f"定期观察竞品：{', '.join(products)}", "products": products,
+        "title": f"定期观察：{'、'.join(products)}",
+    }
+    upsert_analysis(thread_id=thread_id, status="running", user_id=user_id, query=_store[thread_id]["query"], products=products, industry="general", persona="pm", title=_store[thread_id]["title"], analysis_brief=brief)
+    _resolve_and_run_graph(thread_id, _store[thread_id]["query"], products, user_id, brief)
+    return {"thread_id": thread_id, "status": _store.get(thread_id, {}).get("status", "completed")}
+
+
+@router.post("/observation/schedules")
+async def create_observation_schedule(body: ObservationScheduleRequest, fastapi_request: Request):
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository, ScheduleSpec
+
+    user_id = _get_user_id(fastapi_request)
+    repository = ScheduleRepository()
+    try:
+        spec = ScheduleSpec(**body.model_dump(), user_id=user_id)
+        return {"ok": True, "schedule": ObservationScheduler(repository=repository).add_schedule(spec)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.get("/observation/schedules")
+async def list_observation_schedules(fastapi_request: Request):
+    from competition.observation_scheduler import ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        return {"schedules": repository.list(user_id=_get_user_id(fastapi_request))}
+    finally:
+        repository.close()
+
+
+@router.post("/observation/schedules/{schedule_id}/run-now")
+async def run_observation_now(schedule_id: str, fastapi_request: Request):
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        schedule = repository.get(schedule_id)
+        if not schedule or schedule.get("user_id") != _get_user_id(fastapi_request):
+            raise HTTPException(status_code=404, detail="Observation schedule not found")
+        scheduler = ObservationScheduler(repository=repository, runner=_run_scheduled_collection, deep_runner=_run_scheduled_deep_analysis)
+        return {"ok": True, "run": await asyncio.to_thread(scheduler.run_now, schedule_id)}
+    finally:
+        repository.close()
+
+
+@router.post("/observation/tick")
+async def tick_observation_schedules(fastapi_request: Request):
+    """Run due schedules once; intended for a process supervisor or cron."""
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        scheduler = ObservationScheduler(repository=repository, runner=_run_scheduled_collection, deep_runner=_run_scheduled_deep_analysis)
+        return {"ok": True, "runs": await asyncio.to_thread(scheduler.tick, user_id=_get_user_id(fastapi_request))}
+    finally:
+        repository.close()
+
+
+@router.post("/alerts/rules")
+async def create_alert_rule(body: AlertRuleRequest, fastapi_request: Request):
+    from competition.alerts import AlertRepository, AlertRule
+
+    repository = AlertRepository()
+    try:
+        rule = AlertRule(**body.model_dump(), user_id=_get_user_id(fastapi_request))
+        return {"ok": True, "rule": repository.save_rule(rule)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.get("/alerts/rules")
+async def list_alert_rules(fastapi_request: Request):
+    from competition.alerts import AlertRepository
+
+    repository = AlertRepository()
+    try:
+        return {"rules": repository.list_rules(user_id=_get_user_id(fastapi_request))}
+    finally:
+        repository.close()
+
+
+@router.get("/alerts/events")
+async def list_alert_events(fastapi_request: Request, status: str | None = None, limit: int = Query(default=50, le=500)):
+    from competition.alerts import AlertRepository
+
+    repository = AlertRepository()
+    try:
+        return {"events": repository.list_events(user_id=_get_user_id(fastapi_request), status=status, limit=limit)}
+    finally:
+        repository.close()
+
+
+@router.post("/alerts/dispatch")
+async def dispatch_pending_alerts(fastapi_request: Request, limit: int = Query(default=50, le=200)):
+    from competition.alerts import AlertRepository, deliver_alert_events
+
+    repository = AlertRepository()
+    try:
+        user_id = _get_user_id(fastapi_request)
+        events = repository.list_events(user_id=user_id, status="pending", limit=limit)
+        return {"ok": True, "deliveries": deliver_alert_events(repository, events)}
+    finally:
+        repository.close()
+
+
 # ── User Settings (§User System) ──
 
 
@@ -3017,7 +3225,8 @@ def _run_graph_sync(thread_id: str) -> None:
         # ── Feishu: auto-export doc + notification ──
         try:
             from competition.feishu_doc import export_report_to_doc, is_doc_export_enabled
-            from competition.feishu_notify import is_notify_enabled, notify_analysis_complete
+            from competition.feishu_notify import is_notify_enabled
+            from competition.notifications import NotificationMessage, dispatch_notification
 
             st = _store[thread_id].get("state", {})
             rd = st.get("report_data")
@@ -3032,7 +3241,13 @@ def _run_graph_sync(thread_id: str) -> None:
                     doc_url = export_report_to_doc(str(title), md) or ""
 
                 if is_notify_enabled():
-                    notify_analysis_complete(thread_id, str(title), products_str, doc_url)
+                    body = f"产品：{products_str}"
+                    if doc_url:
+                        body += f"\n\n飞书文档：{doc_url}"
+                    dispatch_notification(
+                        NotificationMessage(route="report", title="竞品分析完成", body=f"{title}\n{body}", thread_id=thread_id),
+                        channels=["feishu"],
+                    )
         except Exception as ex:
             logger.warning("Feishu post-completion error: %s", ex)
 

@@ -153,6 +153,107 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_intelligence_items_source ON intelligence_items(source_type, source_domain);
         CREATE INDEX IF NOT EXISTS idx_intelligence_items_status ON intelligence_items(status, fetched_at);
         CREATE INDEX IF NOT EXISTS idx_intelligence_sources_status ON intelligence_sources(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS intelligence_changes (
+            change_id TEXT PRIMARY KEY,
+            item_key TEXT NOT NULL,
+            product TEXT NOT NULL DEFAULT '',
+            dimension TEXT NOT NULL DEFAULT '',
+            source_domain TEXT NOT NULL DEFAULT '',
+            change_type TEXT NOT NULL,
+            material INTEGER NOT NULL DEFAULT 1,
+            old_hash TEXT,
+            new_hash TEXT,
+            old_value TEXT,
+            new_value TEXT,
+            detected_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_changes_item ON intelligence_changes(item_key, detected_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_intelligence_changes_material ON intelligence_changes(material, detected_at DESC);
+
+        CREATE TABLE IF NOT EXISTS observation_schedules (
+            schedule_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            products_json TEXT NOT NULL DEFAULT '[]',
+            dimensions_json TEXT NOT NULL DEFAULT '[]',
+            market_scope TEXT NOT NULL DEFAULT 'Global / unspecified',
+            daily_times_json TEXT NOT NULL DEFAULT '[]',
+            interval_minutes INTEGER,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            next_run_at TEXT,
+            last_run_at TEXT,
+            last_success_at TEXT,
+            last_failure_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'idle',
+            last_error TEXT,
+            last_skip_reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_observation_schedules_due ON observation_schedules(enabled, next_run_at);
+
+        CREATE TABLE IF NOT EXISTS observation_runs (
+            run_id TEXT PRIMARY KEY,
+            schedule_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            skip_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_observation_runs_schedule ON observation_runs(schedule_id, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS alert_rules (
+            rule_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            event_types_json TEXT NOT NULL DEFAULT '[]',
+            products_json TEXT NOT NULL DEFAULT '[]',
+            dimensions_json TEXT NOT NULL DEFAULT '[]',
+            min_severity TEXT NOT NULL DEFAULT 'major',
+            cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+            quiet_start TEXT,
+            quiet_end TEXT,
+            timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+            delivery_mode TEXT NOT NULL DEFAULT 'immediate',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_rules_user ON alert_rules(user_id, enabled);
+
+        CREATE TABLE IF NOT EXISTS alert_events (
+            event_id TEXT PRIMARY KEY,
+            rule_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            event_type TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'major',
+            dedupe_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            sent_at TEXT,
+            suppressed_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_events_dedupe ON alert_events(rule_id, dedupe_key, last_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_alert_events_pending ON alert_events(status, last_seen_at DESC);
+
+        CREATE TABLE IF NOT EXISTS notification_deliveries (
+            delivery_id TEXT PRIMARY KEY,
+            event_id TEXT,
+            route TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notification_deliveries_event ON notification_deliveries(event_id, created_at DESC);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)

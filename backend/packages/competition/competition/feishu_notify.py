@@ -119,6 +119,15 @@ def is_notify_enabled() -> bool:
 
 def notify_analysis_complete(thread_id: str, title: str, products: str, doc_url: str = "") -> bool:
     """Send a Feishu DM notifying that an analysis has finished."""
+    text = f"✅ 竞品分析完成\n\n{title}\n产品：{products}"
+    if doc_url:
+        text += f"\n\n飞书文档：{doc_url}"
+
+    return notify_text("竞品分析完成", text, thread_id=thread_id)
+
+
+def notify_text(title: str, text: str, *, thread_id: str = "") -> bool:
+    """Send a generic text notification through the configured Feishu bot."""
     if not is_notify_enabled():
         return False
 
@@ -126,17 +135,12 @@ def notify_analysis_complete(thread_id: str, title: str, products: str, doc_url:
     app_id = creds["app_id"].strip()
     app_secret = creds["app_secret"].strip()
     open_id = creds["notify_open_id"].strip()
-
     if not (app_id and app_secret and open_id):
         return False
 
     token = _get_token(app_id, app_secret)
     if not token:
         return False
-
-    text = f"✅ 竞品分析完成\n\n{title}\n产品：{products}"
-    if doc_url:
-        text += f"\n\n飞书文档：{doc_url}"
 
     content = json.dumps({"text": text})
     body = json.dumps({
@@ -148,7 +152,7 @@ def notify_analysis_complete(thread_id: str, title: str, products: str, doc_url:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
             if data.get("code") == 0:
-                logger.info("Feishu notification sent for thread %s", thread_id)
+                logger.info("Feishu notification sent for thread %s (%s)", thread_id, title)
                 return True
             logger.warning("Feishu send error: code=%s msg=%s", data.get("code"), data.get("msg", ""))
     except Exception as e:
