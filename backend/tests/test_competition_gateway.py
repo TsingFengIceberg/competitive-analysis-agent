@@ -332,6 +332,34 @@ class TestStream:
             competition_router._event_buffers.pop(thread_id, None)
             competition_router._event_counters.pop(thread_id, None)
 
+    def test_cancelled_run_persists_stage_marker(self, monkeypatch, tmp_path):
+        import app.competition_router as competition_router
+        import competition.db as competition_db
+
+        thread_id = "comp-test-cancel-persist"
+        db_path = tmp_path / "competition.db"
+        real_init_db = competition_db.init_db
+        monkeypatch.setattr(competition_db, "init_db", lambda: real_init_db(db_path))
+        monkeypatch.setattr(competition_router, "_emit_event", lambda *_args, **_kwargs: None)
+        competition_router._store[thread_id] = {
+            "status": "running",
+            "query": "test",
+            "products": ["A"],
+            "state": {
+                "current_stage": "collector",
+                "stage_results": [{"stage": "collector", "status": "completed"}],
+            },
+        }
+        try:
+            competition_router._finalize_cancelled(thread_id)
+            conn = real_init_db(db_path)
+            phases = competition_db.get_phases(thread_id, conn=conn)
+            conn.close()
+            assert phases[0]["status"] == "cancelled"
+            assert phases[0]["details"][-1]["status"] == "cancelled"
+        finally:
+            competition_router._store.pop(thread_id, None)
+
     def test_reanalysis_forwards_bounded_writer_progress_and_clears_hooks(self, monkeypatch):
         import app.competition_router as competition_router
         import competition.executor as executor_module

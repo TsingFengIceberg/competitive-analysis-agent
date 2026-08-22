@@ -63,6 +63,16 @@ _AGENT_NAMES = {
     "error_handler": "ErrorHandler",
 }
 
+_DEFAULT_STAGE_TIMEOUTS = {
+    "orchestrator": 60,
+    "collector": 600,
+    "analyst": 300,
+    "reviewer": 300,
+    "writer": 180,
+    "hitl_gate": 60,
+    "error_handler": 60,
+}
+
 
 def _instrument_node(stage: str, fn: Callable) -> Callable:
     """Wrap one business node with a compact, checkpoint-safe StageResult."""
@@ -71,9 +81,12 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
     def _wrapped(state: dict) -> dict:
         started_at = utc_now_iso()
         started_monotonic = time.monotonic()
+        stage_timeout = _stage_timeout_seconds(stage, state)
+        stage_deadline = started_monotonic + stage_timeout if stage_timeout else None
         try:
-            from competition.executor import get_agent_call_counts, get_agent_usage
+            from competition.executor import get_agent_call_counts, get_agent_usage, set_stage_deadline
 
+            set_stage_deadline(stage_deadline)
             before_usage = get_agent_usage()
             before_calls = get_agent_call_counts()
         except Exception:  # pragma: no cover - executor is optional in graph unit tests
@@ -85,8 +98,18 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
             if not isinstance(update, dict):
                 raise TypeError(f"Node '{stage}' must return a dict, got {type(update).__name__}")
             status = _status_for_update(update)
+            try:
+                from competition.executor import stage_timed_out
+
+                if stage_timed_out():
+                    update = {**update, "error": f"{stage} stage timeout after {stage_timeout}s"}
+                    status = "timeout"
+                    error_code = "timeout"
+                else:
+                    error_code = "node_error" if update.get("error") else None
+            except Exception:
+                error_code = "node_error" if update.get("error") else None
             error_message = str(update.get("error") or "")[:500] or None
-            error_code = "node_error" if error_message else None
         except Exception as exc:  # noqa: BLE001 - graph failures become routable state
             logger.exception("Competition stage '%s' failed", stage)
             update = {"error": f"{stage} failed: {str(exc)[:500]}"}
@@ -102,6 +125,13 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
         except Exception:  # pragma: no cover - executor is optional in graph unit tests
             after_usage = {}
             after_calls = {}
+        finally:
+            try:
+                from competition.executor import clear_stage_deadline
+
+                clear_stage_deadline()
+            except Exception:
+                pass
 
         usage_before = before_usage.get(agent_name, {})
         usage_after = after_usage.get(agent_name, {})
@@ -175,15 +205,34 @@ def _status_for_update(update: dict) -> str:
 def _exception_status(exc: Exception) -> str:
     """Classify cancellation and timeout exceptions for the runtime contract."""
     try:
-        from competition.executor import is_cancelled
+        from competition.executor import is_cancelled, stage_timed_out
 
         if is_cancelled():
             return "cancelled"
+        if stage_timed_out():
+            return "timeout"
     except Exception:
         pass
     if isinstance(exc, TimeoutError) or "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
         return "timeout"
     return "failed"
+
+
+def _stage_timeout_seconds(stage: str, state: dict) -> int:
+    """Resolve a stage deadline from state overrides, environment, or defaults."""
+    overrides = state.get("stage_timeouts") or {}
+    if isinstance(overrides, dict) and stage in overrides:
+        try:
+            return max(1, int(overrides[stage]))
+        except (TypeError, ValueError):
+            pass
+    import os
+
+    env_name = f"CI_AGENT_STAGE_TIMEOUT_{stage.upper()}"
+    try:
+        return max(1, int(os.environ.get(env_name, _DEFAULT_STAGE_TIMEOUTS.get(stage, 300))))
+    except (TypeError, ValueError):
+        return _DEFAULT_STAGE_TIMEOUTS.get(stage, 300)
 
 
 def _output_ref(stage: str, update: dict) -> str | None:

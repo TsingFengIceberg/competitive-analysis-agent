@@ -59,6 +59,16 @@ def test_instrumented_node_marks_explicit_degradation_as_partial():
     assert result["run_status"] == "partial"
 
 
+def test_instrumented_node_classifies_timeout_exception():
+    def node(_state):
+        raise TimeoutError("provider call timed out")
+
+    result = _instrument_node("analyst", node)({"stage_results": []})
+    stage = result["stage_results"][0]
+    assert stage["status"] == "timeout"
+    assert stage["error_code"] == "timeout"
+
+
 def test_stage_summary_uses_latest_status_and_aggregates_cost():
     first = build_stage_result(stage="collector", started_at="a", token_usage={"total_tokens": 10}, duration_ms=20)
     retry = build_stage_result(stage="collector", started_at="b", status="completed", token_usage={"total_tokens": 5}, duration_ms=30, attempt=2)

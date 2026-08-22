@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 import competition.executor as executor_module
 from competition.executor import (
     _extract_usage_details,
@@ -39,6 +41,19 @@ def test_extract_usage_details_normalizes_input_output_and_tool_calls():
         "total_tokens": 20,
         "tool_calls": 1,
     }
+
+
+def test_stage_deadline_is_enforced_before_llm_call():
+    import time
+
+    from competition.executor import clear_stage_deadline, execute_agent, set_stage_deadline
+
+    set_stage_deadline(time.monotonic() - 1)
+    try:
+        with pytest.raises(TimeoutError):
+            execute_agent("system", "deadline task", agent_name="Collector")
+    finally:
+        clear_stage_deadline()
 
 
 def test_thinking_control_allowlist_is_conservative():

@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import math
 import os
 import threading
 from collections.abc import Callable
@@ -224,6 +225,28 @@ def clear_cancel_checker() -> None:
     _tl.cancel_checker = None
 
 
+def set_stage_deadline(deadline: float | None) -> None:
+    """Set a monotonic deadline for the currently instrumented graph stage."""
+    _tl.stage_deadline = deadline
+
+
+def clear_stage_deadline() -> None:
+    """Clear the current graph-stage deadline."""
+    _tl.stage_deadline = None
+
+
+def stage_time_remaining() -> float | None:
+    """Return remaining stage seconds, or ``None`` when no deadline is active."""
+    deadline = getattr(_tl, "stage_deadline", None)
+    return None if deadline is None else deadline - __import__("time").monotonic()
+
+
+def stage_timed_out() -> bool:
+    """Return whether the current stage deadline has elapsed."""
+    remaining = stage_time_remaining()
+    return remaining is not None and remaining <= 0
+
+
 def is_cancelled() -> bool:
     """Return whether the current execution context requested cancellation."""
     checker = getattr(_tl, "cancel_checker", None)
@@ -267,6 +290,7 @@ class ExecutorContextSnapshot:
     thread_id: str | None
     cancel_checker: Callable[[], bool] | None
     progress_callback: Callable[[dict], None] | None
+    stage_deadline: float | None
 
 
 def capture_executor_context() -> ExecutorContextSnapshot:
@@ -276,6 +300,7 @@ def capture_executor_context() -> ExecutorContextSnapshot:
         thread_id=getattr(_tl, "thread_id", None),
         cancel_checker=getattr(_tl, "cancel_checker", None),
         progress_callback=getattr(_tl, "progress_callback", None),
+        stage_deadline=getattr(_tl, "stage_deadline", None),
     )
 
 
@@ -288,10 +313,12 @@ def run_in_executor_context(snapshot: ExecutorContextSnapshot, fn: Callable[[], 
             "cancel_checker": getattr(_tl, "cancel_checker", None),
             "progress_callback": getattr(_tl, "progress_callback", None),
             "stream_callback": getattr(_tl, "stream_callback", None),
+            "stage_deadline": getattr(_tl, "stage_deadline", None),
         }
         _tl.thread_id = snapshot.thread_id
         _tl.cancel_checker = snapshot.cancel_checker
         _tl.progress_callback = snapshot.progress_callback
+        _tl.stage_deadline = snapshot.stage_deadline
         # Do not mix independent section output in the parent SSE stream.
         _tl.stream_callback = None
         try:
@@ -521,6 +548,12 @@ def execute_agent(
         logger.info("%sLLM call cancelled before start for %s", _thread_prefix(), agent_name)
         return (None, 0)
 
+    remaining = stage_time_remaining()
+    if remaining is not None:
+        if remaining <= 0:
+            raise TimeoutError(f"Stage deadline exceeded before {agent_name or 'LLM'} call")
+        timeout_seconds = max(1, min(timeout_seconds, math.ceil(remaining)))
+
     # Circuit breaker: detect repeated identical calls (prevents LLM loops)
     cb_error = _check_circuit_breaker(agent_name, task[:200])
     if cb_error:
@@ -609,6 +642,8 @@ def execute_agent(
                 if cancel_checker and cancel_checker():
                     logger.info("Streaming cancelled for %s", agent_name)
                     break
+                if stage_timed_out():
+                    raise TimeoutError(f"Stage deadline exceeded during {agent_name or 'LLM'} stream")
                 chunk_content = _extract_content(chunk)
                 if chunk_content:
                     full_content.append(str(chunk_content))

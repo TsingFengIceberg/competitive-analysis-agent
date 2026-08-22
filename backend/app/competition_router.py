@@ -2507,16 +2507,41 @@ def _finalize_cancelled(thread_id: str) -> None:
     state["usage_summary"] = summarize_stage_results(state["stage_results"])
     entry["status"] = "interrupted"
     state["error"] = "用户手动终止分析"
+    conn = None
     try:
-        from competition.db import upsert_analysis
+        from competition.db import get_phases, init_db, save_phase, upsert_analysis
+
+        conn = init_db()
+        phases = get_phases(thread_id, conn=conn)
+        existing = next((item for item in reversed(phases) if item.get("phase_key") == stage), None)
+        save_phase(
+            thread_id=thread_id,
+            phase_key=stage,
+            label=(existing or {}).get("label", "分析流程"),
+            icon=(existing or {}).get("icon", "⚙️"),
+            status="cancelled",
+            start_time=(existing or {}).get("start_time"),
+            end_time=__import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+            tokens=(existing or {}).get("tokens", 0),
+            content=(existing or {}).get("content", {}),
+            details=[*((existing or {}).get("details") or []), marker],
+            json_output=(existing or {}).get("json_output", {}),
+            version=(existing or {}).get("version", 0),
+            generation_id=(existing or {}).get("generation_id") or state.get("generation_id"),
+            conn=conn,
+        )
         upsert_analysis(
             thread_id=thread_id, status="interrupted",
             user_id=_thread_owners.get(thread_id, "default"),
             query=_store[thread_id].get("query", ""),
             products=_store[thread_id].get("products", []),
+            conn=conn,
         )
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            conn.close()
     _emit_event(thread_id, "end", {"status": "interrupted", "message": "分析已终止"})
 
 
