@@ -118,6 +118,42 @@ class IntelligenceRepository:
             result.append(item)
         return result
 
+    def get_change_detail(self, change_id: str) -> dict | None:
+        """Return one change with its current fact, evidence, and version history."""
+        row = self.conn.execute(
+            """SELECT change_id, item_key, product, dimension, source_domain, change_type,
+                      material, old_hash, new_hash, old_value, new_value, detected_at, payload_json
+               FROM intelligence_changes WHERE change_id = ?""",
+            (change_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        keys = (
+            "change_id", "item_key", "product", "dimension", "source_domain", "change_type",
+            "material", "old_hash", "new_hash", "old_value", "new_value", "detected_at", "payload",
+        )
+        change = dict(zip(keys, row, strict=True))
+        change["material"] = bool(change["material"])
+        change["payload"] = json.loads(change["payload"]) if change["payload"] else {}
+
+        item_row = self.conn.execute(
+            """SELECT item_key, product, dimension, label, value, source_url, canonical_url,
+                      source_type, source_domain, scope, published_at, fetched_at, first_seen_at,
+                      last_seen_at, content_hash, confidence, credibility_tier, status, payload_json
+               FROM intelligence_items WHERE item_key = ?""",
+            (change["item_key"],),
+        ).fetchone()
+        item = self._decode_item(item_row) if item_row else None
+        versions = self.get_versions(change["item_key"])
+
+        return {
+            "change": change,
+            "item": item,
+            "versions": versions,
+            "sources": self._detail_sources(item) if item else [],
+        }
+
     def mark_source_failure(self, source_key: str, error: str, *, cooldown_status: str = "degraded") -> None:
         now = _now_iso()
         self.conn.execute(
@@ -182,6 +218,22 @@ class IntelligenceRepository:
             (item_key,),
         ).fetchall()
         return [{"version": row[0], "content_hash": row[1], "payload": json.loads(row[2]), "observed_at": row[3]} for row in rows]
+
+    def _detail_sources(self, item: dict) -> list[dict]:
+        """Return source metadata related to the current fact for the detail view."""
+        rows = self.conn.execute(
+            """SELECT source_key, source_url, canonical_url, source_domain, source_type,
+                      product, scope, status, last_success_at, last_fetched_at, failure_count
+               FROM intelligence_sources
+               WHERE product = ? AND scope = ? AND source_domain = ?
+               ORDER BY last_fetched_at DESC""",
+            (item["product"], item["scope"], item["source_domain"]),
+        ).fetchall()
+        keys = (
+            "source_key", "source_url", "canonical_url", "source_domain", "source_type",
+            "product", "scope", "status", "last_success_at", "last_fetched_at", "failure_count",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def _upsert_source(self, item: IntelligenceItem) -> str:
         source_key = "|".join((item.canonical_url, item.source_type, item.product.lower(), item.scope.lower()))

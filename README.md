@@ -690,6 +690,7 @@ competitive-analysis-agent/
 | POST | `/api/competition/observation/schedules/{schedule_id}/run-now` | 立即运行观察任务 |
 | GET | `/api/competition/observation/runs` | 查询当前用户的观察运行历史 |
 | GET | `/api/competition/intelligence/changes` | 查询增量情报变化时间线 |
+| GET | `/api/competition/intelligence/changes/{change_id}` | 查询单条变化详情、当前事实、来源和版本历史 |
 | GET / POST | `/api/competition/alerts/rules` | 查询或创建告警规则 |
 | PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | 编辑或删除告警规则 |
 | GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | 查询告警历史或投递待发告警 |

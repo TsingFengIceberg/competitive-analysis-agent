@@ -43,6 +43,13 @@ import {
   StatusNotice,
   type StatusTone,
 } from "@/components/ui/status-badge";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
 type ViewTab = "schedules" | "changes" | "alerts";
 
@@ -76,6 +83,48 @@ interface IntelligenceChange {
   new_value: string | null;
   detected_at: string;
   payload?: { source_url?: string };
+}
+
+interface IntelligenceChangeDetail {
+  change: IntelligenceChange & {
+    old_hash: string | null;
+    new_hash: string | null;
+    payload: {
+      source_url?: string;
+      canonical_url?: string;
+      old_payload?: Record<string, unknown>;
+      new_payload?: Record<string, unknown>;
+    };
+  };
+  item: {
+    label: string;
+    value: string;
+    source_url: string;
+    source_type: string;
+    source_domain: string;
+    scope: string;
+    published_at: string | null;
+    fetched_at: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    confidence: number;
+    credibility_tier: string;
+  } | null;
+  versions: Array<{
+    version: number;
+    content_hash: string;
+    payload: Record<string, unknown>;
+    observed_at: string;
+  }>;
+  sources: Array<{
+    source_url: string;
+    canonical_url: string;
+    source_domain: string;
+    source_type: string;
+    status: string;
+    last_fetched_at: string;
+    failure_count: number;
+  }>;
 }
 
 interface ObservationRun {
@@ -338,6 +387,10 @@ export default function MonitoringPage() {
   const [changes, setChanges] = useState<IntelligenceChange[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [events, setEvents] = useState<AlertEvent[]>([]);
+  const [selectedChange, setSelectedChange] = useState<IntelligenceChange | null>(null);
+  const [changeDetail, setChangeDetail] = useState<IntelligenceChangeDetail | null>(null);
+  const [changeDetailLoading, setChangeDetailLoading] = useState(false);
+  const [changeDetailError, setChangeDetailError] = useState<string | null>(null);
   const [scheduleDialog, setScheduleDialog] = useState(false);
   const [ruleDialog, setRuleDialog] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<string | null>(null);
@@ -474,6 +527,30 @@ export default function MonitoringPage() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(errorMessage(payload.detail, "操作失败"));
     return payload;
+  };
+
+  const openChangeDetail = async (change: IntelligenceChange) => {
+    setSelectedChange(change);
+    setChangeDetail(null);
+    setChangeDetailError(null);
+    setChangeDetailLoading(true);
+    try {
+      const response = await fetch(
+        `/api/competition/intelligence/changes/${change.change_id}`,
+        { credentials: "include" },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(errorMessage(payload.detail, "变化详情加载失败"));
+      }
+      setChangeDetail(payload as IntelligenceChangeDetail);
+    } catch (detailError) {
+      setChangeDetailError(
+        detailError instanceof Error ? detailError.message : "变化详情加载失败",
+      );
+    } finally {
+      setChangeDetailLoading(false);
+    }
   };
 
   const openSchedule = (schedule?: ObservationSchedule) => {
@@ -1059,7 +1136,12 @@ export default function MonitoringPage() {
                     <div className="text-muted-foreground text-xs tabular-nums">
                       {formatTime(change.detected_at)}
                     </div>
-                    <div className="min-w-0">
+                    <button
+                      type="button"
+                      className="min-w-0 text-left hover:bg-muted/40"
+                      onClick={() => void openChangeDetail(change)}
+                      aria-label={`查看 ${displayProduct(change.product)} 的变化详情`}
+                    >
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-medium">
                           {displayProduct(change.product)}
@@ -1088,7 +1170,7 @@ export default function MonitoringPage() {
                           ? ` · ${change.source_domain}`
                           : ""}
                       </div>
-                    </div>
+                    </button>
                     {change.payload?.source_url && (
                       <a
                         href={change.payload.source_url}
@@ -1289,7 +1371,172 @@ export default function MonitoringPage() {
         saving={busy === "rule-save"}
         onSave={() => void saveRule()}
       />
+      <ChangeDetailSheet
+        open={Boolean(selectedChange)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedChange(null);
+        }}
+        change={selectedChange}
+        detail={changeDetail}
+        loading={changeDetailLoading}
+        error={changeDetailError}
+      />
     </div>
+  );
+}
+
+function changeExplanation(change: IntelligenceChange): string {
+  if (change.change_type === "new_fact") {
+    return "这是该事实的首次收录，系统正在用它建立后续比较基线。";
+  }
+  if (change.material) {
+    return "事实内容发生变化，系统可以据此启动后续深度分析。";
+  }
+  return "来源页面有更新，但当前事实值没有变化，因此不会启动深度分析。";
+}
+
+function sourceTypeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    official: "官方来源",
+    docs: "官方文档",
+    pricing: "官方定价",
+    secondary: "二手来源",
+  };
+  return labels[value] || value || "未标注类型";
+}
+
+function ChangeDetailSheet({
+  open,
+  onOpenChange,
+  change,
+  detail,
+  loading,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  change: IntelligenceChange | null;
+  detail: IntelligenceChangeDetail | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const current = detail?.change || change;
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetHeader className="border-b pr-12">
+          <SheetTitle>
+            {current ? `${displayProduct(current.product)} · ${displayDimension(current.dimension)}` : "变化详情"}
+          </SheetTitle>
+          <SheetDescription>
+            {current
+              ? `${changeTypeLabel(current)} · ${formatTime(current.detected_at)}`
+              : "查看事实变化、证据来源和版本记录"}
+          </SheetDescription>
+        </SheetHeader>
+        {loading && (
+          <div className="text-muted-foreground flex items-center gap-2 p-4 text-sm">
+            <Loader2 className="size-4 animate-spin" /> 正在加载变化详情
+          </div>
+        )}
+        {error && <StatusNotice tone="danger" title="详情加载失败">{error}</StatusNotice>}
+        {current && detail && (
+          <div className="space-y-6 p-4">
+            <section className="space-y-2">
+              <StatusBadge
+                tone={current.material ? "warning" : "neutral"}
+                label={changeTypeLabel(current)}
+              />
+              <p className="text-muted-foreground text-sm">{changeExplanation(current)}</p>
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="text-sm font-semibold">事实对比</h3>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="min-w-0 border p-3">
+                  <div className="text-muted-foreground text-xs">旧值</div>
+                  <p className="mt-2 break-words text-sm">
+                    {current.old_value ? displayFactText(current.old_value) : "暂无旧版本"}
+                  </p>
+                </div>
+                <div className="min-w-0 border p-3">
+                  <div className="text-muted-foreground text-xs">新值</div>
+                  <p className="mt-2 break-words text-sm">
+                    {current.new_value ? displayFactText(current.new_value) : "暂无新值"}
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="text-sm font-semibold">证据来源</h3>
+              <div className="divide-y border-y">
+                {(detail.sources.length > 0
+                  ? detail.sources
+                  : detail.item
+                    ? [{
+                        source_url: detail.item.source_url,
+                        canonical_url: detail.item.source_url,
+                        source_domain: detail.item.source_domain,
+                        source_type: detail.item.source_type,
+                        status: "healthy",
+                        last_fetched_at: detail.item.fetched_at,
+                        failure_count: 0,
+                      }]
+                    : []
+                ).map((source) => (
+                  <div key={`${source.source_url}-${source.source_type}`} className="space-y-1 py-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-medium">{source.source_domain || "未知来源"}</span>
+                      <span className="text-muted-foreground">{sourceTypeLabel(source.source_type)}</span>
+                      {source.status !== "healthy" && <StatusBadge tone="warning" label="来源需检查" />}
+                    </div>
+                    <a
+                      href={source.source_url || source.canonical_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 break-all text-xs"
+                    >
+                      {source.source_url || source.canonical_url}
+                      <ExternalLink className="size-3 shrink-0" />
+                    </a>
+                    <p className="text-muted-foreground text-xs">采集：{formatTime(source.last_fetched_at)}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="text-sm font-semibold">版本记录</h3>
+              {detail.versions.length === 0 ? (
+                <p className="text-muted-foreground text-sm">暂无可用版本记录。</p>
+              ) : (
+                <div className="divide-y border-y">
+                  {detail.versions.map((version) => (
+                    <div key={`${version.version}-${version.content_hash}`} className="py-3">
+                      <div className="flex items-center justify-between gap-3 text-xs">
+                        <span className="font-medium">版本 {version.version}</span>
+                        <span className="text-muted-foreground">{formatTime(version.observed_at)}</span>
+                      </div>
+                      <p className="text-muted-foreground mt-1 break-words text-xs">
+                        {displayFactText(String(version.payload.value || version.payload.label || "暂无内容"))}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <details className="border-t pt-3">
+              <summary className="text-muted-foreground cursor-pointer text-xs">查看原始数据</summary>
+              <pre className="bg-muted/40 mt-2 max-h-56 overflow-auto p-3 text-[10px] whitespace-pre-wrap break-words">
+                {JSON.stringify(detail.change.payload, null, 2)}
+              </pre>
+            </details>
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
   );
 }
 

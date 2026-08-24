@@ -336,6 +336,7 @@ competitive-analysis-agent/
 | POST | `/api/competition/observation/schedules/{schedule_id}/run-now` | Run an observation schedule immediately |
 | GET | `/api/competition/observation/runs` | List observation run history for the current user |
 | GET | `/api/competition/intelligence/changes` | List the incremental intelligence change timeline |
+| GET | `/api/competition/intelligence/changes/{change_id}` | Get one change with its current fact, sources, and version history |
 | GET / POST | `/api/competition/alerts/rules` | List or create alert rules |
 | PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | Edit or delete an alert rule |
 | GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | List alert history or dispatch pending alerts |

@@ -2265,6 +2265,21 @@ async def list_intelligence_changes(
         repository.close()
 
 
+@router.get("/intelligence/changes/{change_id}")
+async def get_intelligence_change(change_id: str, fastapi_request: Request):
+    """Return one change with its fact snapshot, sources, and version history."""
+    from competition.intelligence_repo import IntelligenceRepository
+
+    repository = IntelligenceRepository()
+    try:
+        detail = repository.get_change_detail(change_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Intelligence change not found")
+        return detail
+    finally:
+        repository.close()
+
+
 def _run_scheduled_collection(schedule: dict) -> dict:
     """Run the existing Collector for a watch schedule and return change stats."""
     from competition.nodes.collector import collector_node

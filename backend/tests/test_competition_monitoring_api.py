@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from competition.alerts import AlertRepository
 from competition.db import init_db
+from competition.intelligence_repo import IntelligenceRepository
 from competition.observation_scheduler import ObservationScheduler, ScheduleRepository, ScheduleSpec
 
 
@@ -195,3 +196,30 @@ def test_run_now_creates_repository_inside_worker_thread(monkeypatch, tmp_path: 
     assert not worker.is_alive()
     assert errors == []
     assert result["run"]["status"] == "skipped"
+
+
+def test_intelligence_change_detail_includes_current_item_and_versions(tmp_path: Path):
+    repository = IntelligenceRepository(db_path=str(tmp_path / "intelligence.db"))
+    point = {
+        "product": "Codex",
+        "category": "market",
+        "label": "Usage share",
+        "value": "10%",
+        "source_url": "https://example.com/report",
+        "source_type": "official",
+    }
+    try:
+        first = repository.ingest_collected_points([point])
+        change_id = first["change_events"][0]["change_id"]
+        repository.ingest_collected_points([{**point, "value": "12%"}])
+
+        detail = repository.get_change_detail(change_id)
+        assert detail is not None
+        assert detail["change"]["old_value"] is None
+        assert detail["change"]["new_value"] == "10%"
+        assert detail["item"]["value"] == "12%"
+        assert len(detail["versions"]) == 2
+        assert detail["sources"][0]["source_domain"] == "example.com"
+        assert repository.get_change_detail("missing-change") is None
+    finally:
+        repository.close()
