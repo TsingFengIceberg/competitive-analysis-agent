@@ -139,6 +139,62 @@ const EVENT_TYPES = [
   ["recommendation_changed", "建议变化"],
 ] as const;
 
+const DIMENSION_LABELS = new Map(DIMENSIONS);
+const SEVERITY_LABELS: Record<string, string> = {
+  minor: "一般",
+  major: "重要",
+  critical: "严重",
+};
+
+function normalizeProductKey(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function displayProduct(value: string): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  const aliases: Record<string, string> = {
+    claude: "Claude",
+    claudecode: "Claude Code",
+    codex: "Codex",
+    githubcopilot: "GitHub Copilot",
+    cursor: "Cursor",
+  };
+  return aliases[normalizeProductKey(cleaned)] || cleaned || "未命名竞品";
+}
+
+function displayDimension(value: string): string {
+  return DIMENSION_LABELS.get(value as (typeof DIMENSIONS)[number][0]) || value;
+}
+
+function normalizeFactText(value: string | null): string {
+  return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function displayFactText(value: string | null): string {
+  if (!value) return "";
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Za-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([A-Za-z])/g, "$1 $2")
+    .replace(/(OpenAI|Codex|ClaudeCode|Claude Code|ChatGPT)(?=[A-Za-z])/g, "$1 ")
+    .trim();
+}
+
+function humanizeSkipReason(reason: string | null): string | null {
+  if (!reason) return null;
+  if (reason === "another observation is already running") {
+    return "已有观察任务正在运行，当前任务会在下一轮自动重试";
+  }
+  if (reason === "no_material_change") {
+    return "本次已完成采集，未发现实质变化";
+  }
+  if (reason === "no runner configured") {
+    return "观察任务未配置执行器";
+  }
+  return reason;
+}
+
 const EMPTY_SCHEDULE = {
   name: "",
   products: "",
@@ -194,11 +250,47 @@ function statusPresentation(status: string): {
   if (status === "completed") return { tone: "success", label: "已完成" };
   if (status === "running") return { tone: "info", label: "运行中" };
   if (status === "failed") return { tone: "danger", label: "失败" };
-  if (status === "skipped") return { tone: "neutral", label: "无变化" };
+  if (status === "skipped") return { tone: "neutral", label: "已跳过" };
   if (status === "sent") return { tone: "success", label: "已发送" };
   if (status === "suppressed") return { tone: "neutral", label: "已静默" };
   if (status === "pending") return { tone: "warning", label: "待发送" };
   return { tone: "neutral", label: "待运行" };
+}
+
+function observationStatusPresentation(
+  status: string,
+  skipReason: string | null,
+): { tone: StatusTone; label: string } {
+  if (status === "skipped" && skipReason === "no_material_change") {
+    return { tone: "neutral", label: "无实质变化" };
+  }
+  if (status === "skipped" && skipReason) {
+    return { tone: "warning", label: "已跳过" };
+  }
+  return statusPresentation(status);
+}
+
+function changeTypeLabel(change: IntelligenceChange): string {
+  if (change.change_type === "new_fact") return "首次收录";
+  if (change.change_type === "fact_changed") return "事实更新";
+  if (change.change_type === "page_changed") return "页面更新";
+  return change.material ? "事实变化" : "页面变化";
+}
+
+function runOutcome(run: ObservationRun): string | null {
+  if (run.error) return run.error;
+  if (run.skip_reason) return humanizeSkipReason(run.skip_reason);
+  if (run.status === "completed") {
+    const material = run.summary?.material_changes;
+    if (typeof material === "number") {
+      return material > 0
+        ? `发现 ${material} 条实质变化，已进入后续分析`
+        : "已完成采集，未发现实质变化";
+    }
+    return "观察采集已完成";
+  }
+  if (run.status === "running") return "正在采集并比对事实基线";
+  return null;
 }
 
 function severityTone(severity: string): StatusTone {
@@ -207,6 +299,10 @@ function severityTone(severity: string): StatusTone {
     : severity === "major"
       ? "warning"
       : "neutral";
+}
+
+function severityLabel(severity: string): string {
+  return SEVERITY_LABELS[severity] || severity;
 }
 
 function errorMessage(detail: unknown, fallback: string): string {
@@ -344,6 +440,28 @@ export default function MonitoringPage() {
         .length,
     }),
     [changes, events, schedules],
+  );
+
+  const changeGroups = useMemo(() => {
+    const groups = new Map<string, { change: IntelligenceChange; count: number }>();
+    for (const change of changes) {
+      const key = [
+        normalizeProductKey(change.product),
+        change.dimension,
+        change.change_type,
+        change.source_domain,
+        normalizeFactText(change.new_value),
+      ].join("|");
+      const existing = groups.get(key);
+      if (existing) existing.count += 1;
+      else groups.set(key, { change, count: 1 });
+    }
+    return Array.from(groups.values());
+  }, [changes]);
+
+  const changeProducts = useMemo(
+    () => new Set(changes.map((change) => normalizeProductKey(change.product))).size,
+    [changes],
   );
 
   const request = async (url: string, method: string, body?: unknown) => {
@@ -717,6 +835,17 @@ export default function MonitoringPage() {
         </div>
 
         {tab === "schedules" && (
+          <div className="bg-muted/40 text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md px-3 py-2 text-xs">
+            <span className="text-foreground font-medium">观察流程</span>
+            <span>首次运行建立事实基线</span>
+            <span aria-hidden="true">→</span>
+            <span>后续只比较新增或更新内容</span>
+            <span aria-hidden="true">→</span>
+            <span>发现实质变化才启动深度分析</span>
+          </div>
+        )}
+
+        {tab === "schedules" && (
           <section role="tabpanel" className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -736,7 +865,10 @@ export default function MonitoringPage() {
             ) : (
               <div className="space-y-2">
                 {schedules.map((schedule) => {
-                  const presentation = statusPresentation(schedule.last_status);
+                  const presentation = observationStatusPresentation(
+                    schedule.last_status,
+                    schedule.last_skip_reason,
+                  );
                   const taskBusy = busy?.endsWith(schedule.schedule_id);
                   return (
                     <article
@@ -760,7 +892,8 @@ export default function MonitoringPage() {
                           </div>
                           <div className="text-muted-foreground mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
                             <span>
-                              {schedule.products.join(" · ") || "未指定竞品"}
+                              {schedule.products.map(displayProduct).join(" · ") ||
+                                "未指定竞品"}
                             </span>
                             <span>
                               {schedule.interval_minutes
@@ -777,7 +910,7 @@ export default function MonitoringPage() {
                               className={`mt-2 text-xs ${schedule.last_error ? "text-destructive" : "text-muted-foreground"}`}
                             >
                               {schedule.last_error ||
-                                `上次跳过：${schedule.last_skip_reason}`}
+                                humanizeSkipReason(schedule.last_skip_reason)}
                             </p>
                           )}
                         </div>
@@ -856,7 +989,10 @@ export default function MonitoringPage() {
               ) : (
                 <div className="divide-y border-y">
                   {runs.map((run) => {
-                    const presentation = statusPresentation(run.status);
+                    const presentation = observationStatusPresentation(
+                      run.status,
+                      run.skip_reason,
+                    );
                     return (
                       <div
                         key={run.run_id}
@@ -878,11 +1014,11 @@ export default function MonitoringPage() {
                               </span>
                             )}
                           </div>
-                          {(run.error || run.skip_reason) && (
+                          {runOutcome(run) && (
                             <p
                               className={`mt-1 text-xs break-words ${run.error ? "text-destructive" : "text-muted-foreground"}`}
                             >
-                              {run.error || `跳过原因：${run.skip_reason}`}
+                              {runOutcome(run)}
                             </p>
                           )}
                         </div>
@@ -905,14 +1041,19 @@ export default function MonitoringPage() {
               <p className="text-muted-foreground mt-1 text-xs">
                 页面变化与竞品事实变化分别记录，实质变化才触发后续分析
               </p>
+              {changes.length > 0 && (
+                <p className="text-muted-foreground mt-1 text-xs">
+                  共 {changes.length} 条记录，涉及 {changeProducts} 个竞品；相同来源和内容已合并展示
+                </p>
+              )}
             </div>
             {changes.length === 0 ? (
               <EmptyState icon={History} title="暂未检测到变化" />
             ) : (
               <div className="divide-y border-y">
-                {changes.map((change) => (
+                {changeGroups.map(({ change, count }) => (
                   <div
-                    key={change.change_id}
+                    key={`${change.change_id}-${count}`}
                     className="grid gap-2 py-3 sm:grid-cols-[140px_minmax(0,1fr)_auto] sm:items-center"
                   >
                     <div className="text-muted-foreground text-xs tabular-nums">
@@ -921,19 +1062,28 @@ export default function MonitoringPage() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-medium">
-                          {change.product}
+                          {displayProduct(change.product)}
                         </span>
                         <span className="text-muted-foreground text-xs">
-                          {change.dimension}
+                          {displayDimension(change.dimension)}
                         </span>
                         <StatusBadge
                           tone={change.material ? "warning" : "neutral"}
-                          label={change.material ? "事实变化" : "页面变化"}
+                          label={changeTypeLabel(change)}
                         />
+                        {count > 1 && (
+                          <span className="text-muted-foreground text-xs">
+                            {count} 条相同记录
+                          </span>
+                        )}
                       </div>
                       <div className="text-muted-foreground mt-1 text-xs break-words">
-                        {change.old_value ?? "无旧值"} →{" "}
-                        {change.new_value ?? "无新值"}
+                        {change.old_value
+                          ? displayFactText(change.old_value)
+                          : "无旧值"} →{" "}
+                        {change.new_value
+                          ? displayFactText(change.new_value)
+                          : "无新值"}
                         {change.source_domain
                           ? ` · ${change.source_domain}`
                           : ""}
@@ -1006,7 +1156,7 @@ export default function MonitoringPage() {
                             />
                             <StatusBadge
                               tone={severityTone(rule.min_severity)}
-                              label={`最低 ${rule.min_severity}`}
+                              label={`最低 ${severityLabel(rule.min_severity)}`}
                             />
                           </div>
                           <p className="text-muted-foreground mt-2 text-xs">
@@ -1084,7 +1234,7 @@ export default function MonitoringPage() {
                             </span>
                             <StatusBadge
                               tone={severityTone(event.severity)}
-                              label={event.severity}
+                              label={severityLabel(event.severity)}
                             />
                             <StatusBadge
                               tone={presentation.tone}
@@ -1256,6 +1406,9 @@ function ScheduleDialog({
               }
               placeholder={"Cursor\nGitHub Copilot\nClaude Code"}
             />
+            <span className="text-muted-foreground mt-1 block font-normal">
+              首次运行会为每个竞品建立基线，建议使用稳定、明确的产品名称。
+            </span>
           </label>
           <div>
             <div className="mb-2 text-xs font-medium">观察维度</div>
@@ -1323,10 +1476,13 @@ function ScheduleDialog({
                       interval_minutes: event.target.value,
                     }))
                   }
-                  placeholder="60"
-                />
+                placeholder="60"
+              />
               </label>
             )}
+            <p className="text-muted-foreground mt-2 text-xs">
+              固定间隔适合持续观察；每日时间点适合低频、定时检查。
+            </p>
           </div>
         </div>
         <DialogFooter>
@@ -1432,9 +1588,9 @@ function RuleDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="minor">Minor</SelectItem>
-                  <SelectItem value="major">Major</SelectItem>
-                  <SelectItem value="critical">Critical</SelectItem>
+                  <SelectItem value="minor">一般</SelectItem>
+                  <SelectItem value="major">重要</SelectItem>
+                  <SelectItem value="critical">严重</SelectItem>
                 </SelectContent>
               </Select>
             </label>
