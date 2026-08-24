@@ -148,6 +148,33 @@ class ScheduleRepository:
         self.conn.commit()
         return {"run_id": run_id, "schedule_id": schedule_id, "started_at": started_at, "finished_at": finished_at, "status": status, "summary": summary or {}, "error": error, "skip_reason": skip_reason}
 
+    def list_runs(self, *, user_id: str | None = None, schedule_id: str | None = None, limit: int = 100) -> list[dict]:
+        clauses, params = [], []
+        if user_id is not None:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        if schedule_id is not None:
+            clauses.append("r.schedule_id = ?")
+            params.append(schedule_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 500)))
+        rows = self.conn.execute(
+            f"""SELECT r.run_id, r.schedule_id, s.name, r.started_at, r.finished_at,
+                       r.status, r.summary_json, r.error, r.skip_reason
+                FROM observation_runs r
+                JOIN observation_schedules s ON s.schedule_id = r.schedule_id
+                {where}
+                ORDER BY r.started_at DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        keys = ("run_id", "schedule_id", "schedule_name", "started_at", "finished_at", "status", "summary", "error", "skip_reason")
+        result = []
+        for row in rows:
+            item = dict(zip(keys, row, strict=True))
+            item["summary"] = json.loads(item["summary"]) if item["summary"] else {}
+            result.append(item)
+        return result
+
     @staticmethod
     def _decode(row) -> dict:
         keys = (
@@ -185,6 +212,7 @@ class ObservationScheduler:
         return self.repository.save(spec, next_run_at=_iso(self.next_run(spec, now)))
 
     def remove_schedule(self, schedule_id: str) -> None:
+        self.repository.conn.execute("DELETE FROM observation_runs WHERE schedule_id = ?", (schedule_id,))
         self.repository.conn.execute("DELETE FROM observation_schedules WHERE schedule_id = ?", (schedule_id,))
         self.repository.conn.commit()
 

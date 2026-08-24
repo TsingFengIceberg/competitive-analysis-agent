@@ -73,6 +73,10 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 分析状态由实时 SSE 和轻量轮询共同维护。轮询不会覆盖正在进行的确认、停止、批准或返工操作；网络异常时会保留输入草稿和失败原因，支持手动重试。SSE 断线后会使用事件 ID 继续接收未完成的进度，页面刷新也能从持久化状态恢复会话。
 
+### 持续竞品观察
+
+侧边栏的“竞品观察”工作台用于管理定时或固定间隔的增量采集任务。系统持久化事实基线和每次运行记录，只有检测到实质变化时才启动完整深度分析，从而避免重复搜索和模型调用。工作台可编辑、暂停、立即运行或删除观察任务，并集中查看变化时间线、任务运行历史、告警规则、静默与冷却策略、待发告警及投递历史；所有任务、规则和记录均按用户隔离。
+
 ### 研究工作台
 
 报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
@@ -142,7 +146,7 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 | **LLM** | OpenAI 兼容 API |
 | **搜索** | Tavily / DuckDuckGo / Jina AI / LLM 内置联网搜索 |
 | **部署** | uv + pnpm（Next.js 直接代理 FastAPI） |
-| **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + branch_snapshots |
+| **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + observation schedules/runs + alert rules/events + branch_snapshots |
 
 ---
 
@@ -210,6 +214,18 @@ pnpm start --hostname 0.0.0.0 --port 2026
 |------|---------|---------|---------|
 | **DB 模式**（默认） | 不设或 `CI_AGENT_CONFIG_MODE=db` | SQLite `user_settings` 表，通过设置界面管理 | 正式用户、多用户隔离 |
 | **File 模式** | `CI_AGENT_CONFIG_MODE=file` | `config.yaml` + `.env` | 调试、演示、无账号场景 |
+
+### 持续观察运行参数
+
+FastAPI 启动时默认开启进程内观察调度器，适用于当前单进程部署。可通过以下环境变量调整：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CI_AGENT_OBSERVATION_SCHEDULER_ENABLED` | `true` | 是否随 FastAPI 启动和停止观察调度器 |
+| `CI_AGENT_OBSERVATION_POLL_SECONDS` | `30` | 扫描到期任务的间隔秒数，运行时最小为 5 秒 |
+| `CI_AGENT_NOTIFICATION_WEBHOOK` | 空 | 可选的告警 Webhook；飞书通知仍沿用当前用户设置 |
+
+观察任务和告警规则在 `/competition/monitoring` 管理。多进程或横向扩容部署应只启用一个调度实例，或将轮询迁移到独立任务工作器。
 
 ### DB 模式（默认）
 
@@ -290,6 +306,11 @@ FEISHU_APP_ID=your-feishu-app-id
 FEISHU_APP_SECRET=your-feishu-app-secret
 FEISHU_NOTIFY_OPEN_ID=your-feishu-open-id
 FEISHU_TENANT=your-feishu-tenant
+
+# ── Continuous competitor monitoring ──────────────────────────────────────
+CI_AGENT_OBSERVATION_SCHEDULER_ENABLED=true
+CI_AGENT_OBSERVATION_POLL_SECONDS=30
+CI_AGENT_NOTIFICATION_WEBHOOK=
 ```
 
 LLM 密钥按需填写（使用哪个 provider 就填哪个），搜索类密钥未填写时自动退化为 DuckDuckGo 免费搜索。
@@ -663,6 +684,15 @@ competitive-analysis-agent/
 | GET | `/api/competition/report/{thread_id}/export` | 导出报告（Markdown / JSON） |
 | GET | `/api/competition/me` | 获取当前用户信息 |
 | GET | `/api/competition/history` | 获取历史分析列表 |
+| GET | `/api/competition/observation/runtime` | 获取持续观察调度器状态 |
+| GET / POST | `/api/competition/observation/schedules` | 查询或创建当前用户的观察任务 |
+| PUT / DELETE | `/api/competition/observation/schedules/{schedule_id}` | 编辑或删除观察任务 |
+| POST | `/api/competition/observation/schedules/{schedule_id}/run-now` | 立即运行观察任务 |
+| GET | `/api/competition/observation/runs` | 查询当前用户的观察运行历史 |
+| GET | `/api/competition/intelligence/changes` | 查询增量情报变化时间线 |
+| GET / POST | `/api/competition/alerts/rules` | 查询或创建告警规则 |
+| PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | 编辑或删除告警规则 |
+| GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | 查询告警历史或投递待发告警 |
 
 报告轮询可使用 `?summary=true` 获取轻量状态响应；分析进入终态后接口仍返回完整报告内容。
 

@@ -69,6 +69,10 @@ Before execution, the system creates an editable **Analysis Brief** containing p
 
 Realtime SSE events and lightweight polling jointly maintain analysis state. Polling cannot overwrite an in-flight confirmation, cancellation, approval, or rework action. Network failures preserve the input draft and actionable error, while manual retry remains available. SSE reconnects resume from the last event ID, and a refreshed page reconstructs the session from persisted state.
 
+### Continuous competitor monitoring
+
+The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixed-interval incremental collection. The system persists fact baselines and every run, and starts a full deep analysis only when a material change is detected, avoiding repeated searches and model calls. Users can edit, pause, run immediately, or delete schedules and review the change timeline, run history, alert rules, quiet hours, cooldowns, pending alerts, and delivery history in one place. Tasks, rules, and records are isolated per user.
+
 ### Research workbench
 
 Completed reports open in a full-screen research workbench with version tree, report, quality gate, sources, evidence graph, and process views. It supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
@@ -135,7 +139,7 @@ The system can send completion notifications, export reports to Feishu documents
 | **LLM** | OpenAI-compatible APIs |
 | **Search** | Tavily, DuckDuckGo, Jina AI, and provider-native web search |
 | **Deployment** | uv + pnpm, with Next.js proxying FastAPI |
-| **Persistence** | SQLite WAL: analysis history, phase history, source credibility, product baseline, and branch snapshots |
+| **Persistence** | SQLite WAL: analysis history, phase history, source credibility, product baseline, observation schedules/runs, alert rules/events, and branch snapshots |
 
 ## Quick Start
 
@@ -198,6 +202,18 @@ The project supports two configuration modes selected by `CI_AGENT_CONFIG_MODE`:
 |------|---------|----------------------|----------|
 | **DB mode** (default) | Unset or `CI_AGENT_CONFIG_MODE=db` | SQLite `user_settings`, managed in Settings | Production and multi-user isolation |
 | **File mode** | `CI_AGENT_CONFIG_MODE=file` | `config.yaml` + `.env` | Debugging, demos, and no-account use |
+
+### Continuous monitoring runtime
+
+FastAPI starts an in-process observation scheduler by default, which is appropriate for the current single-process deployment. The following environment variables control it:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CI_AGENT_OBSERVATION_SCHEDULER_ENABLED` | `true` | Start and stop the observation scheduler with FastAPI |
+| `CI_AGENT_OBSERVATION_POLL_SECONDS` | `30` | Interval for scanning due schedules; runtime minimum is 5 seconds |
+| `CI_AGENT_NOTIFICATION_WEBHOOK` | empty | Optional alert webhook; Feishu delivery continues to use current user settings |
+
+Manage schedules and alert rules at `/competition/monitoring`. Multi-process or horizontally scaled deployments should enable only one scheduler instance or move polling to a dedicated task worker.
 
 ### DB mode
 
@@ -314,6 +330,15 @@ competitive-analysis-agent/
 | GET | `/api/competition/report/{thread_id}/export` | Export Markdown or JSON |
 | GET | `/api/competition/me` | Get current user information |
 | GET | `/api/competition/history` | List analysis history |
+| GET | `/api/competition/observation/runtime` | Get continuous monitoring scheduler status |
+| GET / POST | `/api/competition/observation/schedules` | List or create observation schedules for the current user |
+| PUT / DELETE | `/api/competition/observation/schedules/{schedule_id}` | Edit or delete an observation schedule |
+| POST | `/api/competition/observation/schedules/{schedule_id}/run-now` | Run an observation schedule immediately |
+| GET | `/api/competition/observation/runs` | List observation run history for the current user |
+| GET | `/api/competition/intelligence/changes` | List the incremental intelligence change timeline |
+| GET / POST | `/api/competition/alerts/rules` | List or create alert rules |
+| PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | Edit or delete an alert rule |
+| GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | List alert history or dispatch pending alerts |
 
 Use `?summary=true` on report polling requests for a lightweight active-state response. Terminal states still return complete report data. FastAPI Swagger is available at `http://localhost:8001/docs`.
 

@@ -203,7 +203,7 @@ export default function SettingsPage() {
     void fetch("/api/competition/me", { credentials: "include" })
       .then((response) => response.json())
       .then((me) => {
-        if (!me.authenticated) {
+        if (!me.authenticated && me.config_mode !== "file") {
           window.location.href = "/auth/login?redirect=/competition/settings";
           return null;
         }

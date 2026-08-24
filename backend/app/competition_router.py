@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/competition", tags=["competition"])
 
+_observation_runtime_thread: threading.Thread | None = None
+_observation_runtime_stop = threading.Event()
+_observation_runtime_last_tick: str | None = None
+_observation_runtime_last_error: str | None = None
+
 # ── Persisted version history ──
 
 _history_store = BranchSnapshotStore()
@@ -108,8 +113,8 @@ class AnalysisTemplateRequest(BaseModel):
 
 class ObservationScheduleRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    products: list[str] = Field(default_factory=list, max_length=20)
-    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    products: list[str] = Field(..., min_length=1, max_length=20)
+    dimensions: list[str] = Field(..., min_length=1, max_length=30)
     market_scope: str = "Global / unspecified"
     daily_times: list[str] = Field(default_factory=list, max_length=24)
     interval_minutes: int | None = Field(default=None, ge=5, le=10080)
@@ -118,7 +123,7 @@ class ObservationScheduleRequest(BaseModel):
 
 class AlertRuleRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    event_types: list[str] = Field(default_factory=list, max_length=20)
+    event_types: list[str] = Field(..., min_length=1, max_length=20)
     products: list[str] = Field(default_factory=list, max_length=20)
     dimensions: list[str] = Field(default_factory=list, max_length=30)
     min_severity: str = "major"
@@ -2321,6 +2326,63 @@ def _run_scheduled_deep_analysis(schedule: dict, _collection_result: dict) -> di
     return {"thread_id": thread_id, "status": _store.get(thread_id, {}).get("status", "completed")}
 
 
+def start_observation_runtime(poll_seconds: int = 30) -> None:
+    """Start the single-process schedule poller used by the FastAPI runtime."""
+    global _observation_runtime_last_error, _observation_runtime_last_tick, _observation_runtime_thread
+    if _observation_runtime_thread and _observation_runtime_thread.is_alive():
+        return
+    _observation_runtime_stop.clear()
+    _observation_runtime_last_tick = None
+    _observation_runtime_last_error = None
+
+    def loop() -> None:
+        global _observation_runtime_last_error, _observation_runtime_last_tick
+        while not _observation_runtime_stop.is_set():
+            repository = None
+            try:
+                from datetime import UTC, datetime
+
+                from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
+
+                repository = ScheduleRepository()
+                scheduler = ObservationScheduler(
+                    repository=repository,
+                    runner=_run_scheduled_collection,
+                    deep_runner=_run_scheduled_deep_analysis,
+                )
+                scheduler.tick()
+                _observation_runtime_last_tick = datetime.now(UTC).isoformat()
+                _observation_runtime_last_error = None
+            except Exception as exc:
+                _observation_runtime_last_error = str(exc)[:500]
+                logger.exception("Observation runtime tick failed")
+            finally:
+                if repository is not None:
+                    repository.close()
+            _observation_runtime_stop.wait(max(5, int(poll_seconds)))
+
+    _observation_runtime_thread = threading.Thread(target=loop, name="ci-observation-runtime", daemon=True)
+    _observation_runtime_thread.start()
+
+
+def stop_observation_runtime() -> None:
+    global _observation_runtime_thread
+    _observation_runtime_stop.set()
+    if _observation_runtime_thread and _observation_runtime_thread is not threading.current_thread():
+        _observation_runtime_thread.join(timeout=5)
+    if not _observation_runtime_thread or not _observation_runtime_thread.is_alive():
+        _observation_runtime_thread = None
+
+
+@router.get("/observation/runtime")
+async def observation_runtime_status():
+    return {
+        "running": bool(_observation_runtime_thread and _observation_runtime_thread.is_alive()),
+        "last_tick_at": _observation_runtime_last_tick,
+        "last_error": _observation_runtime_last_error,
+    }
+
+
 @router.post("/observation/schedules")
 async def create_observation_schedule(body: ObservationScheduleRequest, fastapi_request: Request):
     from competition.observation_scheduler import ObservationScheduler, ScheduleRepository, ScheduleSpec
@@ -2347,17 +2409,97 @@ async def list_observation_schedules(fastapi_request: Request):
         repository.close()
 
 
-@router.post("/observation/schedules/{schedule_id}/run-now")
-async def run_observation_now(schedule_id: str, fastapi_request: Request):
+@router.get("/observation/runs")
+async def list_observation_runs(
+    fastapi_request: Request,
+    schedule_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    from competition.observation_scheduler import ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        return {"runs": repository.list_runs(user_id=_get_user_id(fastapi_request), schedule_id=schedule_id, limit=limit)}
+    finally:
+        repository.close()
+
+
+@router.put("/observation/schedules/{schedule_id}")
+async def update_observation_schedule(schedule_id: str, body: ObservationScheduleRequest, fastapi_request: Request):
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository, ScheduleSpec
+
+    repository = ScheduleRepository()
+    try:
+        existing = repository.get(schedule_id)
+        user_id = _get_user_id(fastapi_request)
+        if not existing or existing.get("user_id") != user_id:
+            raise HTTPException(status_code=404, detail="Observation schedule not found")
+        spec = ScheduleSpec(**body.model_dump(), schedule_id=schedule_id, user_id=user_id)
+        return {"ok": True, "schedule": ObservationScheduler(repository=repository).add_schedule(spec)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.delete("/observation/schedules/{schedule_id}")
+async def delete_observation_schedule(schedule_id: str, fastapi_request: Request):
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        existing = repository.get(schedule_id)
+        if not existing or existing.get("user_id") != _get_user_id(fastapi_request):
+            raise HTTPException(status_code=404, detail="Observation schedule not found")
+        ObservationScheduler(repository=repository).remove_schedule(schedule_id)
+        return {"ok": True}
+    finally:
+        repository.close()
+
+
+def _run_observation_now_sync(schedule_id: str, user_id: str) -> dict | None:
+    """Run one observation with its SQLite connection owned by this worker thread."""
     from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
 
     repository = ScheduleRepository()
     try:
         schedule = repository.get(schedule_id)
-        if not schedule or schedule.get("user_id") != _get_user_id(fastapi_request):
-            raise HTTPException(status_code=404, detail="Observation schedule not found")
-        scheduler = ObservationScheduler(repository=repository, runner=_run_scheduled_collection, deep_runner=_run_scheduled_deep_analysis)
-        return {"ok": True, "run": await asyncio.to_thread(scheduler.run_now, schedule_id)}
+        if not schedule or schedule.get("user_id") != user_id:
+            return None
+        scheduler = ObservationScheduler(
+            repository=repository,
+            runner=_run_scheduled_collection,
+            deep_runner=_run_scheduled_deep_analysis,
+        )
+        return scheduler.run_now(schedule_id)
+    finally:
+        repository.close()
+
+
+@router.post("/observation/schedules/{schedule_id}/run-now")
+async def run_observation_now(schedule_id: str, fastapi_request: Request):
+    run = await asyncio.to_thread(
+        _run_observation_now_sync,
+        schedule_id,
+        _get_user_id(fastapi_request),
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Observation schedule not found")
+    return {"ok": True, "run": run}
+
+
+def _run_observation_tick_sync(user_id: str) -> list[dict]:
+    """Run due observations with a SQLite connection owned by this worker thread."""
+    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        scheduler = ObservationScheduler(
+            repository=repository,
+            runner=_run_scheduled_collection,
+            deep_runner=_run_scheduled_deep_analysis,
+        )
+        return scheduler.tick(user_id=user_id)
     finally:
         repository.close()
 
@@ -2365,14 +2507,11 @@ async def run_observation_now(schedule_id: str, fastapi_request: Request):
 @router.post("/observation/tick")
 async def tick_observation_schedules(fastapi_request: Request):
     """Run due schedules once; intended for a process supervisor or cron."""
-    from competition.observation_scheduler import ObservationScheduler, ScheduleRepository
-
-    repository = ScheduleRepository()
-    try:
-        scheduler = ObservationScheduler(repository=repository, runner=_run_scheduled_collection, deep_runner=_run_scheduled_deep_analysis)
-        return {"ok": True, "runs": await asyncio.to_thread(scheduler.tick, user_id=_get_user_id(fastapi_request))}
-    finally:
-        repository.close()
+    runs = await asyncio.to_thread(
+        _run_observation_tick_sync,
+        _get_user_id(fastapi_request),
+    )
+    return {"ok": True, "runs": runs}
 
 
 @router.post("/alerts/rules")
@@ -2396,6 +2535,38 @@ async def list_alert_rules(fastapi_request: Request):
     repository = AlertRepository()
     try:
         return {"rules": repository.list_rules(user_id=_get_user_id(fastapi_request))}
+    finally:
+        repository.close()
+
+
+@router.put("/alerts/rules/{rule_id}")
+async def update_alert_rule(rule_id: str, body: AlertRuleRequest, fastapi_request: Request):
+    from competition.alerts import AlertRepository, AlertRule
+
+    repository = AlertRepository()
+    try:
+        existing = repository.get_rule(rule_id)
+        user_id = _get_user_id(fastapi_request)
+        if not existing or existing.get("user_id") != user_id:
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+        return {"ok": True, "rule": repository.save_rule(AlertRule(**body.model_dump(), rule_id=rule_id, user_id=user_id))}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.delete("/alerts/rules/{rule_id}")
+async def delete_alert_rule(rule_id: str, fastapi_request: Request):
+    from competition.alerts import AlertRepository
+
+    repository = AlertRepository()
+    try:
+        existing = repository.get_rule(rule_id)
+        if not existing or existing.get("user_id") != _get_user_id(fastapi_request):
+            raise HTTPException(status_code=404, detail="Alert rule not found")
+        repository.delete_rule(rule_id)
+        return {"ok": True}
     finally:
         repository.close()
 

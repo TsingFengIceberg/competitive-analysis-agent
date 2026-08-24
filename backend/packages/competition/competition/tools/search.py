@@ -669,7 +669,9 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
         elif prov_name == "qwen":
             response = _qwen_search(query, max_results, prov_key, prov_base)
         else:
-            response = SearchResponse(query=query, backend="none")
+            response = _responses_search(
+                query, max_results, prov_key, prov_base, backend=prov_name,
+            )
         if response.results:
             _search_stats["total_results"] += len(response.results)
             _search_stats["backend"] = response.backend
@@ -827,6 +829,21 @@ def _ddg_search(query: str, max_results: int = 5) -> SearchResponse:
 def _doubao_search(query: str, max_results: int, api_key: str, api_base: str) -> SearchResponse:
     """Use Doubao/Volcengine Responses API with web_search tool."""
 
+    return _responses_search(
+        query, max_results, api_key, api_base, backend="doubao",
+    )
+
+
+def _responses_search(
+    query: str,
+    max_results: int,
+    api_key: str,
+    api_base: str,
+    *,
+    backend: str,
+) -> SearchResponse:
+    """Use an OpenAI-compatible Responses API with the web_search tool."""
+
     try:
         import urllib.request
         payload = json.dumps({
@@ -845,22 +862,33 @@ def _doubao_search(query: str, max_results: int, api_key: str, api_base: str) ->
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
+                "User-Agent": "CI-Agent/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
 
-        if "error" in data:
-            logger.warning("Doubao search error: %s", data["error"].get("message", "")[:200])
-            return SearchResponse(query=query, backend="doubao")
+        if data.get("error"):
+            logger.warning(
+                "%s search error: %s",
+                backend,
+                data["error"].get("message", "")[:200],
+            )
+            return SearchResponse(query=query, backend=backend)
 
         # Extract text from response
         text = ""
+        citations: list[dict] = []
         for item in data.get("output", []):
             if item.get("type") == "message":
                 for c in item.get("content", []):
                     if c.get("type") == "output_text":
                         text = c.get("text", "")
+                        citations.extend(
+                            annotation
+                            for annotation in c.get("annotations", [])
+                            if annotation.get("type") == "url_citation"
+                        )
                         break
 
         # Parse JSON from response text
@@ -893,12 +921,29 @@ def _doubao_search(query: str, max_results: int, api_key: str, api_base: str) ->
                 except json.JSONDecodeError:
                     pass
 
-        logger.info("Doubao search '%s': %d results", query, len(results))
-        return SearchResponse(query=query, results=results, backend="doubao")
+        # Some compatible gateways return prose plus citation annotations instead
+        # of obeying the requested JSON shape. Preserve those sources as results.
+        if not results:
+            seen_urls: set[str] = set()
+            for citation in citations:
+                url = str(citation.get("url", ""))
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                results.append(SearchResult(
+                    title=str(citation.get("title", "")) or url,
+                    url=url,
+                    snippet=text[:2000],
+                ))
+                if len(results) >= max_results:
+                    break
+
+        logger.info("%s search '%s': %d results", backend, query, len(results))
+        return SearchResponse(query=query, results=results, backend=backend)
 
     except Exception as e:
-        logger.warning("Doubao search failed: %s", e)
-        return SearchResponse(query=query, backend="doubao")
+        logger.warning("%s search failed: %s", backend, e)
+        return SearchResponse(query=query, backend=backend)
 
 
 def _qwen_search(query: str, max_results: int, api_key: str, api_base: str) -> SearchResponse:

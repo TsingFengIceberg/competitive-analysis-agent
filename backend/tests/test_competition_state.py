@@ -60,10 +60,10 @@ class TestCompetitionStateFields:
         assert "error" in hints
 
     def test_total_field_count(self):
-        """Runtime stage tracking adds four custom fields to the business state."""
+        """Runtime tracking and analysis context extend the business state."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 30, f"Expected 30 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 31, f"Expected 31 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:

@@ -129,6 +129,11 @@ class AlertRepository:
         rows = self.conn.execute(f"SELECT * FROM alert_rules {where} ORDER BY created_at ASC", params).fetchall()
         return [self._decode_rule(row) for row in rows]
 
+    def delete_rule(self, rule_id: str) -> bool:
+        cursor = self.conn.execute("DELETE FROM alert_rules WHERE rule_id = ?", (rule_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
     def find_recent(self, rule_id: str, dedupe_key: str, since: datetime) -> dict | None:
         row = self.conn.execute(
             "SELECT event_id, last_seen_at, sent_at, status FROM alert_events WHERE rule_id = ? AND dedupe_key = ? AND last_seen_at >= ? ORDER BY last_seen_at DESC LIMIT 1",

@@ -11,13 +11,10 @@ Covers today's changes:
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest import mock
 
-import pytest
 import yaml
 
 # ── conftest-style mocks for modules that don't exist in test env ──
@@ -27,12 +24,13 @@ if "ddgs" not in sys.modules:
 if "primp" not in sys.modules:
     sys.modules["primp"] = mock.MagicMock()
 
+from competition.executor import _get_active_config_group, _resolve_model, _resolve_provider
 from competition.tools.search import (
-    _get_search_config,
     _get_provider_search_config,
+    _get_search_config,
+    _responses_search,
+    search,
 )
-from competition.executor import _resolve_provider, _resolve_model, _get_active_config_group
-
 
 # ── helpers ──
 
@@ -208,6 +206,95 @@ class TestGetProviderSearchConfig:
             prov_name, _, _ = _get_provider_search_config()
         assert prov_name is None
 
+
+class TestResponsesProviderSearch:
+    def test_non_qwen_provider_uses_responses_search(self):
+        import competition.tools.search as mod
+
+        expected = mod.SearchResponse(
+            query="current pricing",
+            results=[mod.SearchResult(title="Official", url="https://example.com")],
+            backend="lab_gpt",
+        )
+        with mock.patch.object(mod, "_get_search_config", return_value={
+            "provider_search": True, "tavily": False, "ddg": False,
+        }), mock.patch.object(mod, "_get_provider_search_config", return_value=(
+            "lab_gpt", "test-key", "https://gateway.example/v1",
+        )), mock.patch.object(mod, "_responses_search", return_value=expected) as responses_search:
+            result = search("current pricing", max_results=3)
+
+        assert result == expected
+        responses_search.assert_called_once_with(
+            "current pricing", 3, "test-key", "https://gateway.example/v1", backend="lab_gpt",
+        )
+
+    def test_responses_search_parses_json_results(self):
+        payload = {
+            "error": None,
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": json.dumps([{
+                        "title": "Official pricing",
+                        "url": "https://example.com/pricing",
+                        "snippet": "Current plans",
+                    }]),
+                }],
+            }],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps(payload).encode()
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen, \
+             mock.patch("competition.tools.search._get_default_provider", return_value=(
+                 "test-key", "https://gateway.example/v1", "gpt-test",
+             )):
+            result = _responses_search(
+                "current pricing", 3, "test-key", "https://gateway.example/v1", backend="lab_gpt",
+            )
+
+        assert result.backend == "lab_gpt"
+        assert [(item.title, item.url, item.snippet) for item in result.results] == [(
+            "Official pricing", "https://example.com/pricing", "Current plans",
+        )]
+        request = urlopen.call_args.args[0]
+        assert request.full_url == "https://gateway.example/v1/responses"
+        assert json.loads(request.data)["tools"] == [{"type": "web_search"}]
+        assert request.get_header("User-agent") == "CI-Agent/1.0"
+        assert urlopen.call_args.kwargs["timeout"] == 60
+
+    def test_responses_search_falls_back_to_citations(self):
+        payload = {
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": "The official page contains the current details.",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "title": "Official page",
+                        "url": "https://example.com/current",
+                    }],
+                }],
+            }],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps(payload).encode()
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response), \
+             mock.patch("competition.tools.search._get_default_provider", return_value=(
+                 "test-key", "https://gateway.example/v1", "gpt-test",
+             )):
+            result = _responses_search(
+                "current details", 3, "test-key", "https://gateway.example/v1", backend="lab_gpt",
+            )
+
+        assert len(result.results) == 1
+        assert result.results[0].title == "Official page"
+        assert result.results[0].url == "https://example.com/current"
 
 # ── Per-agent model resolution (executor) ──
 

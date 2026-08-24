@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:2026";
 const devPort = new URL(baseURL).port || "2026";
+const chromiumExecutable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -15,6 +16,11 @@ export default defineConfig({
   use: {
     baseURL,
     trace: "on-first-retry",
+    screenshot:
+      process.env.PLAYWRIGHT_SCREENSHOTS === "true" ? "on" : "only-on-failure",
+    launchOptions: chromiumExecutable
+      ? { executablePath: chromiumExecutable }
+      : undefined,
   },
 
   projects: [

@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, LogOut, Settings } from "lucide-react";
+import { Plus, LogOut, Radar, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
@@ -23,6 +23,7 @@ import { CompetitionHeader } from "./competition-header";
 
 function SidebarUserFooter() {
   const [userLabel, setUserLabel] = useState<string | null>(null);
+  const [fileMode, setFileMode] = useState(false);
   const { open: isSidebarOpen } = useSidebar();
   const router = useRouter();
 
@@ -30,6 +31,7 @@ function SidebarUserFooter() {
     fetch("/api/competition/me")
       .then((r) => r.json())
       .then((d) => {
+        setFileMode(d.config_mode === "file");
         if (d.authenticated)
           setUserLabel(d.email || d.username || d.user_id || null);
       })
@@ -44,7 +46,11 @@ function SidebarUserFooter() {
     router.push("/auth/login?redirect=/competition/new");
   };
 
-  const initials = userLabel ? userLabel.slice(0, 2).toUpperCase() : "?";
+  const initials = fileMode
+    ? "D"
+    : userLabel
+      ? userLabel.slice(0, 2).toUpperCase()
+      : "?";
 
   if (!isSidebarOpen) {
     return (
@@ -58,15 +64,17 @@ function SidebarUserFooter() {
 
   return (
     <div className="space-y-1 border-t px-3 py-3 text-xs">
-      {userLabel && (
+      {(userLabel || fileMode) && (
         <div
           className="text-muted-foreground mb-2 flex items-center gap-2 truncate"
-          title={userLabel}
+          title={fileMode ? "File 调试模式" : userLabel || undefined}
         >
           <span className="bg-muted text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold">
             {initials}
           </span>
-          <span className="truncate">{userLabel}</span>
+          <span className="truncate">
+            {fileMode ? "File 调试模式" : userLabel}
+          </span>
         </div>
       )}
       <Link
@@ -76,13 +84,15 @@ function SidebarUserFooter() {
         <Settings size={14} />
         <span>设置</span>
       </Link>
-      <button
-        onClick={handleLogout}
-        className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex min-h-8 w-full items-center gap-2 rounded-md px-2 transition-colors"
-      >
-        <LogOut size={14} />
-        <span>退出</span>
-      </button>
+      {!fileMode && (
+        <button
+          onClick={handleLogout}
+          className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex min-h-8 w-full items-center gap-2 rounded-md px-2 transition-colors"
+        >
+          <LogOut size={14} />
+          <span>退出</span>
+        </button>
+      )}
       <div className="text-muted-foreground/50 px-2 pt-2 font-mono text-[10px]">
         build{" "}
         {process.env.NEXT_PUBLIC_BUILD_TIME?.slice(0, 16)?.replace("T", " ") ??
@@ -116,6 +126,20 @@ export function CompetitionSidebar({
               <Link className="text-muted-foreground" href="/competition/new">
                 <Plus size={16} />
                 <span>新建分析</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={pathname === "/competition/monitoring"}
+              asChild
+            >
+              <Link
+                className="text-muted-foreground"
+                href="/competition/monitoring"
+              >
+                <Radar size={16} />
+                <span>竞品观察</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

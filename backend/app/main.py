@@ -7,7 +7,6 @@ Provides auth endpoints backed by a simple SQLite user store and JWT cookie auth
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import secrets
@@ -247,8 +246,23 @@ def create_app() -> FastAPI:
 
     # ── Competition router ──
     from app.competition_router import router as competition_router
+    from app.competition_router import start_observation_runtime, stop_observation_runtime
 
     app.include_router(competition_router)
+
+    @app.on_event("startup")
+    async def start_background_services():
+        if os.getenv("CI_AGENT_OBSERVATION_SCHEDULER_ENABLED", "true").lower() == "true":
+            try:
+                poll_seconds = int(os.getenv("CI_AGENT_OBSERVATION_POLL_SECONDS", "30"))
+            except ValueError:
+                logger.warning("Invalid CI_AGENT_OBSERVATION_POLL_SECONDS; using 30 seconds")
+                poll_seconds = 30
+            start_observation_runtime(poll_seconds)
+
+    @app.on_event("shutdown")
+    async def stop_background_services():
+        stop_observation_runtime()
 
     # ── Health ──
     @app.get("/health")
