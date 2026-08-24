@@ -234,6 +234,27 @@ export interface ReportHistoryItem {
   report_data?: ReportData | null;
   analysis_result?: Record<string, unknown> | null;
   collected_data?: unknown[] | null;
+  snapshot?: ReportVersionSnapshot | null;
+  snapshot_status?: "complete" | "partial" | "unavailable";
+}
+
+export interface ReportVersionSnapshot {
+  snapshot_schema_version?: number;
+  snapshot_status?: "complete" | "partial" | "unavailable";
+  report_data?: ReportData | null;
+  analysis_brief?: AnalysisBrief | null;
+  analysis_result?: Record<string, unknown> | null;
+  review_verdict?: Record<string, unknown> | null;
+  stage_results?: StageResult[];
+  usage_summary?: Record<string, unknown>;
+  token_usage?: TokenEntry[];
+  collected_data?: unknown[];
+  query?: string;
+  products?: string[];
+  comment?: string;
+  generation_id?: string | null;
+  status?: string;
+  action?: string;
 }
 
 export interface ReportData {

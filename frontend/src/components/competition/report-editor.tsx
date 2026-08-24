@@ -106,6 +106,7 @@ export default function ReportEditor({
         type: "success",
         text: `已提交 ${data.updated_count} 处修正${data.improvement_ratio ? ` · 改善率: ${(data.improvement_ratio * 100).toFixed(1)}%` : ""} (R6)`,
       });
+      window.dispatchEvent(new CustomEvent("competition:refresh-history"));
     } catch (e: unknown) {
       setMessage({
         type: "error",

@@ -775,6 +775,22 @@ export default function CompetitionPage() {
       .catch(() => undefined);
   }, [threadId, historyCount]);
 
+  // Human edits create a new immutable version without changing the polling
+  // count immediately. Refresh the tree as soon as the editor reports it.
+  useEffect(() => {
+    if (!threadId) return;
+    const refresh = () => {
+      fetch(`/api/competition/report/${threadId}/history`, { cache: "no-store" })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.history) setHistoryEntries(data.history);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener("competition:refresh-history", refresh);
+    return () => window.removeEventListener("competition:refresh-history", refresh);
+  }, [threadId]);
+
   const applyReportSync = useCallback((rawReport: AnalysisReportPollResult) => {
     const report = rawReport as AnalysisReportPollResult & {
       analysis_brief?: AnalysisBrief;
@@ -1027,29 +1043,40 @@ export default function CompetitionPage() {
         setViewingHistory(null);
         return;
       }
-      // First try cached entries
+      // First use a cached complete snapshot. Partial/legacy entries are
+      // resolved through the dedicated version endpoint below.
       const cached = historyEntries.find(
         (h: ReportHistoryItem) => h.version === version,
       );
-      if (cached) {
+      if (cached?.snapshot_status === "complete" && cached.report_data) {
         setViewingHistory(cached);
         return;
       }
-      // Fallback: fetch from API
+      // Fetch the immutable payload for this exact version. This keeps report,
+      // quality, sources, evidence and process panels on one historical state.
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const res = await fetch(
-            `/api/competition/report/${threadId}/history`,
+          const detailRes = await fetch(
+            `/api/competition/report/${threadId}/versions/${version}`,
             { cache: "no-store" },
           );
-          if (!res.ok) return;
-          const data = await res.json();
-          const history = data.history as ReportHistoryItem[];
-          setHistoryEntries(history);
-          const item = history.find(
-            (h: ReportHistoryItem) => h.version === version,
-          );
-          if (item) setViewingHistory(item);
+          if (!detailRes.ok) return;
+          const detail = await detailRes.json();
+          const base = cached ?? historyEntries.find((h) => h.version === version);
+          const item: ReportHistoryItem = {
+            ...(base ?? { version }),
+            parent_version: detail.parent_version ?? base?.parent_version,
+            action: detail.action ?? base?.action,
+            created_at: detail.created_at ?? base?.created_at,
+            report_data: detail.report_data ?? detail.snapshot?.report_data ?? null,
+            snapshot: detail.snapshot ?? null,
+            snapshot_status: detail.snapshot_status ?? "unavailable",
+          };
+          setHistoryEntries((current) => {
+            const next = current.filter((entry) => entry.version !== version);
+            return [...next, item].sort((a, b) => a.version - b.version);
+          });
+          setViewingHistory(item);
           return;
         } catch {
           if (attempt < 2) await new Promise((r) => setTimeout(r, 300));
@@ -1063,7 +1090,7 @@ export default function CompetitionPage() {
   // back to the current report; doing so mixes a historical version label with
   // the latest version's content and makes quality/source/process panels lie.
   const displayReport = viewingHistory
-    ? (viewingHistory.report_data ?? null)
+    ? (viewingHistory.snapshot?.report_data ?? viewingHistory.report_data ?? null)
     : (dbLoadedReport ?? reportData);
 
   const latestVersion = useMemo(() => {

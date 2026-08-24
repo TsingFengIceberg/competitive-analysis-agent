@@ -51,6 +51,7 @@ const ACTION_CONFIG: Record<string, { label: string; icon: typeof Pencil }> = {
   initial: DEFAULT_ACTION,
   merge: { label: "合并", icon: GitMerge },
   approve: { label: "批准", icon: Check },
+  human_edit: { label: "人工修订", icon: Pencil },
 };
 
 function VersionTree({
@@ -125,6 +126,12 @@ function VersionTree({
     const comment = entry.hitl_decision?.comment?.slice(0, 25) ?? "";
     const isRoot = !entry.parent_version;
     const isApproved = entry.is_approved === true;
+    const snapshotLabel =
+      entry.snapshot_status === "complete"
+        ? "完整快照"
+        : entry.snapshot_status === "partial"
+          ? "部分快照"
+          : "不可恢复";
 
     // Build tree line prefix
     let prefix = "";
@@ -196,6 +203,12 @@ function VersionTree({
               />
             )}
           </Button>
+          <span
+            className={`text-[10px] ${entry.snapshot_status === "complete" ? "text-[var(--status-success)]" : "text-[var(--status-warning)]"}`}
+            title={snapshotLabel}
+          >
+            {snapshotLabel}
+          </span>
           {comment && (
             <span
               className="text-muted-foreground/70 truncate"

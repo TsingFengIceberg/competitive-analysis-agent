@@ -774,11 +774,13 @@ export default function CompetitionReportPanel({
             </div>
           </StatusNotice>
         )}
-        {viewingHistory && !displayReport && (
+        {viewingHistory && viewingHistory.snapshot_status !== "complete" && (
           <StatusNotice tone="warning" className="mb-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>
-                历史版本 v{viewingHistory.version} 没有保存报告内容，暂时无法展示。
+                {viewingHistory.snapshot_status === "partial"
+                  ? `历史版本 v${viewingHistory.version} 仅保存了部分运行信息，完整报告无法恢复。`
+                  : `历史版本 v${viewingHistory.version} 无法恢复完整报告。`}
               </span>
               <Button
                 type="button"

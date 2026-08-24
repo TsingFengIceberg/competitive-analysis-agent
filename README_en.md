@@ -77,6 +77,8 @@ The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixe
 
 Completed reports open in a full-screen research workbench with version tree, report, quality gate, sources, evidence graph, and process views. It supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
 
+Every report version stores an immutable full snapshot containing the report body, analysis result, reviewer verdict, stage results, token usage, collected data, Analysis Brief, original request, and rework feedback. The version-detail API and workbench load these fields for the selected version, so quality, source, evidence, and process panels do not mix in current-version state. Historical records are labeled as “complete snapshot”, “partial snapshot”, or “unavailable”; missing legacy data is reported explicitly instead of being fabricated.
+
 ### Human report editing
 
 The report editor provides per-section drafts, a changed-section counter, and one unified submit action. Opening an editor without changing text does not mark a section as changed; submitting automatically includes the currently open draft and reports update count and improvement ratio. Tables and charts remain read-only so structured report data is not accidentally damaged.
@@ -323,6 +325,7 @@ competitive-analysis-agent/
 | GET | `/api/competition/stream/{thread_id}` | SSE progress and agent output stream |
 | GET | `/api/competition/report/{thread_id}` | Get report and phase data |
 | GET | `/api/competition/report/{thread_id}/history` | Get version history and branches |
+| GET | `/api/competition/report/{thread_id}/versions/{version}` | Get the immutable full snapshot for one report version |
 | GET | `/api/competition/report/{thread_id}/trace` | Get agent execution trace |
 | PATCH | `/api/competition/report/{thread_id}/sections` | Edit report sections |
 | PUT | `/api/competition/report/{thread_id}` | Submit HITL decision |

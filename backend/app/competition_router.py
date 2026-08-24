@@ -417,19 +417,112 @@ def _assert_thread_access(thread_id: str, request: Request | None = None) -> Non
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
 
+def _serialize_snapshot_value(value):
+    """Return an immutable, JSON-safe copy of a runtime value."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        return _serialize_snapshot_value(value.model_dump())
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(key): _serialize_snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_serialize_snapshot_value(item) for item in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _build_report_snapshot(
+    thread_id: str,
+    action: str,
+    *,
+    report_data=None,
+    comment: str = "",
+    generation_id: str | None = None,
+) -> dict:
+    """Build a detached snapshot of all report-facing state for one version."""
+    entry = _store.get(thread_id, {})
+    state = entry.get("state", {})
+    resolved_report = report_data if report_data is not None else state.get("report_data")
+    return _serialize_snapshot_value({
+        "snapshot_schema_version": 1,
+        "snapshot_status": "complete" if resolved_report is not None else "partial",
+        "report_data": resolved_report,
+        "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
+        "analysis_result": state.get("analysis_result"),
+        "review_verdict": state.get("review_verdict"),
+        "stage_results": state.get("stage_results") or [],
+        "usage_summary": state.get("usage_summary") or {},
+        "token_usage": entry.get("token_usage") or [],
+        "collected_data": state.get("collected_data") or [],
+        "query": entry.get("query") or state.get("user_request") or "",
+        "products": entry.get("products") or state.get("target_products") or [],
+        "comment": comment or state.get("hitl_decision", {}).get("comment", ""),
+        "generation_id": generation_id or entry.get("generation_id") or state.get("generation_id"),
+        "status": entry.get("status") or state.get("run_status") or "completed",
+        "action": action,
+    })
+
+
+def _persist_report_version(
+    thread_id: str,
+    action: str,
+    *,
+    parent_version: int | None = None,
+    report_data=None,
+    comment: str = "",
+    generation_id: str | None = None,
+) -> int | None:
+    """Persist one complete, detached report version through the single entry point."""
+    snapshot = _build_report_snapshot(
+        thread_id,
+        action,
+        report_data=report_data,
+        comment=comment,
+        generation_id=generation_id,
+    )
+    stored_report = snapshot.get("report_data")
+    metadata = {
+        "report_data": stored_report,  # legacy clients read this top-level field
+        "snapshot": snapshot,
+        "snapshot_status": snapshot.get("snapshot_status", "partial"),
+        "comment": snapshot.get("comment", ""),
+        "generation_id": snapshot.get("generation_id"),
+    }
+    try:
+        return _history_store.insert(thread_id, parent_version, "", action, metadata)
+    except Exception:
+        logger.exception("Failed to persist report version for %s", thread_id[:12])
+        return None
+
+
+def _snapshot_from_metadata(metadata: dict, *, fallback_report=None) -> tuple[dict | None, str]:
+    """Read new and legacy metadata without fabricating missing historical content."""
+    snapshot = metadata.get("snapshot")
+    if isinstance(snapshot, dict):
+        status = str(snapshot.get("snapshot_status") or metadata.get("snapshot_status") or "partial")
+        return _serialize_snapshot_value(snapshot), status
+    legacy_report = metadata.get("report_data", fallback_report)
+    if legacy_report is not None:
+        return {"snapshot_schema_version": 0, "snapshot_status": "complete", "report_data": _serialize_snapshot_value(legacy_report)}, "complete"
+    if metadata:
+        return None, "partial"
+    return None, "unavailable"
+
+
 def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
-    """Read a single version from history store and attach report data from runtime state."""
+    """Read a single immutable version from persisted history."""
     meta = _history_store.get(thread_id, version)
     if meta is None:
         return None
-    entry = _store.get(thread_id, {})
-    state = entry.get("state", {})
-    # Prefer report_data from stored metadata (available for all versions)
-    stored_rd = (meta.get("metadata_json") or {}).get("report_data")
-    if stored_rd is None and version == _current_db_version(thread_id):
-        stored_rd = state.get("report_data")
-        if stored_rd is not None and hasattr(stored_rd, "model_dump"):
-            stored_rd = stored_rd.model_dump()
+    metadata = meta.get("metadata_json") or {}
+    snapshot, snapshot_status = _snapshot_from_metadata(metadata)
+    stored_rd = snapshot.get("report_data") if snapshot else metadata.get("report_data")
     return {
         "version": version,
         "parent_version": meta.get("parent_version"),
@@ -437,8 +530,10 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
         "is_approved": meta.get("is_approved"),
         "created_at": meta.get("created_at"),
         "report_data": stored_rd,
-        "analysis_result": state.get("analysis_result") if version == _current_db_version(thread_id) else None,
-        "collected_data": state.get("collected_data") if version == _current_db_version(thread_id) else None,
+        "snapshot": snapshot,
+        "snapshot_status": snapshot_status,
+        "analysis_result": snapshot.get("analysis_result") if snapshot else None,
+        "collected_data": snapshot.get("collected_data") if snapshot else None,
     }
 
 
@@ -455,19 +550,15 @@ def _load_phases(thread_id: str) -> list[dict]:
 
 
 def _list_history(thread_id: str) -> list[dict]:
-    """List all version entries from history store, enriching with runtime state for latest."""
+    """List all version entries from persisted immutable metadata."""
     rows = _history_store.list_by_thread(thread_id)
-    latest = _current_db_version(thread_id)
-    entry = _store.get(thread_id, {})
-    state = entry.get("state", {})
     result = []
     for r in rows:
-        is_latest = r["version"] == latest
-        stored_rd = (r.get("metadata_json") or {}).get("report_data")
-        if stored_rd is None and is_latest:
-            rd = state.get("report_data")
-            if rd is not None and hasattr(rd, "model_dump"):
-                stored_rd = rd.model_dump()
+        metadata = r.get("metadata_json") or {}
+        # Never fill a missing historical row from current runtime state: that
+        # would make an old version appear to contain the latest report.
+        snapshot, snapshot_status = _snapshot_from_metadata(metadata)
+        stored_rd = snapshot.get("report_data") if snapshot else metadata.get("report_data")
         result.append({
             "version": r["version"],
             "parent_version": r["parent_version"],
@@ -477,8 +568,10 @@ def _list_history(thread_id: str) -> list[dict]:
             "created_at": r["created_at"],
             "metadata": r.get("metadata_json", {}),
             "report_data": stored_rd,
-            "analysis_result": state.get("analysis_result") if is_latest else None,
-            "collected_data": state.get("collected_data") if is_latest else None,
+            "snapshot": snapshot,
+            "snapshot_status": snapshot_status,
+            "analysis_result": snapshot.get("analysis_result") if snapshot else None,
+            "collected_data": snapshot.get("collected_data") if snapshot else None,
         })
     return result
 
@@ -1239,6 +1332,27 @@ async def get_report_history(thread_id: str, fastapi_request: Request = None):
     return {"history": history, "count": len(history)}
 
 
+@router.get("/report/{thread_id}/versions/{version}")
+async def get_report_version(thread_id: str, version: int, fastapi_request: Request = None):
+    """Return the complete immutable snapshot for one report version."""
+    _assert_thread_access(thread_id, fastapi_request)
+    item = _snapshot_to_history(thread_id, version)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Report version not found: {thread_id}/v{version}")
+    latest = _current_db_version(thread_id)
+    return {
+        "thread_id": thread_id,
+        "version": item["version"],
+        "parent_version": item.get("parent_version"),
+        "action": item.get("action"),
+        "snapshot_status": item.get("snapshot_status", "unavailable"),
+        "snapshot": item.get("snapshot"),
+        "report_data": item.get("report_data"),
+        "created_at": item.get("created_at"),
+        "is_latest": latest == version,
+    }
+
+
 @router.get("/report/{thread_id}/trace")
 async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -> dict:
     """Return per-phase trace data for ALL analysis generations (R9/R10 process viewer)."""
@@ -1428,12 +1542,18 @@ class SectionUpdateResponse(BaseModel):
     updated_count: int
     edit_count: int
     improvement_ratio: float | None = None
+    version: int | None = None
 
 
 @router.patch("/report/{thread_id}/sections", response_model=SectionUpdateResponse)
-async def update_sections(thread_id: str, body: SectionUpdateRequest) -> SectionUpdateResponse:
+async def update_sections(thread_id: str, body: SectionUpdateRequest, fastapi_request: Request = None) -> SectionUpdateResponse:
     """Apply human corrections to report sections (R6 — feedback improvement quantification)."""
+    _assert_thread_access(thread_id, fastapi_request)
     entry = _store.get(thread_id)
+    if entry is None:
+        entry = _restore_state_from_db(thread_id)
+        if entry is not None:
+            _store[thread_id] = entry
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
 
@@ -1477,11 +1597,28 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest) -> Section
     except Exception:
         pass
 
+    # Human edits are immutable report revisions, so the previous version can
+    # still be opened and compared after the current report is changed.
+    from uuid import uuid4
+    generation_id = str(uuid4())
+    entry["generation_id"] = generation_id
+    state["generation_id"] = generation_id
+    parent_version = _current_db_version(thread_id)
+    new_version = _persist_report_version(
+        thread_id,
+        "human_edit",
+        parent_version=parent_version,
+        report_data=report_dict,
+        comment="人工修订报告章节",
+        generation_id=generation_id,
+    )
+
     return SectionUpdateResponse(
         thread_id=thread_id,
         updated_count=updated,
         edit_count=edit_count,
         improvement_ratio=improvement_ratio,
+        version=new_version,
     )
 
 
@@ -1882,15 +2019,16 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         new_report = state.get("report_data")
         if new_report:
             parent = fork_parent if fork_parent is not None else _current_db_version(thread_id)
-            _history_store.insert(
-                thread_id, parent, "",
+            version = _persist_report_version(
+                thread_id,
                 action,
-                {"report_data": new_report.model_dump() if hasattr(new_report, "model_dump") else new_report,
-                 "comment": state.get("hitl_decision", {}).get("comment", ""),
-                 "generation_id": generation_id},
+                parent_version=parent,
+                report_data=new_report,
+                comment=state.get("hitl_decision", {}).get("comment", ""),
+                generation_id=generation_id,
             )
             logger.info("Saved post-%s report v%d for %s",
-                        action, _current_db_version(thread_id), thread_id[:12])
+                        action, version or _current_db_version(thread_id), thread_id[:12])
     except _ReanalysisCancelled:
         logger.info("Reanalysis %s cancelled", thread_id)
     except Exception as e:
@@ -3402,9 +3540,14 @@ def _run_graph_sync(thread_id: str) -> None:
         # Record initial version in history store
         if _current_db_version(thread_id) is None and _store[thread_id].get("state", {}).get("report_data"):
             rd = _store[thread_id]["state"]["report_data"]
-            _history_store.insert(thread_id, None, "", "initial",
-                {"report_data": rd.model_dump() if hasattr(rd, "model_dump") else rd,
-                 "generation_id": _store[thread_id].get("generation_id") or state.get("generation_id")})
+            version = _persist_report_version(
+                thread_id,
+                "initial",
+                parent_version=None,
+                report_data=rd,
+                generation_id=_store[thread_id].get("generation_id") or state.get("generation_id"),
+            )
+            logger.info("Saved initial report v%d for %s", version or 0, thread_id[:12])
 
         logger.info("Analysis %s completed", thread_id)
 

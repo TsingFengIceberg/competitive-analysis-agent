@@ -81,6 +81,8 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
 
+每个报告版本都会保存不可变的完整快照，包含报告正文、分析结果、Reviewer 判定、阶段结果、Token 用量、采集数据、Analysis Brief、原始请求和返工意见。版本详情接口和工作台切换会按指定版本加载这些数据，质量、来源、证据和流程面板不会混入当前版本内容。历史数据按快照状态标记为“完整快照”“部分快照”或“不可恢复”，旧数据缺失时明确提示而不虚构报告。
+
 ### 报告人工修订
 
 人工修订面板支持正文章节草稿、修改数量提示和统一提交。打开编辑框但未实际修改不会被标记为变更；提交时会自动包含当前仍在编辑的草稿，并返回更新数量和改善率。表格与图表章节保持只读，避免破坏结构化报告数据。
@@ -677,6 +679,7 @@ competitive-analysis-agent/
 | GET | `/api/competition/stream/{thread_id}` | SSE 实时事件流（进度推送 + Agent 输出） |
 | GET | `/api/competition/report/{thread_id}` | 获取分析报告与阶段数据 |
 | GET | `/api/competition/report/{thread_id}/history` | 获取版本历史与分支树 |
+| GET | `/api/competition/report/{thread_id}/versions/{version}` | 获取指定报告版本的不可变完整快照 |
 | GET | `/api/competition/report/{thread_id}/trace` | 获取 Agent 执行追踪日志 |
 | PATCH | `/api/competition/report/{thread_id}/sections` | 人工修正报告章节 |
 | PUT | `/api/competition/report/{thread_id}` | 提交 HITL 审批决策 |
