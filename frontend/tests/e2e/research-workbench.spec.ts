@@ -115,20 +115,37 @@ test.describe("Research workbench", () => {
     await page.route("**/api/competition/me", (route) =>
       route.fulfill({ json: { authenticated: true, config_mode: "file" } }),
     );
-    await page.route("**/api/competition/report/workbench-thread", (route) =>
-      route.fulfill({
-        json: {
-          thread_id: "workbench-thread",
-          status: "completed",
-          query: "Cursor vs Copilot",
-          title: report.title,
-          report_data: report,
-          metrics: report.metrics,
-          history_count: 1,
-          token_usage: [],
-          phases: [],
-        },
-      }),
+    await page.route(
+      /\/api\/competition\/report\/workbench-thread\?summary=true$/,
+      (route) =>
+        route.fulfill({
+          json: {
+            thread_id: "workbench-thread",
+            status: "completed",
+            query: "Cursor vs Copilot",
+            title: report.title,
+            report_data: report,
+            metrics: report.metrics,
+            history_count: 1,
+            token_usage: [],
+            phases: [],
+            analysis_brief: {
+              target_products: ["Cursor", "Copilot"],
+              market_scope: "Global / unspecified",
+              dimensions: [
+                { id: "features", label: "features" },
+                { id: "pricing", label: "pricing" },
+              ],
+              effective_dimensions: [
+                { id: "features", label: "features" },
+                { id: "pricing", label: "pricing" },
+              ],
+              evidence_policy: "official_preferred",
+              time_range: { mode: "latest", label: "最新可用证据" },
+              complexity: "standard",
+            },
+          },
+        }),
     );
     await page.route(
       "**/api/competition/report/workbench-thread/history",
@@ -182,10 +199,13 @@ test.describe("Research workbench", () => {
       page.getByRole("button", { name: "研究工作台" }),
     ).toBeVisible();
     await page.getByRole("button", { name: "研究工作台" }).click();
-    await expect(page.getByText("研究工作台")).toBeVisible();
+    const workbench = page.getByRole("dialog", { name: "研究工作台" });
+    await expect(workbench).toBeVisible();
     await expect(page.getByText("质量门禁有警告")).toBeVisible();
-    await page.getByRole("button", { name: "来源" }).last().click();
-    await expect(page.getByText("https://example.com/source")).toBeVisible();
+    await workbench.getByRole("button", { name: "来源", exact: true }).click();
+    await expect(
+      workbench.getByText("https://example.com/source"),
+    ).toBeVisible();
   });
 
   test("uses one-pane tabs on mobile", async ({ page }) => {

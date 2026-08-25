@@ -70,6 +70,49 @@ async def test_monitoring_crud_and_run_history_are_user_scoped(monkeypatch):
             assert runs.json()["runs"][0]["schedule_name"] == "Updated AI tools"
             assert runs.json()["runs"][0]["summary"]["material_changes"] == 0
 
+            repository.record_run(
+                schedule_id,
+                status="completed",
+                started_at="2026-08-23T02:00:00+00:00",
+                finished_at="2026-08-23T02:03:00+00:00",
+                summary={
+                    "material_changes": 3,
+                    "change_events": [{"large": "payload must not be projected"}],
+                    "deep_analysis": {"thread_id": "comp-watch-report-1", "status": "completed"},
+                },
+            )
+            reports = await client.get("/api/competition/observation/reports")
+            assert reports.status_code == 200
+            assert reports.json()["total"] == 1
+            assert reports.json()["limit"] == 100
+            assert reports.json()["offset"] == 0
+            assert reports.json()["reports"] == [{
+                "run_id": reports.json()["reports"][0]["run_id"],
+                "schedule_id": schedule_id,
+                "schedule_name": "Updated AI tools",
+                "started_at": "2026-08-23T02:00:00+00:00",
+                "finished_at": "2026-08-23T02:03:00+00:00",
+                "status": "completed",
+                "material_changes": 3,
+                "thread_id": "comp-watch-report-1",
+                "report_status": "completed",
+            }]
+
+            repository.record_run(
+                schedule_id,
+                status="completed",
+                started_at="2026-08-23T03:00:00+00:00",
+                finished_at="2026-08-23T03:03:00+00:00",
+                summary={
+                    "material_changes": 2,
+                    "deep_analysis": {"thread_id": "comp-watch-report-2", "status": "completed"},
+                },
+            )
+            older_report = await client.get("/api/competition/observation/reports?limit=1&offset=1")
+            assert older_report.status_code == 200
+            assert older_report.json()["total"] == 2
+            assert older_report.json()["reports"][0]["thread_id"] == "comp-watch-report-1"
+
             created_rule = await client.post("/api/competition/alerts/rules", json=rule_body)
             assert created_rule.status_code == 200
             rule_id = created_rule.json()["rule"]["rule_id"]
@@ -81,6 +124,9 @@ async def test_monitoring_crud_and_run_history_are_user_scoped(monkeypatch):
             assert updated_rule.json()["rule"]["min_severity"] == "critical"
 
             current_user["id"] = "user-2"
+            other_user_reports = (await client.get("/api/competition/observation/reports")).json()
+            assert other_user_reports["reports"] == []
+            assert other_user_reports["total"] == 0
             assert (
                 await client.put(
                     f"/api/competition/observation/schedules/{schedule_id}",
@@ -127,6 +173,26 @@ def test_observation_runtime_reports_lifecycle(monkeypatch):
     finally:
         competition_router.stop_observation_runtime()
     assert competition_router._observation_runtime_thread is None
+
+
+def test_observation_brief_uses_complete_current_contract():
+    import app.competition_router as competition_router
+    from competition.schema import AnalysisBrief
+
+    brief = competition_router._build_observation_brief(
+        {
+            "products": ["Cursor", "Codex"],
+            "dimensions": ["features", "pricing", "market"],
+            "market_scope": "AI coding tools",
+        },
+        complexity="standard",
+    )
+
+    validated = AnalysisBrief.model_validate(brief)
+    assert validated.objective == "定期观察竞品：Cursor, Codex"
+    assert validated.confirmation_source == "bypass"
+    assert validated.time_range.mode == "latest"
+    assert sum(item.weight for item in validated.dimensions) == pytest.approx(1.0)
 
 
 def test_schedule_repository_filters_run_history_by_owner():

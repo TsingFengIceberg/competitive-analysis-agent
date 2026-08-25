@@ -8,6 +8,7 @@ import {
   Clock3,
   Edit3,
   ExternalLink,
+  FileText,
   History,
   Loader2,
   Pause,
@@ -136,8 +137,28 @@ interface ObservationRun {
   status: string;
   error: string | null;
   skip_reason: string | null;
-  summary: { material_changes?: number };
+  summary: {
+    material_changes?: number;
+    deep_analysis?: {
+      thread_id?: string;
+      status?: string;
+    };
+  };
 }
+
+interface ObservationReportRun {
+  run_id: string;
+  schedule_id: string;
+  schedule_name: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  material_changes: number;
+  thread_id: string;
+  report_status: string;
+}
+
+const REPORT_PAGE_SIZE = 100;
 
 interface AlertRule {
   rule_id: string;
@@ -226,7 +247,10 @@ function displayFactText(value: string | null): string {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/([A-Za-z])(\d)/g, "$1 $2")
     .replace(/(\d)([A-Za-z])/g, "$1 $2")
-    .replace(/(OpenAI|Codex|ClaudeCode|Claude Code|ChatGPT)(?=[A-Za-z])/g, "$1 ")
+    .replace(
+      /(OpenAI|Codex|ClaudeCode|Claude Code|ChatGPT)(?=[A-Za-z])/g,
+      "$1 ",
+    )
     .trim();
 }
 
@@ -384,13 +408,20 @@ export default function MonitoringPage() {
   });
   const [schedules, setSchedules] = useState<ObservationSchedule[]>([]);
   const [runs, setRuns] = useState<ObservationRun[]>([]);
+  const [reportRuns, setReportRuns] = useState<ObservationReportRun[]>([]);
+  const [reportTotal, setReportTotal] = useState(0);
+  const [reportLoadingMore, setReportLoadingMore] = useState(false);
   const [changes, setChanges] = useState<IntelligenceChange[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [events, setEvents] = useState<AlertEvent[]>([]);
-  const [selectedChange, setSelectedChange] = useState<IntelligenceChange | null>(null);
-  const [changeDetail, setChangeDetail] = useState<IntelligenceChangeDetail | null>(null);
+  const [selectedChange, setSelectedChange] =
+    useState<IntelligenceChange | null>(null);
+  const [changeDetail, setChangeDetail] =
+    useState<IntelligenceChangeDetail | null>(null);
   const [changeDetailLoading, setChangeDetailLoading] = useState(false);
-  const [changeDetailError, setChangeDetailError] = useState<string | null>(null);
+  const [changeDetailError, setChangeDetailError] = useState<string | null>(
+    null,
+  );
   const [scheduleDialog, setScheduleDialog] = useState(false);
   const [ruleDialog, setRuleDialog] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<string | null>(null);
@@ -413,6 +444,7 @@ export default function MonitoringPage() {
         runtimeResponse,
         schedulesResponse,
         runsResponse,
+        reportsResponse,
         changesResponse,
         rulesResponse,
         eventsResponse,
@@ -426,6 +458,12 @@ export default function MonitoringPage() {
         fetch("/api/competition/observation/runs?limit=50", {
           credentials: "include",
         }),
+        fetch(
+          `/api/competition/observation/reports?limit=${REPORT_PAGE_SIZE}`,
+          {
+            credentials: "include",
+          },
+        ),
         fetch("/api/competition/intelligence/changes?limit=100", {
           credentials: "include",
         }),
@@ -439,6 +477,7 @@ export default function MonitoringPage() {
           runtimeResponse,
           schedulesResponse,
           runsResponse,
+          reportsResponse,
           changesResponse,
           rulesResponse,
           eventsResponse,
@@ -450,6 +489,7 @@ export default function MonitoringPage() {
         runtimePayload,
         schedulesPayload,
         runsPayload,
+        reportsPayload,
         changesPayload,
         rulesPayload,
         eventsPayload,
@@ -457,6 +497,7 @@ export default function MonitoringPage() {
         runtimeResponse.json(),
         schedulesResponse.json(),
         runsResponse.json(),
+        reportsResponse.json(),
         changesResponse.json(),
         rulesResponse.json(),
         eventsResponse.json(),
@@ -464,6 +505,21 @@ export default function MonitoringPage() {
       setRuntime(runtimePayload);
       setSchedules(schedulesPayload.schedules || []);
       setRuns(runsPayload.runs || []);
+      const refreshedReports: ObservationReportRun[] =
+        reportsPayload.reports || [];
+      setReportRuns((currentReports) => {
+        if (!quiet) return refreshedReports;
+        const refreshedIds = new Set(
+          refreshedReports.map((report) => report.run_id),
+        );
+        return [
+          ...refreshedReports,
+          ...currentReports.filter(
+            (report) => !refreshedIds.has(report.run_id),
+          ),
+        ];
+      });
+      setReportTotal(reportsPayload.total || 0);
       setChanges(changesPayload.changes || []);
       setRules(rulesPayload.rules || []);
       setEvents(eventsPayload.events || []);
@@ -477,6 +533,38 @@ export default function MonitoringPage() {
       setRefreshing(false);
     }
   }, []);
+
+  const loadMoreReports = async () => {
+    if (reportLoadingMore || reportRuns.length >= reportTotal) return;
+    setReportLoadingMore(true);
+    try {
+      const response = await fetch(
+        `/api/competition/observation/reports?limit=${REPORT_PAGE_SIZE}&offset=${reportRuns.length}`,
+        { credentials: "include" },
+      );
+      if (!response.ok) throw new Error("更早的完整报告加载失败");
+      const payload = await response.json();
+      const olderReports: ObservationReportRun[] = payload.reports || [];
+      setReportRuns((currentReports) => {
+        const currentIds = new Set(
+          currentReports.map((report) => report.run_id),
+        );
+        return [
+          ...currentReports,
+          ...olderReports.filter((report) => !currentIds.has(report.run_id)),
+        ];
+      });
+      setReportTotal(payload.total || 0);
+    } catch (loadError) {
+      toast.error(
+        loadError instanceof Error
+          ? loadError.message
+          : "更早的完整报告加载失败",
+      );
+    } finally {
+      setReportLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
     void fetchData();
@@ -495,8 +583,19 @@ export default function MonitoringPage() {
     [changes, events, schedules],
   );
 
+  const latestCompletedReport = useMemo(
+    () =>
+      reportRuns.find((report) => report.report_status === "completed") ??
+      reportRuns[0] ??
+      null,
+    [reportRuns],
+  );
+
   const changeGroups = useMemo(() => {
-    const groups = new Map<string, { change: IntelligenceChange; count: number }>();
+    const groups = new Map<
+      string,
+      { change: IntelligenceChange; count: number }
+    >();
     for (const change of changes) {
       const key = [
         normalizeProductKey(change.product),
@@ -513,7 +612,9 @@ export default function MonitoringPage() {
   }, [changes]);
 
   const changeProducts = useMemo(
-    () => new Set(changes.map((change) => normalizeProductKey(change.product))).size,
+    () =>
+      new Set(changes.map((change) => normalizeProductKey(change.product)))
+        .size,
     [changes],
   );
 
@@ -969,8 +1070,9 @@ export default function MonitoringPage() {
                           </div>
                           <div className="text-muted-foreground mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
                             <span>
-                              {schedule.products.map(displayProduct).join(" · ") ||
-                                "未指定竞品"}
+                              {schedule.products
+                                .map(displayProduct)
+                                .join(" · ") || "未指定竞品"}
                             </span>
                             <span>
                               {schedule.interval_minutes
@@ -1054,6 +1156,119 @@ export default function MonitoringPage() {
             <div className="space-y-3 pt-4">
               <div>
                 <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+                  <FileText className="size-3.5" />
+                  历史完整报告
+                </h2>
+                <p className="text-muted-foreground mt-1 text-xs">
+                  汇总所有曾触发深度分析的观察运行，不受近期运行记录数量限制
+                </p>
+              </div>
+              {latestCompletedReport ? (
+                <>
+                  <div className="bg-muted/30 flex flex-col gap-3 border-y py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold">
+                          最新有变化的完整报告
+                        </span>
+                        <StatusBadge
+                          tone={
+                            statusPresentation(
+                              latestCompletedReport.report_status,
+                            ).tone
+                          }
+                          label={
+                            statusPresentation(
+                              latestCompletedReport.report_status,
+                            ).label
+                          }
+                        />
+                      </div>
+                      <p className="text-muted-foreground mt-1 text-xs">
+                        {latestCompletedReport.schedule_name} ·{" "}
+                        {latestCompletedReport.material_changes} 条实质变化 ·{" "}
+                        {formatTime(latestCompletedReport.started_at)}
+                      </p>
+                    </div>
+                    <Link
+                      href={`/competition/${latestCompletedReport.thread_id}`}
+                      className="text-foreground hover:text-primary inline-flex shrink-0 items-center gap-1 text-xs font-semibold"
+                    >
+                      查看最新报告 <ExternalLink className="size-3.5" />
+                    </Link>
+                  </div>
+                  <details>
+                    <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs font-medium">
+                      查看全部 {reportTotal} 份历史报告
+                    </summary>
+                    <div className="mt-2 divide-y border-y">
+                      {reportRuns.map((report) => {
+                        const reportPresentation = statusPresentation(
+                          report.report_status,
+                        );
+                        return (
+                          <div
+                            key={report.run_id}
+                            className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="truncate text-sm font-medium">
+                                  {report.schedule_name}
+                                </span>
+                                <StatusBadge
+                                  tone={reportPresentation.tone}
+                                  label={reportPresentation.label}
+                                />
+                                <span className="text-muted-foreground text-xs">
+                                  {report.material_changes} 条实质变化
+                                </span>
+                              </div>
+                              <p className="text-muted-foreground mt-1 text-xs tabular-nums">
+                                {formatTime(report.started_at)} ·{" "}
+                                {report.thread_id}
+                              </p>
+                            </div>
+                            <Link
+                              href={`/competition/${report.thread_id}`}
+                              className="text-foreground hover:text-primary inline-flex shrink-0 items-center gap-1 text-xs font-medium"
+                            >
+                              查看报告 <ExternalLink className="size-3" />
+                            </Link>
+                          </div>
+                        );
+                      })}
+                      {reportRuns.length < reportTotal && (
+                        <div className="flex items-center justify-between gap-3 py-3">
+                          <span className="text-muted-foreground text-xs">
+                            已显示 {reportRuns.length} / {reportTotal} 份
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void loadMoreReports()}
+                            disabled={reportLoadingMore}
+                          >
+                            {reportLoadingMore && (
+                              <Loader2 className="animate-spin" />
+                            )}
+                            加载更早报告
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <p className="text-muted-foreground border-y py-3 text-sm">
+                  尚未有观察运行生成完整报告。
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-3 pt-4">
+              <div>
+                <h2 className="flex items-center gap-1.5 text-sm font-semibold">
                   <Clock3 className="size-3.5" />
                   运行历史
                 </h2>
@@ -1070,6 +1285,8 @@ export default function MonitoringPage() {
                       run.status,
                       run.skip_reason,
                     );
+                    const reportThreadId =
+                      run.summary?.deep_analysis?.thread_id;
                     return (
                       <div
                         key={run.run_id}
@@ -1099,9 +1316,24 @@ export default function MonitoringPage() {
                             </p>
                           )}
                         </div>
-                        <span className="text-muted-foreground text-xs tabular-nums">
-                          {formatTime(run.started_at)}
-                        </span>
+                        <div className="flex items-center justify-between gap-3 sm:justify-end">
+                          <span className="text-muted-foreground text-xs tabular-nums">
+                            {formatTime(run.started_at)}
+                          </span>
+                          {reportThreadId ? (
+                            <Link
+                              href={`/competition/${reportThreadId}`}
+                              className="text-foreground hover:text-primary inline-flex shrink-0 items-center gap-1 text-xs font-medium"
+                            >
+                              <FileText className="size-3.5" />
+                              查看完整报告
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground/70 shrink-0 text-[11px]">
+                              本次无报告版本
+                            </span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -1120,7 +1352,8 @@ export default function MonitoringPage() {
               </p>
               {changes.length > 0 && (
                 <p className="text-muted-foreground mt-1 text-xs">
-                  共 {changes.length} 条记录，涉及 {changeProducts} 个竞品；相同来源和内容已合并展示
+                  共 {changes.length} 条记录，涉及 {changeProducts}{" "}
+                  个竞品；相同来源和内容已合并展示
                 </p>
               )}
             </div>
@@ -1138,7 +1371,7 @@ export default function MonitoringPage() {
                     </div>
                     <button
                       type="button"
-                      className="min-w-0 text-left hover:bg-muted/40"
+                      className="hover:bg-muted/40 min-w-0 text-left"
                       onClick={() => void openChangeDetail(change)}
                       aria-label={`查看 ${displayProduct(change.product)} 的变化详情`}
                     >
@@ -1162,7 +1395,8 @@ export default function MonitoringPage() {
                       <div className="text-muted-foreground mt-1 text-xs break-words">
                         {change.old_value
                           ? displayFactText(change.old_value)
-                          : "无旧值"} →{" "}
+                          : "无旧值"}{" "}
+                        →{" "}
                         {change.new_value
                           ? displayFactText(change.new_value)
                           : "无新值"}
@@ -1426,7 +1660,9 @@ function ChangeDetailSheet({
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
         <SheetHeader className="border-b pr-12">
           <SheetTitle>
-            {current ? `${displayProduct(current.product)} · ${displayDimension(current.dimension)}` : "变化详情"}
+            {current
+              ? `${displayProduct(current.product)} · ${displayDimension(current.dimension)}`
+              : "变化详情"}
           </SheetTitle>
           <SheetDescription>
             {current
@@ -1439,7 +1675,11 @@ function ChangeDetailSheet({
             <Loader2 className="size-4 animate-spin" /> 正在加载变化详情
           </div>
         )}
-        {error && <StatusNotice tone="danger" title="详情加载失败">{error}</StatusNotice>}
+        {error && (
+          <StatusNotice tone="danger" title="详情加载失败">
+            {error}
+          </StatusNotice>
+        )}
         {current && detail && (
           <div className="space-y-6 p-4">
             <section className="space-y-2">
@@ -1447,7 +1687,9 @@ function ChangeDetailSheet({
                 tone={current.material ? "warning" : "neutral"}
                 label={changeTypeLabel(current)}
               />
-              <p className="text-muted-foreground text-sm">{changeExplanation(current)}</p>
+              <p className="text-muted-foreground text-sm">
+                {changeExplanation(current)}
+              </p>
             </section>
 
             <section className="space-y-2">
@@ -1455,14 +1697,18 @@ function ChangeDetailSheet({
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="min-w-0 border p-3">
                   <div className="text-muted-foreground text-xs">旧值</div>
-                  <p className="mt-2 break-words text-sm">
-                    {current.old_value ? displayFactText(current.old_value) : "暂无旧版本"}
+                  <p className="mt-2 text-sm break-words">
+                    {current.old_value
+                      ? displayFactText(current.old_value)
+                      : "暂无旧版本"}
                   </p>
                 </div>
                 <div className="min-w-0 border p-3">
                   <div className="text-muted-foreground text-xs">新值</div>
-                  <p className="mt-2 break-words text-sm">
-                    {current.new_value ? displayFactText(current.new_value) : "暂无新值"}
+                  <p className="mt-2 text-sm break-words">
+                    {current.new_value
+                      ? displayFactText(current.new_value)
+                      : "暂无新值"}
                   </p>
                 </div>
               </div>
@@ -1474,33 +1720,46 @@ function ChangeDetailSheet({
                 {(detail.sources.length > 0
                   ? detail.sources
                   : detail.item
-                    ? [{
-                        source_url: detail.item.source_url,
-                        canonical_url: detail.item.source_url,
-                        source_domain: detail.item.source_domain,
-                        source_type: detail.item.source_type,
-                        status: "healthy",
-                        last_fetched_at: detail.item.fetched_at,
-                        failure_count: 0,
-                      }]
+                    ? [
+                        {
+                          source_url: detail.item.source_url,
+                          canonical_url: detail.item.source_url,
+                          source_domain: detail.item.source_domain,
+                          source_type: detail.item.source_type,
+                          status: "healthy",
+                          last_fetched_at: detail.item.fetched_at,
+                          failure_count: 0,
+                        },
+                      ]
                     : []
                 ).map((source) => (
-                  <div key={`${source.source_url}-${source.source_type}`} className="space-y-1 py-3">
+                  <div
+                    key={`${source.source_url}-${source.source_type}`}
+                    className="space-y-1 py-3"
+                  >
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="font-medium">{source.source_domain || "未知来源"}</span>
-                      <span className="text-muted-foreground">{sourceTypeLabel(source.source_type)}</span>
-                      {source.status !== "healthy" && <StatusBadge tone="warning" label="来源需检查" />}
+                      <span className="font-medium">
+                        {source.source_domain || "未知来源"}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {sourceTypeLabel(source.source_type)}
+                      </span>
+                      {source.status !== "healthy" && (
+                        <StatusBadge tone="warning" label="来源需检查" />
+                      )}
                     </div>
                     <a
                       href={source.source_url || source.canonical_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 break-all text-xs"
+                      className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 text-xs break-all"
                     >
                       {source.source_url || source.canonical_url}
                       <ExternalLink className="size-3 shrink-0" />
                     </a>
-                    <p className="text-muted-foreground text-xs">采集：{formatTime(source.last_fetched_at)}</p>
+                    <p className="text-muted-foreground text-xs">
+                      采集：{formatTime(source.last_fetched_at)}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -1509,17 +1768,32 @@ function ChangeDetailSheet({
             <section className="space-y-2">
               <h3 className="text-sm font-semibold">版本记录</h3>
               {detail.versions.length === 0 ? (
-                <p className="text-muted-foreground text-sm">暂无可用版本记录。</p>
+                <p className="text-muted-foreground text-sm">
+                  暂无可用版本记录。
+                </p>
               ) : (
                 <div className="divide-y border-y">
                   {detail.versions.map((version) => (
-                    <div key={`${version.version}-${version.content_hash}`} className="py-3">
+                    <div
+                      key={`${version.version}-${version.content_hash}`}
+                      className="py-3"
+                    >
                       <div className="flex items-center justify-between gap-3 text-xs">
-                        <span className="font-medium">版本 {version.version}</span>
-                        <span className="text-muted-foreground">{formatTime(version.observed_at)}</span>
+                        <span className="font-medium">
+                          版本 {version.version}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {formatTime(version.observed_at)}
+                        </span>
                       </div>
-                      <p className="text-muted-foreground mt-1 break-words text-xs">
-                        {displayFactText(String(version.payload.value || version.payload.label || "暂无内容"))}
+                      <p className="text-muted-foreground mt-1 text-xs break-words">
+                        {displayFactText(
+                          String(
+                            version.payload.value ||
+                              version.payload.label ||
+                              "暂无内容",
+                          ),
+                        )}
                       </p>
                     </div>
                   ))}
@@ -1528,8 +1802,10 @@ function ChangeDetailSheet({
             </section>
 
             <details className="border-t pt-3">
-              <summary className="text-muted-foreground cursor-pointer text-xs">查看原始数据</summary>
-              <pre className="bg-muted/40 mt-2 max-h-56 overflow-auto p-3 text-[10px] whitespace-pre-wrap break-words">
+              <summary className="text-muted-foreground cursor-pointer text-xs">
+                查看原始数据
+              </summary>
+              <pre className="bg-muted/40 mt-2 max-h-56 overflow-auto p-3 text-[10px] break-words whitespace-pre-wrap">
                 {JSON.stringify(detail.change.payload, null, 2)}
               </pre>
             </details>
@@ -1723,8 +1999,8 @@ function ScheduleDialog({
                       interval_minutes: event.target.value,
                     }))
                   }
-                placeholder="60"
-              />
+                  placeholder="60"
+                />
               </label>
             )}
             <p className="text-muted-foreground mt-2 text-xs">

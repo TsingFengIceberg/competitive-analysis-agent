@@ -128,6 +128,41 @@ class TestGetReport:
         finally:
             competition_router._store.pop(thread_id, None)
 
+    @pytest.mark.asyncio
+    async def test_report_normalizes_legacy_observation_brief(self, client):
+        import app.competition_router as competition_router
+
+        thread_id = "comp-watch-legacy-brief"
+        competition_router._store[thread_id] = {
+            "status": "completed",
+            "query": "定期观察竞品：Cursor, Codex",
+            "products": ["Cursor", "Codex"],
+            "state": {
+                "analysis_brief": {
+                    "target_products": ["Cursor", "Codex"],
+                    "market_scope": "Global / unspecified",
+                    "dimensions": [
+                        {"id": "features", "label": "features"},
+                        {"id": "pricing", "label": "pricing"},
+                    ],
+                    "effective_dimensions": [
+                        {"id": "features", "label": "features"},
+                        {"id": "pricing", "label": "pricing"},
+                    ],
+                },
+            },
+            "token_usage": [],
+        }
+        try:
+            response = await client.get(f"/api/competition/report/{thread_id}")
+            assert response.status_code == 200
+            brief = response.json()["analysis_brief"]
+            assert brief["objective"] == "竞品分析"
+            assert brief["ambiguities"] == []
+            assert sum(item["weight"] for item in brief["dimensions"]) == pytest.approx(1.0)
+        finally:
+            competition_router._store.pop(thread_id, None)
+
 
 class TestStream:
     @pytest.mark.asyncio

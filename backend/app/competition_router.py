@@ -549,6 +549,25 @@ def _load_phases(thread_id: str) -> list[dict]:
         return []
 
 
+def _normalize_restored_analysis_brief(
+    raw_brief: dict | None,
+    *,
+    query: str = "",
+    products: list[str] | None = None,
+) -> dict | None:
+    """Upgrade legacy persisted briefs to the current frontend contract."""
+    if not raw_brief:
+        return None
+    from competition.brief import normalize_brief
+
+    try:
+        return normalize_brief(query, editable=raw_brief).model_dump()
+    except (TypeError, ValueError):
+        logger.warning("Normalizing an incomplete persisted analysis brief")
+        fallback_products = products or raw_brief.get("target_products") or []
+        return normalize_brief(query, target_products=fallback_products).model_dump()
+
+
 def _list_history(thread_id: str) -> list[dict]:
     """List all version entries from persisted immutable metadata."""
     rows = _history_store.list_by_thread(thread_id)
@@ -1285,7 +1304,11 @@ async def get_report(
             created_at=db_record.get("created_at"),
             phases=restored_phases,
             stage_results=restored_stage_results,
-            analysis_brief=db_record.get("analysis_brief"),
+            analysis_brief=_normalize_restored_analysis_brief(
+                db_record.get("analysis_brief"),
+                query=db_record.get("query", ""),
+                products=db_record.get("products") or [],
+            ),
         )
 
     status = entry.get("status", "unknown")
@@ -1309,7 +1332,11 @@ async def get_report(
         created_at=entry.get("created_at"),
         phases=[] if compact else _load_phases(thread_id),
         stage_results=[] if compact else (entry.get("state", {}).get("stage_results") or []),
-        analysis_brief=entry.get("state", {}).get("analysis_brief"),
+        analysis_brief=_normalize_restored_analysis_brief(
+            entry.get("state", {}).get("analysis_brief"),
+            query=entry.get("query", ""),
+            products=entry.get("products") or [],
+        ),
     )
 
 
@@ -2418,19 +2445,42 @@ async def get_intelligence_change(change_id: str, fastapi_request: Request):
         repository.close()
 
 
+def _build_observation_brief(schedule: dict, *, complexity: str) -> dict:
+    """Build the canonical analysis scope shared by observation runs."""
+    from datetime import UTC, datetime
+
+    from competition.brief import normalize_brief
+    from competition.schema import BriefTimeRange
+
+    products = schedule.get("products") or []
+    dimension_ids = schedule.get("dimensions") or ["features", "pricing", "users", "market"]
+    query = f"定期观察竞品：{', '.join(products)}"
+    brief = normalize_brief(
+        query,
+        target_products=products,
+        persona="pm",
+        extracted={
+            "dimensions": dimension_ids,
+            "market_scope": schedule.get("market_scope") or "Global / unspecified",
+            "complexity": complexity,
+            "output_focus": ["实质变化", "关键差异", "可执行建议"],
+        },
+    )
+    brief.time_range = BriefTimeRange(mode="latest", label="最新可用证据")
+    brief.confirmation_source = "bypass"
+    brief.confirmed_at = datetime.now(UTC).isoformat()
+    return brief.model_dump()
+
+
 def _run_scheduled_collection(schedule: dict) -> dict:
     """Run the existing Collector for a watch schedule and return change stats."""
     from competition.nodes.collector import collector_node
 
-    dimensions = [{"id": item, "label": item} for item in (schedule.get("dimensions") or ["features", "pricing", "users", "market"])]
+    brief = _build_observation_brief(schedule, complexity="quick")
     state = {
         "user_request": f"定期观察竞品：{', '.join(schedule.get('products') or [])}",
         "target_products": schedule.get("products") or [],
-        "analysis_brief": {
-            "target_products": schedule.get("products") or [], "market_scope": schedule.get("market_scope") or "Global / unspecified",
-            "effective_dimensions": dimensions, "dimensions": dimensions, "evidence_policy": "official_preferred",
-            "time_range": {"mode": "latest", "label": "最新可用证据"},
-        },
+        "analysis_brief": brief,
         "collected_data": [],
         "industry": "general",
         "complexity": "quick",
@@ -2455,12 +2505,7 @@ def _run_scheduled_deep_analysis(schedule: dict, _collection_result: dict) -> di
 
     thread_id = f"comp-watch-{uuid.uuid4().hex[:12]}"
     products = schedule.get("products") or []
-    dimensions = [{"id": item, "label": item} for item in (schedule.get("dimensions") or ["features", "pricing", "users", "market"])]
-    brief = {
-        "target_products": products, "market_scope": schedule.get("market_scope") or "Global / unspecified",
-        "effective_dimensions": dimensions, "dimensions": dimensions, "evidence_policy": "official_preferred",
-        "time_range": {"mode": "latest", "label": "最新可用证据"}, "complexity": "standard",
-    }
+    brief = _build_observation_brief(schedule, complexity="standard")
     user_id = schedule.get("user_id") or "default"
     _associate_thread(thread_id, user_id)
     _store[thread_id] = {
@@ -2573,6 +2618,32 @@ async def list_observation_runs(
     repository = ScheduleRepository()
     try:
         return {"runs": repository.list_runs(user_id=_get_user_id(fastapi_request), schedule_id=schedule_id, limit=limit)}
+    finally:
+        repository.close()
+
+
+@router.get("/observation/reports")
+async def list_observation_reports(
+    fastapi_request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return a compact, paginated index of observation runs with reports."""
+    from competition.observation_scheduler import ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        user_id = _get_user_id(fastapi_request)
+        return {
+            "reports": repository.list_report_runs(
+                user_id=user_id,
+                limit=limit,
+                offset=offset,
+            ),
+            "total": repository.count_report_runs(user_id=user_id),
+            "limit": limit,
+            "offset": offset,
+        }
     finally:
         repository.close()
 

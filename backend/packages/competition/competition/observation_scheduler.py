@@ -175,6 +175,58 @@ class ScheduleRepository:
             result.append(item)
         return result
 
+    def list_report_runs(
+        self,
+        *,
+        user_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """List observation runs that produced a deep-analysis report.
+
+        This intentionally projects only report-index fields instead of
+        returning the potentially large collection summary stored per run.
+        """
+        clauses = ["NULLIF(json_extract(r.summary_json, '$.deep_analysis.thread_id'), '') IS NOT NULL"]
+        params: list[Any] = []
+        if user_id is not None:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        params.extend((max(1, min(int(limit), 500)), max(0, int(offset))))
+        rows = self.conn.execute(
+            f"""SELECT r.run_id, r.schedule_id, s.name, r.started_at, r.finished_at,
+                       r.status,
+                       COALESCE(json_extract(r.summary_json, '$.material_changes'), 0),
+                       json_extract(r.summary_json, '$.deep_analysis.thread_id'),
+                       json_extract(r.summary_json, '$.deep_analysis.status')
+                FROM observation_runs r
+                JOIN observation_schedules s ON s.schedule_id = r.schedule_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY r.started_at DESC LIMIT ? OFFSET ?""",
+            params,
+        ).fetchall()
+        keys = (
+            "run_id", "schedule_id", "schedule_name", "started_at", "finished_at",
+            "status", "material_changes", "thread_id", "report_status",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def count_report_runs(self, *, user_id: str | None = None) -> int:
+        """Count observation runs that produced a deep-analysis report."""
+        clauses = ["NULLIF(json_extract(r.summary_json, '$.deep_analysis.thread_id'), '') IS NOT NULL"]
+        params: list[Any] = []
+        if user_id is not None:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
+        row = self.conn.execute(
+            f"""SELECT COUNT(*)
+                FROM observation_runs r
+                JOIN observation_schedules s ON s.schedule_id = r.schedule_id
+                WHERE {' AND '.join(clauses)}""",
+            params,
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     @staticmethod
     def _decode(row) -> dict:
         keys = (

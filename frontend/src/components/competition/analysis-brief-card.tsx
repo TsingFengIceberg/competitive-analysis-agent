@@ -110,28 +110,39 @@ export default function AnalysisBriefCard({
   }, [listAnalysisTemplates, readOnly]);
   const update = (patch: Partial<AnalysisBrief>) =>
     onChange?.({ ...brief, ...patch });
-  const validationErrors = useMemo(() => briefValidationErrors(brief), [brief]);
+  const validationErrors = useMemo(
+    () => (readOnly ? [] : briefValidationErrors(brief)),
+    [brief, readOnly],
+  );
   const unresolvedAmbiguities = useMemo(
-    () => unresolvedBriefAmbiguities(brief),
-    [brief],
+    () => (readOnly ? [] : unresolvedBriefAmbiguities(brief)),
+    [brief, readOnly],
   );
 
   if (readOnly) {
+    const products = Array.isArray(brief.target_products)
+      ? brief.target_products
+      : [];
+    const dimensions = Array.isArray(brief.dimensions) ? brief.dimensions : [];
     return (
       <section className="ui-inset p-4 text-sm" aria-label="Analysis scope">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <strong className="text-strong">分析范围</strong>
-          <span className="ui-meta">{brief.target_products.join(" · ")}</span>
+          <span className="ui-meta">{products.join(" · ")}</span>
         </div>
-        <p className="text-muted-foreground mt-2 text-xs">{brief.objective}</p>
+        {brief.objective && (
+          <p className="text-muted-foreground mt-2 text-xs">
+            {brief.objective}
+          </p>
+        )}
         <p className="text-muted-foreground mt-2 text-xs">
-          {brief.dimensions
+          {dimensions
             .map(
               (dimension) =>
-                `${dimension.label} ${Math.round(dimension.weight * 100)}%`,
+                `${dimension.label || dimension.id}${Number.isFinite(dimension.weight) ? ` ${Math.round(dimension.weight * 100)}%` : ""}`,
             )
             .join(" · ")}{" "}
-          · {brief.market_scope}
+          {brief.market_scope ? `· ${brief.market_scope}` : ""}
         </p>
       </section>
     );

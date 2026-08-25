@@ -71,7 +71,7 @@ Realtime SSE events and lightweight polling jointly maintain analysis state. Pol
 
 ### Continuous competitor monitoring
 
-The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixed-interval incremental collection. The system persists fact baselines and every run, and starts a full deep analysis only when a material change is detected, avoiding repeated searches and model calls. Users can edit, pause, run immediately, or delete schedules and review the change timeline, run history, alert rules, quiet hours, cooldowns, pending alerts, and delivery history in one place. Tasks, rules, and records are isolated per user.
+The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixed-interval incremental collection. The system persists fact baselines and every run, and starts a full deep analysis only when a material change is detected, avoiding repeated searches and model calls. Users can edit, pause, run immediately, or delete schedules and review the change timeline, run history, alert rules, quiet hours, cooldowns, pending alerts, and delivery history in one place. Runs with material changes expose direct links to their complete reports, while a latest-changed shortcut and a separately paginated report archive keep every older report accessible even when recent runs are unchanged. Unchanged runs are explicitly marked as having no report version. Tasks, rules, and records are isolated per user.
 
 ### Research workbench
 
