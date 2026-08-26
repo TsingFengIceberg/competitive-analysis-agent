@@ -212,6 +212,22 @@ class IntelligenceRepository:
         ).fetchall()
         return [self._decode_item(row) for row in rows]
 
+    def get_items_by_keys(self, item_keys: list[str]) -> list[dict]:
+        """Load an explicit set of intelligence facts in caller-provided order."""
+        if not item_keys:
+            return []
+        unique_keys = list(dict.fromkeys(item_keys))[:200]
+        placeholders = ",".join("?" for _ in unique_keys)
+        rows = self.conn.execute(
+            f"SELECT item_key, product, dimension, label, value, source_url, canonical_url, "
+            f"source_type, source_domain, scope, published_at, fetched_at, first_seen_at, "
+            f"last_seen_at, content_hash, confidence, credibility_tier, status, payload_json "
+            f"FROM intelligence_items WHERE item_key IN ({placeholders})",
+            unique_keys,
+        ).fetchall()
+        items = {item["item_key"]: item for item in (self._decode_item(row) for row in rows)}
+        return [items[key] for key in unique_keys if key in items]
+
     def get_versions(self, item_key: str) -> list[dict]:
         rows = self.conn.execute(
             "SELECT version_no, content_hash, payload_json, observed_at FROM intelligence_item_versions WHERE item_key = ? ORDER BY version_no ASC",

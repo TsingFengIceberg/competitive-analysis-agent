@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, LogOut, Radar, Settings } from "lucide-react";
+import { Library, LogOut, Plus, Radar, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
@@ -140,6 +140,20 @@ export function CompetitionSidebar({
               >
                 <Radar size={16} />
                 <span>竞品观察</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={pathname === "/competition/knowledge"}
+              asChild
+            >
+              <Link
+                className="text-muted-foreground"
+                href="/competition/knowledge"
+              >
+                <Library size={16} />
+                <span>本地知识库</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

@@ -232,6 +232,7 @@ def build_analysis_context_pack(state: dict, repository=None, *, now: datetime |
             "missing_dimensions": missing_dimensions,
             "fallback_reason": fetch_error or ("当前运行使用了未持久化的采集结果" if not durable and transient else ""),
             "fetch_error": fetch_error,
+            "rag_retrieval": (state.get("collection_summary") or {}).get("rag_retrieval", {}),
         },
         "dimensions": by_dimension,
         "evidence": selected,

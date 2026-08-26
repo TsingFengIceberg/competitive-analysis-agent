@@ -256,6 +256,13 @@ class CollectedDataPoint(BaseModel):
     )
     collected_at: str = Field(..., description="ISO 8601 timestamp")
     published_at: str | None = Field(default=None, description="Source publication/update time when available")
+    knowledge_document_id: str | None = Field(default=None, description="Local knowledge document ID")
+    knowledge_chunk_id: str | None = Field(default=None, description="Local knowledge chunk ID")
+    source_authority: str | None = Field(default=None, description="Evidence authority tier")
+    section_path: str | None = Field(default=None, description="Document heading path")
+    page_no: int | None = Field(default=None, ge=1, description="Source page number when available")
+    retrieval_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_title: str | None = None
 
 
 # ── Edge ②: Analyst → Reviewer (§3.13.3) ──

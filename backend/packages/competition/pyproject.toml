@@ -4,13 +4,20 @@ version = "0.1.0"
 description = "Competitive Analysis Agent LangGraph workflow"
 requires-python = ">=3.12"
 dependencies = [
+    "charset-normalizer>=3.4.4",
+    "docling>=2.122.0,<3.0.0",
+    "jieba>=0.42.1,<1.0.0",
     "langchain>=1.2.15",
     "langchain-openai>=1.2.1",
     "langgraph>=1.1.9",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",
+    "qdrant-client[fastembed]>=1.19.0,<2.0.0",
+    "sentence-transformers>=6.0.0,<7.0.0",
     "tavily-python>=0.7.17",
     "ddgs>=9.10.0",
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
 ]
 
 [build-system]

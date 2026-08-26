@@ -16,8 +16,9 @@ import json
 import logging
 import queue as _queue_mod
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
@@ -33,6 +34,8 @@ _observation_runtime_thread: threading.Thread | None = None
 _observation_runtime_stop = threading.Event()
 _observation_runtime_last_tick: str | None = None
 _observation_runtime_last_error: str | None = None
+_knowledge_executor: ThreadPoolExecutor | None = None
+_knowledge_executor_lock = threading.Lock()
 
 # ── Persisted version history ──
 
@@ -133,6 +136,35 @@ class AlertRuleRequest(BaseModel):
     timezone: str = "Asia/Shanghai"
     delivery_mode: str = "immediate"
     enabled: bool = True
+
+
+class KnowledgeInboxImportRequest(BaseModel):
+    relative_path: str = Field(..., min_length=1, max_length=500)
+    title: str = Field(default="", max_length=300)
+    product: str = Field(default="", max_length=200)
+    dimension: str = Field(default="", max_length=120)
+    market_scope: str = Field(default="Global / unspecified", max_length=200)
+    authority_tier: str = "third_party"
+    published_at: str | None = None
+
+
+class KnowledgeIntelligenceImportRequest(BaseModel):
+    item_keys: list[str] = Field(..., min_length=1, max_length=200)
+    title: str = Field(default="Intelligence pool selection", max_length=300)
+    authority_tier: str = "structured_fact"
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    products: list[str] = Field(default_factory=list, max_length=20)
+    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    market_scope: str = Field(default="", max_length=200)
+    source_types: list[str] = Field(default_factory=list, max_length=20)
+    authority_tiers: list[str] = Field(default_factory=list, max_length=10)
+    published_after: str | None = None
+    published_before: str | None = None
+    include_reports: bool = False
+    limit: int = Field(default=12, ge=1, le=50)
 
 
 class StreamEvent(BaseModel):
@@ -1061,6 +1093,287 @@ def _parse_json_safe(raw: str) -> dict | list | None:
 # ── Routes ──
 
 
+def _process_knowledge_job(job_id: str, operation: str) -> None:
+    """Run CPU-heavy parsing/indexing outside the HTTP request lifecycle."""
+    from competition.knowledge_service import get_knowledge_service
+
+    service = get_knowledge_service()
+    if operation == "rebuild":
+        service.process_rebuild_job(job_id)
+    else:
+        service.process_job(job_id)
+
+
+def _queue_knowledge_job(result: dict) -> dict:
+    global _knowledge_executor
+    job = result.get("job") or result
+    if job.get("status") == "queued":
+        with _knowledge_executor_lock:
+            if _knowledge_executor is None:
+                _knowledge_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-ingest")
+            executor = _knowledge_executor
+        executor.submit(_process_knowledge_job, job["job_id"], job.get("operation", "ingest"))
+    return result
+
+
+def stop_knowledge_runtime() -> None:
+    """Stop accepting ingestion work while allowing an active atomic update to finish."""
+    global _knowledge_executor
+    with _knowledge_executor_lock:
+        executor = _knowledge_executor
+        _knowledge_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=False)
+
+
+@router.get("/knowledge/status")
+async def knowledge_status(fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    return await asyncio.to_thread(get_knowledge_service().status, _get_user_id(fastapi_request))
+
+
+@router.post("/knowledge/upload", status_code=202)
+async def upload_knowledge_document(
+    fastapi_request: Request,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    product: str = Form(""),
+    dimension: str = Form(""),
+    market_scope: str = Form("Global / unspecified"),
+    authority_tier: str = Form("third_party"),
+    published_at: str | None = Form(None),
+) -> dict:
+    from competition.knowledge_service import MAX_UPLOAD_BYTES, get_knowledge_service
+
+    filename = file.filename or "document"
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    await file.close()
+    try:
+        result = await asyncio.to_thread(
+            get_knowledge_service().register_bytes,
+            user_id=_get_user_id(fastapi_request),
+            filename=filename,
+            data=data,
+            title=title,
+            media_type=file.content_type or "application/octet-stream",
+            product=product,
+            dimension=dimension,
+            market_scope=market_scope,
+            authority_tier=authority_tier,
+            published_at=published_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _queue_knowledge_job(result)
+
+
+@router.post("/knowledge/import-inbox", status_code=202)
+async def import_knowledge_inbox(
+    body: KnowledgeInboxImportRequest,
+    fastapi_request: Request,
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        result = await asyncio.to_thread(
+            get_knowledge_service().register_inbox_path,
+            user_id=_get_user_id(fastapi_request),
+            relative_path=body.relative_path,
+            title=body.title,
+            product=body.product,
+            dimension=body.dimension,
+            market_scope=body.market_scope,
+            authority_tier=body.authority_tier,
+            published_at=body.published_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _queue_knowledge_job(result)
+
+
+def _load_intelligence_items(item_keys: list[str]) -> list[dict]:
+    from competition.intelligence_repo import IntelligenceRepository
+
+    with IntelligenceRepository() as repository:
+        return repository.get_items_by_keys(item_keys)
+
+
+@router.post("/knowledge/import-intelligence", status_code=202)
+async def import_intelligence_to_knowledge(
+    body: KnowledgeIntelligenceImportRequest,
+    fastapi_request: Request,
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    items = await asyncio.to_thread(_load_intelligence_items, body.item_keys)
+    if not items:
+        raise HTTPException(status_code=404, detail="No matching intelligence items were found")
+    service = get_knowledge_service()
+    imports: list[dict] = []
+    for item in items:
+        markdown = (
+            f"# {item['label']}\n\n"
+            f"- Product: {item['product']}\n"
+            f"- Dimension: {item['dimension']}\n"
+            f"- Source: {item['source_url']}\n"
+            f"- Published: {item.get('published_at') or 'unknown'}\n"
+            f"- Observed: {item.get('fetched_at') or 'unknown'}\n"
+            f"- Confidence: {item.get('confidence', 0.5)}\n\n"
+            f"## Fact\n\n{item['value']}\n"
+        )
+        result = await asyncio.to_thread(
+            service.register_bytes,
+            user_id=_get_user_id(fastapi_request),
+            filename=f"{item['item_key']}.md",
+            data=markdown.encode(),
+            title=f"{body.title}: {item['label']}",
+            media_type="text/markdown",
+            source_type="intelligence",
+            source_uri=f"intelligence://{item['item_key']}",
+            product=item["product"],
+            dimension=item["dimension"],
+            market_scope=item.get("scope") or "Global / unspecified",
+            authority_tier=body.authority_tier,
+            published_at=item.get("published_at"),
+            observed_at=item.get("fetched_at"),
+            metadata={"intelligence_item_key": item["item_key"], "original_source_url": item["source_url"]},
+        )
+        imports.append(_queue_knowledge_job(result))
+    return {"imports": imports, "requested": len(body.item_keys), "found": len(items)}
+
+
+@router.get("/knowledge/documents")
+async def list_knowledge_documents(
+    fastapi_request: Request,
+    status: str | None = None,
+    product: str | None = None,
+    source_type: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    documents = await asyncio.to_thread(
+        get_knowledge_service().list_documents,
+        _get_user_id(fastapi_request),
+        status=status,
+        product=product,
+        source_type=source_type,
+        limit=limit,
+        offset=offset,
+    )
+    return {"documents": documents}
+
+
+@router.get("/knowledge/documents/{document_id}")
+async def get_knowledge_document(document_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    document = await asyncio.to_thread(
+        get_knowledge_service().document_detail, document_id, _get_user_id(fastapi_request)
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Knowledge document not found")
+    return document
+
+
+@router.delete("/knowledge/documents/{document_id}")
+async def delete_knowledge_document(document_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    deleted = await asyncio.to_thread(
+        get_knowledge_service().delete_document, document_id, _get_user_id(fastapi_request)
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Knowledge document not found")
+    return {"deleted": True, "document_id": document_id}
+
+
+@router.post("/knowledge/documents/{document_id}/reindex", status_code=202)
+async def reindex_knowledge_document(document_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        job = await asyncio.to_thread(
+            get_knowledge_service().queue_reindex, document_id, _get_user_id(fastapi_request)
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _queue_knowledge_job(job)
+
+
+@router.post("/knowledge/rebuild", status_code=202)
+async def rebuild_knowledge_index(fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    job = await asyncio.to_thread(get_knowledge_service().queue_rebuild, _get_user_id(fastapi_request))
+    return _queue_knowledge_job(job)
+
+
+@router.get("/knowledge/jobs")
+async def list_knowledge_jobs(
+    fastapi_request: Request, limit: int = Query(default=50, ge=1, le=200)
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    jobs = await asyncio.to_thread(get_knowledge_service().list_jobs, _get_user_id(fastapi_request), limit)
+    return {"jobs": jobs}
+
+
+@router.get("/knowledge/jobs/{job_id}")
+async def get_knowledge_job(job_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    job = await asyncio.to_thread(get_knowledge_service().get_job, job_id, _get_user_id(fastapi_request))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Knowledge job not found")
+    return job
+
+
+@router.post("/knowledge/search")
+async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_index import KnowledgeUnavailableError
+    from competition.knowledge_service import get_knowledge_service
+    from competition.knowledge_types import RetrievalFilters
+
+    filters = RetrievalFilters(
+        products=tuple(body.products),
+        dimensions=tuple(body.dimensions),
+        market_scope=body.market_scope,
+        source_types=tuple(body.source_types),
+        authority_tiers=tuple(body.authority_tiers),
+        published_after=body.published_after,
+        published_before=body.published_before,
+        include_reports=body.include_reports,
+    )
+    try:
+        hits = await asyncio.to_thread(
+            get_knowledge_service().search,
+            body.query,
+            user_id=_get_user_id(fastapi_request),
+            filters=filters,
+            limit=body.limit,
+        )
+    except KnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"query": body.query, "hits": [hit.to_dict() for hit in hits]}
+
+
+@router.get("/knowledge/chunks/{chunk_id}")
+async def get_knowledge_chunk(chunk_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    chunk = await asyncio.to_thread(
+        get_knowledge_service().get_chunk, chunk_id, _get_user_id(fastapi_request)
+    )
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Knowledge chunk not found")
+    return chunk
+
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeResponse:
     """Create an analysis thread and start only after its Brief is effective."""
@@ -1102,6 +1415,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
         "state": {
             "messages": [],
             "thread_id": thread_id,
+            "user_id": user_id,
             "user_request": request.query,
             "target_products": brief.target_products,
             "analysis_brief": brief.model_dump(),
@@ -1147,6 +1461,7 @@ def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, use
         entry["status"] = "running"
         entry.setdefault("state", {})["analysis_brief"] = analysis_brief
         entry["state"]["thread_id"] = thread_id
+        entry["state"]["user_id"] = user_id
         entry["state"]["target_products"] = analysis_brief.get("target_products", [])
     try:
         asyncio.get_event_loop().run_in_executor(
@@ -2443,6 +2758,24 @@ async def get_intelligence_change(change_id: str, fastapi_request: Request):
         return detail
     finally:
         repository.close()
+
+
+@router.get("/intelligence/items")
+async def list_intelligence_items(
+    fastapi_request: Request,
+    product: str | None = None,
+    dimension: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """Expose durable facts for explicit user-selected knowledge ingestion."""
+    del fastapi_request
+    from competition.intelligence_repo import IntelligenceRepository
+
+    def load() -> list[dict]:
+        with IntelligenceRepository() as repository:
+            return repository.list_items(product=product, dimension=dimension, limit=limit)
+
+    return {"items": await asyncio.to_thread(load)}
 
 
 def _build_observation_brief(schedule: dict, *, complexity: str) -> dict:

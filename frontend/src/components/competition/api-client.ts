@@ -110,6 +110,81 @@ export interface AnalyzeResponse {
   analysis_brief: AnalysisBrief | null;
 }
 
+export type KnowledgeAuthority =
+  | "primary"
+  | "structured_fact"
+  | "change_event"
+  | "third_party"
+  | "report";
+
+export interface KnowledgeDocument {
+  document_id: string;
+  title: string;
+  filename: string;
+  source_type: string;
+  source_uri: string;
+  product: string;
+  dimension: string;
+  market_scope: string;
+  authority_tier: KnowledgeAuthority;
+  status: "queued" | "processing" | "indexed" | "partial" | "failed";
+  current_version: number;
+  size_bytes: number;
+  updated_at: string;
+  error?: string | null;
+}
+
+export interface KnowledgeJob {
+  job_id: string;
+  document_id?: string | null;
+  operation: "ingest" | "reindex" | "rebuild";
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  error?: string | null;
+  created_at: string;
+  finished_at?: string | null;
+}
+
+export interface KnowledgeHit {
+  chunk_id: string;
+  document_id: string;
+  version_no: number;
+  title: string;
+  text: string;
+  contextual_text: string;
+  source_uri: string;
+  source_type: string;
+  authority_tier: KnowledgeAuthority;
+  product: string;
+  dimension: string;
+  section_path: string;
+  page_no?: number | null;
+  published_at?: string | null;
+  observed_at?: string | null;
+  score: number;
+  confidence: number;
+}
+
+export interface KnowledgeStatus {
+  database: {
+    documents: number;
+    indexed: number;
+    degraded: number;
+    size_bytes: number;
+    chunks: number;
+    active_jobs: number;
+  };
+  index: {
+    available: boolean;
+    collection_exists?: boolean;
+    points?: number;
+    error?: string;
+  };
+  supported_extensions: string[];
+  max_upload_bytes: number;
+  inbox: string;
+}
+
 export interface ReportResponse {
   thread_id: string;
   status: string;
@@ -289,6 +364,14 @@ export interface ReportData {
       snapshot_fetched_at?: string;
       snapshot_char_count?: number;
       snapshot_sha256?: string;
+      knowledge_document_id?: string | null;
+      knowledge_chunk_id?: string | null;
+      source_authority?: KnowledgeAuthority | null;
+      source_title?: string | null;
+      section_path?: string | null;
+      page_no?: number | null;
+      retrieval_score?: number | null;
+      is_local_knowledge?: boolean;
     }
   >;
   quality_summary: Record<string, unknown>;

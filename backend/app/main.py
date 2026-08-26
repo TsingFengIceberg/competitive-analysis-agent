@@ -246,7 +246,7 @@ def create_app() -> FastAPI:
 
     # ── Competition router ──
     from app.competition_router import router as competition_router
-    from app.competition_router import start_observation_runtime, stop_observation_runtime
+    from app.competition_router import start_observation_runtime, stop_knowledge_runtime, stop_observation_runtime
 
     app.include_router(competition_router)
 
@@ -263,6 +263,10 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def stop_background_services():
         stop_observation_runtime()
+        stop_knowledge_runtime()
+        from competition.knowledge_service import close_knowledge_service
+
+        close_knowledge_service()
 
     # ── Health ──
     @app.get("/health")
@@ -280,7 +284,20 @@ def create_app() -> FastAPI:
             conn = init_db()
             conn.execute("SELECT 1")
             conn.close()
-            return {"status": "ready", "database": "connected"}
+            try:
+                from competition.knowledge_service import get_knowledge_service
+
+                knowledge = await __import__("asyncio").to_thread(
+                    get_knowledge_service().status, "default"
+                )
+            except Exception as knowledge_error:
+                knowledge = {"index": {"available": False, "error": str(knowledge_error)[:200]}}
+            return {
+                "status": "ready",
+                "database": "connected",
+                "knowledge": knowledge,
+                "knowledge_required": False,
+            }
         except Exception as e:
             return {"status": "not ready", "database": str(e)[:100]}
 

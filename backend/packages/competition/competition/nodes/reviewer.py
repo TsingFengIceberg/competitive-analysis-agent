@@ -118,7 +118,7 @@ def check_url_reachability(points: list[dict]) -> list[dict]:
     gaps = []
     for dp in points:
         url = dp.get("source_url", "")
-        if not url or not url.startswith("http"):
+        if not url or not url.startswith(("http://", "https://", "knowledge://")):
             gaps.append(_make_gap(
                 gid=f"gap-g1-{dp.get('id', '?')}",
                 gap_type="fact_error",

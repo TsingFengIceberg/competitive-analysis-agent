@@ -73,6 +73,12 @@ Realtime SSE events and lightweight polling jointly maintain analysis state. Pol
 
 The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixed-interval incremental collection. The system persists fact baselines and every run, and starts a full deep analysis only when a material change is detected, avoiding repeated searches and model calls. Users can edit, pause, run immediately, or delete schedules and review the change timeline, run history, alert rules, quiet hours, cooldowns, pending alerts, and delivery history in one place. Runs with material changes expose direct links to their complete reports, while a latest-changed shortcut and a separately paginated report archive keep every older report accessible even when recent runs are unchanged. Unchanged runs are explicitly marked as having no report version. Tasks, rules, and records are isolated per user.
 
+### Local knowledge base and basic RAG
+
+The **Local Knowledge Base** workspace supports file uploads, imports from a restricted Inbox path, and explicit promotion of selected monitoring facts. TXT, Markdown, HTML, CSV, and JSON use lightweight parsers; PDF, Office documents, and images are processed locally by Docling and RapidOCR. Original files, normalized Markdown, document versions, structured chunks, and ingestion jobs are stored separately. Identical content does not create another version, and a failed replacement keeps the previous indexed version usable.
+
+Retrieval combines BGE-M3 dense vectors and Chinese-aware FastEmbed BM25 sparse vectors through Qdrant RRF fusion, followed by bge-reranker-v2-m3. Filters cover user, product, dimension, market, authority tier, source type, and publication time. Collector reuses local evidence before fresh web collection, while hits flow through the existing `CollectedDataPoint`, Analysis Context Pack, and `traceability_map` contracts. The report source inspector opens the exact local section, page, and chunk. Missing models or index assets produce an explicit degraded state and do not block realtime collection.
+
 ### Research workbench
 
 Completed reports open in a full-screen research workbench with version tree, report, quality gate, sources, evidence graph, and process views. It supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
@@ -140,8 +146,10 @@ The system can send completion notifications, export reports to Feishu documents
 | **DAG visualization** | [@xyflow/react](https://reactflow.dev/) |
 | **LLM** | OpenAI-compatible APIs |
 | **Search** | Tavily, DuckDuckGo, Jina AI, and provider-native web search |
+| **RAG retrieval** | BGE-M3, FastEmbed BM25, Qdrant Local RRF fusion, and bge-reranker-v2-m3 |
+| **Document parsing** | Docling, RapidOCR, and BeautifulSoup for PDF, Office, image, HTML, Markdown, CSV, JSON, and TXT |
 | **Deployment** | uv + pnpm, with Next.js proxying FastAPI |
-| **Persistence** | SQLite WAL: analysis history, phase history, source credibility, product baseline, observation schedules/runs, alert rules/events, and branch snapshots |
+| **Persistence** | SQLite for business/knowledge metadata, Qdrant Local for rebuildable vectors, and `.ci-agent/knowledge` for source and normalized files |
 
 ## Quick Start
 
@@ -217,6 +225,29 @@ FastAPI starts an in-process observation scheduler by default, which is appropri
 
 Manage schedules and alert rules at `/competition/monitoring`. Multi-process or horizontally scaled deployments should enable only one scheduler instance or move polling to a dedicated task worker.
 
+### Local RAG models and storage
+
+After installing dependencies, prepare the local models once. This requires several GB of disk and network access to Hugging Face:
+
+```bash
+uv run --project backend --locked python scripts/setup-rag-models.py
+```
+
+Models are stored under `.ci-agent/models`; originals, normalized Markdown, and the Qdrant index are stored under `.ci-agent/knowledge`. Both locations are ignored by Git. Runtime loading is local-only and never downloads models automatically. Open `/competition/knowledge` to manage documents. The default per-file limit is 50 MB; server-side files may be placed in `.ci-agent/knowledge/inbox` and imported by relative path.
+
+The following environment variables override storage and retrieval defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CI_AGENT_DB_PATH` | `.ci-agent/competition.db` | SQLite path for business and knowledge metadata |
+| `CI_AGENT_KNOWLEDGE_ROOT` | `.ci-agent/knowledge` | Root for originals, normalized files, Inbox, and indexes |
+| `CI_AGENT_RAG_EMBEDDING_PATH` | `.ci-agent/models/embeddings/bge-m3` | Dense embedding model directory |
+| `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-encoder reranker directory |
+| `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 model cache |
+| `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local directory |
+| `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | Maximum uploaded file size in bytes |
+| `CI_AGENT_RAG_MIN_SCORE` | `0.08` | Minimum final reranked score |
+
 ### DB mode
 
 Open `/competition/settings` and configure LLM providers, API keys, search backends, Feishu credentials, and per-agent parameters. Settings are stored per user in `.ci-agent/competition.db` and synchronized across devices after login.
@@ -280,12 +311,14 @@ competitive-analysis-agent/
 ├── backend/
 │   ├── app/                           # FastAPI entrypoint and gateway routes
 │   ├── packages/competition/           # LangGraph agents, schemas, tools, DB, and BranchTree
+│   │   └── competition/knowledge_*.py   # Parsing, chunking, versioning, indexing, and retrieval
 │   ├── tests/                          # Backend tests
 │   ├── pyproject.toml                  # uv workspace configuration
 │   └── uv.lock                         # Locked dependencies
 ├── frontend/
 │   └── src/
 │       ├── app/competition/             # Competition routes and shell
+│       │   └── knowledge/               # Knowledge management and retrieval verification
 │       ├── app/api/competition/         # SSE proxy route
 │       └── components/competition/      # Chat, report, workbench, evidence, and trace UI
 ├── scripts/                            # Build, run, stop, and configuration helpers
@@ -340,6 +373,18 @@ competitive-analysis-agent/
 | GET | `/api/competition/observation/runs` | List observation run history for the current user |
 | GET | `/api/competition/intelligence/changes` | List the incremental intelligence change timeline |
 | GET | `/api/competition/intelligence/changes/{change_id}` | Get one change with its current fact, sources, and version history |
+| GET | `/api/competition/intelligence/items` | List intelligence facts available for explicit knowledge ingestion |
+| GET | `/api/competition/knowledge/status` | Get knowledge database, model, and index status |
+| POST | `/api/competition/knowledge/upload` | Upload and asynchronously parse, chunk, and index a document |
+| POST | `/api/competition/knowledge/import-inbox` | Import a file by restricted Inbox-relative path |
+| POST | `/api/competition/knowledge/import-intelligence` | Promote explicitly selected intelligence facts into knowledge documents |
+| GET | `/api/competition/knowledge/documents` | List documents with status, product, source-type, and pagination filters |
+| GET / DELETE | `/api/competition/knowledge/documents/{document_id}` | Inspect versions/chunks or delete a document |
+| POST | `/api/competition/knowledge/documents/{document_id}/reindex` | Reparse and reindex the current usable version |
+| GET | `/api/competition/knowledge/jobs`, `/api/competition/knowledge/jobs/{job_id}` | Inspect asynchronous ingestion and rebuild jobs |
+| POST | `/api/competition/knowledge/search` | Run filtered hybrid retrieval and reranking |
+| GET | `/api/competition/knowledge/chunks/{chunk_id}` | Read an authorized original evidence chunk |
+| POST | `/api/competition/knowledge/rebuild` | Rebuild the current user's Qdrant index from SQLite |
 | GET / POST | `/api/competition/alerts/rules` | List or create alert rules |
 | PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | Edit or delete an alert rule |
 | GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | List alert history or dispatch pending alerts |
@@ -348,13 +393,13 @@ Use `?summary=true` on report polling requests for a lightweight active-state re
 
 ## Roadmap
 
-The current system uses realtime search and SQLite persistence and is ready for an end-to-end competition demonstration. Productization directions reserved by the architecture include:
+The current system combines realtime search with local hybrid RAG and persists business, knowledge, and evidence data in SQLite, Qdrant Local, and file storage. It is ready for an end-to-end competition demonstration. Productization directions reserved by the architecture include:
 
-### RAG and vector storage
+### Advanced RAG
 
-- Reuse product baselines and historical evidence across analyses.
-- Use semantic retrieval for Reviewer evidence checks, including paraphrases and cross-language claims.
-- Compare long-term market and pricing trends across accumulated reports.
+- Add query rewriting, HyDE, and multi-hop decomposition before hybrid retrieval, measured against an offline evaluation set.
+- Add project/team knowledge spaces, document approval, retention policies, and auditable deletion.
+- Extend Reviewer to cross-language semantic claim verification and generate long-term insights from versioned evidence.
 
 ### Higher concurrency and productionization
 

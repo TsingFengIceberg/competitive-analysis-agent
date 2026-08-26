@@ -909,6 +909,14 @@ def _build_traceability_map(collected: list[dict]) -> dict:
                 "collected_at": dp.get("collected_at", ""),
                 "published_at": dp.get("published_at"),
                 "publication_date_status": _publication_date_status(dp.get("published_at"), None),
+                "knowledge_document_id": dp.get("knowledge_document_id"),
+                "knowledge_chunk_id": dp.get("knowledge_chunk_id"),
+                "source_authority": dp.get("source_authority"),
+                "source_title": dp.get("source_title"),
+                "section_path": dp.get("section_path"),
+                "page_no": dp.get("page_no"),
+                "retrieval_score": dp.get("retrieval_score"),
+                "is_local_knowledge": bool(dp.get("knowledge_chunk_id")),
                 **snapshot_fields,
             }
     return trace

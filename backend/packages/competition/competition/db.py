@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Default DB path — competition-specific database
-DEFAULT_DB_PATH = Path(".ci-agent/competition.db")
+DEFAULT_DB_PATH = Path(os.getenv("CI_AGENT_DB_PATH", ".ci-agent/competition.db"))
 
 # Credibility score adjustments (§3.14.2)
 CREDIBILITY_DELTA: dict[str, float] = {
@@ -35,6 +36,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")
     # IOPS optimisation: NORMAL synchronous only fsyncs at WAL checkpoints,
     # not on every commit. Dramatically reduces IOPS on low-quota cloud disks.
@@ -254,6 +256,104 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_notification_deliveries_event ON notification_deliveries(event_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+            document_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            source_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            filename TEXT NOT NULL DEFAULT '',
+            media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+            source_type TEXT NOT NULL DEFAULT 'upload',
+            source_uri TEXT NOT NULL DEFAULT '',
+            product TEXT NOT NULL DEFAULT '',
+            dimension TEXT NOT NULL DEFAULT '',
+            market_scope TEXT NOT NULL DEFAULT 'Global / unspecified',
+            authority_tier TEXT NOT NULL DEFAULT 'third_party',
+            status TEXT NOT NULL DEFAULT 'queued',
+            current_version INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL DEFAULT '',
+            file_path TEXT NOT NULL DEFAULT '',
+            normalized_path TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            published_at TEXT,
+            observed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            error TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(user_id, source_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_documents_user ON knowledge_documents(user_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_documents_scope ON knowledge_documents(user_id, product, dimension, published_at);
+
+        CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+            document_id TEXT NOT NULL,
+            version_no INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            normalized_path TEXT NOT NULL DEFAULT '',
+            char_count INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            created_at TEXT NOT NULL,
+            superseded_at TEXT,
+            error TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (document_id, version_no),
+            FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_versions_hash ON knowledge_document_versions(content_hash);
+
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            version_no INTEGER NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            ordinal INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            contextual_text TEXT NOT NULL,
+            section_path TEXT NOT NULL DEFAULT '',
+            page_no INTEGER,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            qdrant_point_id TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (document_id, version_no) REFERENCES knowledge_document_versions(document_id, version_no) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id, version_no, active, ordinal);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_user ON knowledge_chunks(user_id, active);
+
+        CREATE TABLE IF NOT EXISTS knowledge_ingestion_jobs (
+            job_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            document_id TEXT,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_user ON knowledge_ingestion_jobs(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
+            retrieval_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            query TEXT NOT NULL,
+            filters_json TEXT NOT NULL DEFAULT '{}',
+            result_count INTEGER NOT NULL DEFAULT 0,
+            selected_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'completed',
+            error TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_user ON knowledge_retrieval_logs(user_id, created_at DESC);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)

@@ -77,6 +77,12 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 侧边栏的“竞品观察”工作台用于管理定时或固定间隔的增量采集任务。系统持久化事实基线和每次运行记录，只有检测到实质变化时才启动完整深度分析，从而避免重复搜索和模型调用。工作台可编辑、暂停、立即运行或删除观察任务，并集中查看变化时间线、任务运行历史、告警规则、静默与冷却策略、待发告警及投递历史；检测到实质变化的运行记录会直接提供对应完整报告入口，并通过“最新有变化的完整报告”和支持继续加载的独立历史报告归档保证全部旧报告不被近期无变化记录遮挡，无变化运行则明确标记为没有报告版本；所有任务、规则和记录均按用户隔离。
 
+### 本地知识库与基础 RAG
+
+侧边栏的“本地知识库”支持上传文件、导入受限 Inbox 路径，以及从持续观察情报池显式选择事实沉淀。TXT、Markdown、HTML、CSV、JSON 直接解析，PDF、Office 文档和图片由 Docling + RapidOCR 在本地解析；原文件、规范化 Markdown、文档版本、结构化分块和处理任务分别保存，重复内容不会生成新版本，新版本索引失败时继续保留旧版本可用。
+
+检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、竞品、维度、市场、来源权威等级和时间范围过滤。Collector 会先复用本地证据再补充实时搜索，命中结果沿用 `CollectedDataPoint`、Analysis Context Pack 和 `traceability_map` 证据契约；报告来源检查器可直接查看本地文档章节、页码和原文分块。模型或索引不可用时 RAG 明确降级，分析主流程仍可继续实时采集。
+
 ### 研究工作台
 
 报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
@@ -147,8 +153,10 @@ Agent 执行过程版本化管理——每次 HITL 干预创建新分支，支�
 | **DAG 可视化** | [@xyflow/react](https://reactflow.dev/) (ReactFlow) |
 | **LLM** | OpenAI 兼容 API |
 | **搜索** | Tavily / DuckDuckGo / Jina AI / LLM 内置联网搜索 |
+| **RAG 检索** | BGE-M3 + FastEmbed BM25 + Qdrant Local 混合召回 + bge-reranker-v2-m3 |
+| **文档解析** | Docling + RapidOCR + BeautifulSoup；支持 PDF / Office / 图片 / HTML / Markdown / CSV / JSON / TXT |
 | **部署** | uv + pnpm（Next.js 直接代理 FastAPI） |
-| **持久化** | SQLite (WAL mode): analysis_history + phase_history + source_credibility + product_baseline + observation schedules/runs + alert rules/events + branch_snapshots |
+| **持久化** | SQLite（业务与知识元数据）+ Qdrant Local（可重建向量索引）+ `.ci-agent/knowledge`（原文与规范化文档） |
 
 ---
 
@@ -228,6 +236,29 @@ FastAPI 启动时默认开启进程内观察调度器，适用于当前单进程
 | `CI_AGENT_NOTIFICATION_WEBHOOK` | 空 | 可选的告警 Webhook；飞书通知仍沿用当前用户设置 |
 
 观察任务和告警规则在 `/competition/monitoring` 管理。多进程或横向扩容部署应只启用一个调度实例，或将轮询迁移到独立任务工作器。
+
+### 本地 RAG 模型与存储
+
+依赖安装完成后，执行一次模型准备脚本（约需数 GB 磁盘和可访问 Hugging Face 的网络）：
+
+```bash
+uv run --project backend --locked python scripts/setup-rag-models.py
+```
+
+模型默认写入 `.ci-agent/models`，原始资料、规范化 Markdown 和 Qdrant 索引默认写入 `.ci-agent/knowledge`，两者均被 Git 忽略。运行时只加载本地资产，不会自动联网下载模型。知识库入口为 `/competition/knowledge`，默认单文件上限 50 MB；可将服务器本地资料放入 `.ci-agent/knowledge/inbox` 后，通过界面填写相对路径导入。
+
+以下环境变量可覆盖默认位置与检索阈值：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CI_AGENT_DB_PATH` | `.ci-agent/competition.db` | 业务与知识元数据 SQLite 路径 |
+| `CI_AGENT_KNOWLEDGE_ROOT` | `.ci-agent/knowledge` | 原文、规范化文档、Inbox 与索引根目录 |
+| `CI_AGENT_RAG_EMBEDDING_PATH` | `.ci-agent/models/embeddings/bge-m3` | Dense embedding 模型目录 |
+| `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-Encoder 重排模型目录 |
+| `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 模型缓存目录 |
+| `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local 存储目录 |
+| `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | 单文件上传字节上限 |
+| `CI_AGENT_RAG_MIN_SCORE` | `0.08` | 重排后的最低返回分数 |
 
 ### DB 模式（默认）
 
@@ -589,6 +620,11 @@ competitive-analysis-agent/
 │   │       ├── dag.py                 # DAG 状态提取器
 │   │       ├── db.py                  # SQLite 业务表 (4 张)
 │   │       ├── executor.py            # LLM 调用封装
+│   │       ├── knowledge_service.py   # 知识摄取、版本、检索与证据导出
+│   │       ├── knowledge_parser.py    # 多格式本地解析与 OCR
+│   │       ├── knowledge_chunking.py  # 结构感知上下文化分块
+│   │       ├── knowledge_index.py     # Dense/Sparse Qdrant + 重排
+│   │       ├── knowledge_repo.py      # 知识文档、版本、分块和任务持久化
 │   │       ├── graph_algorithms.py    # 图拓扑算法
 │   │       ├── industry.py            # 行业 profile 定义
 │   │       ├── config.py              # 配置模型
@@ -603,6 +639,7 @@ competitive-analysis-agent/
 │       │   ├── competition-shell.tsx  # SidebarProvider + competition 布局状态
 │       │   ├── layout.tsx             # 根布局
 │       │   ├── page.tsx               # 首页 (新建分析)
+│       │   ├── knowledge/             # 本地知识库管理与检索验证
 │       │   └── [thread_id]/           # 分析详情页 (动态路由)
 │       ├── app/api/competition/       # SSE 流代理端点
 │       └── components/competition/    # 竞赛 UI 组件
@@ -694,6 +731,18 @@ competitive-analysis-agent/
 | GET | `/api/competition/observation/runs` | 查询当前用户的观察运行历史 |
 | GET | `/api/competition/intelligence/changes` | 查询增量情报变化时间线 |
 | GET | `/api/competition/intelligence/changes/{change_id}` | 查询单条变化详情、当前事实、来源和版本历史 |
+| GET | `/api/competition/intelligence/items` | 查询可显式沉淀到知识库的情报事实 |
+| GET | `/api/competition/knowledge/status` | 获取知识库、模型与索引状态 |
+| POST | `/api/competition/knowledge/upload` | 上传并异步解析、分块和索引资料 |
+| POST | `/api/competition/knowledge/import-inbox` | 从受限 Inbox 相对路径导入本地文件 |
+| POST | `/api/competition/knowledge/import-intelligence` | 将显式选择的情报事实沉淀为知识文档 |
+| GET | `/api/competition/knowledge/documents` | 按状态、竞品和来源类型分页查询资料 |
+| GET / DELETE | `/api/competition/knowledge/documents/{document_id}` | 查看版本与分块详情，或删除资料 |
+| POST | `/api/competition/knowledge/documents/{document_id}/reindex` | 重新解析并索引当前可用版本 |
+| GET | `/api/competition/knowledge/jobs`、`/api/competition/knowledge/jobs/{job_id}` | 查询异步导入与重建任务状态 |
+| POST | `/api/competition/knowledge/search` | 执行带元数据过滤的混合检索与重排 |
+| GET | `/api/competition/knowledge/chunks/{chunk_id}` | 获取用户有权访问的证据原文分块 |
+| POST | `/api/competition/knowledge/rebuild` | 从 SQLite 业务数据重建当前用户的 Qdrant 索引 |
 | GET / POST | `/api/competition/alerts/rules` | 查询或创建告警规则 |
 | PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | 编辑或删除告警规则 |
 | GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | 查询告警历史或投递待发告警 |
@@ -706,13 +755,13 @@ competitive-analysis-agent/
 
 ## 未来展望
 
-当前系统基于实时搜索 + SQLite 持久化，满足竞赛阶段端到端分析需求。以下方向为产品化迭代预留的架构设计：
+当前系统基于实时搜索 + 本地混合 RAG，并使用 SQLite、Qdrant Local 和文件存储持久化业务、知识与证据数据，满足竞赛阶段端到端分析需求。以下方向为产品化迭代预留的架构设计：
 
-### RAG + 向量数据库
+### RAG 深化
 
-- **跨分析知识复用**：将 `product_baseline` 表扩展为向量库，按产品名 + 属性做 embedding 检索。重复命中时直接复用历史采集结果，减少搜索 API 调用和 Token 消耗
-- **Reviewer 证据语义检索**：G10 数字校验目前做字面匹配。引入向量检索后，Reviewer 可以判断 claim 在所有来源中是否有**语义相近**的证据支撑，覆盖同义改写、跨语言等场景
-- **趋势对比分析**：多次分析积累后，跨时间向量检索历史报告中同类产品的变化趋势，生成"过去半年 AI 代码助手赛道定价变化"等长周期洞察
+- **查询理解与分解**：在现有混合检索前加入 query rewrite、HyDE 和多跳子问题规划，并以离线评测集约束召回收益
+- **更细粒度权限与生命周期**：增加项目/团队知识空间、文档审批、保留策略和可审计删除
+- **语义证据核验与长期洞察**：让 Reviewer 在本地原文中做跨语言 claim 核验，并基于多版本资料生成长期趋势对比
 
 ### 高并发与生产化
 

@@ -27,6 +27,17 @@ def collector_node(state: dict) -> dict:
     """
     task = _build_collector_task(state)
 
+    # Reuse curated local evidence first. Retrieval is optional at runtime: a
+    # missing model/index degrades to fresh collection instead of failing the graph.
+    local_points, rag_summary = _retrieve_local_knowledge(state)
+    if local_points:
+        task += (
+            "\n\nLOCAL KNOWLEDGE ALREADY AVAILABLE — use it to avoid duplicate searching "
+            "and focus fresh collection on missing or outdated evidence. Do not copy "
+            "these records into your JSON output; they are merged separately:\n"
+            + json.dumps(local_points, ensure_ascii=False, default=str)[:24000]
+        )
+
     # Phase 1: Real web search
     search_context = _run_searches(state)
     if search_context:
@@ -45,11 +56,19 @@ def collector_node(state: dict) -> dict:
             data_points = _parse_datapoints(raw_output)
         except Exception:
             logger.exception("Collector repair failed")
-    data_points = deduplicate_datapoints(data_points)
+    fresh_data_points = deduplicate_datapoints(data_points)
+    local_models: list[CollectedDataPoint] = []
+    for point in local_points:
+        try:
+            local_models.append(CollectedDataPoint.model_validate(point))
+        except Exception:
+            logger.warning("Discarding invalid local knowledge point %s", point.get("id"), exc_info=True)
+    data_points = deduplicate_datapoints(local_models + fresh_data_points)
     summary = build_collection_summary(data_points, state.get("target_products", []))
     summary["search_stats"] = _get_search_info()
     summary["complexity"] = state.get("complexity", "standard")
-    summary["intelligence_persistence"] = _persist_intelligence_items(state, data_points)
+    summary["rag_retrieval"] = rag_summary
+    summary["intelligence_persistence"] = _persist_intelligence_items(state, fresh_data_points)
 
     # ── Self-assessment (§3.17.2) ──
     target_products = state.get("target_products", [])
@@ -99,6 +118,27 @@ def collector_node(state: dict) -> dict:
         "collector_self_assessment": self_assessment,
         "questionnaire": questionnaire,
     }
+
+
+def _retrieve_local_knowledge(state: dict) -> tuple[list[dict], dict]:
+    """Return analysis-ready local evidence with explicit degradation status."""
+    try:
+        from competition.knowledge_service import get_knowledge_service
+
+        points = get_knowledge_service().retrieve_for_analysis(state)
+        return points, {
+            "status": "available" if points else "empty",
+            "hit_count": len(points),
+            "source": "local_hybrid_index",
+        }
+    except Exception as exc:
+        logger.warning("Local knowledge retrieval degraded: %s", exc)
+        return [], {
+            "status": "degraded",
+            "hit_count": 0,
+            "source": "local_hybrid_index",
+            "error": str(exc)[:240],
+        }
 
 
 def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -> dict:

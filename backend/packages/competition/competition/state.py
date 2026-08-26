@@ -29,6 +29,8 @@ class CompetitionState(AgentState):
     # ── User Input ──
     user_request: NotRequired[str | None]
     """Natural language analysis request from user."""
+    user_id: NotRequired[str | None]
+    """Owner used to isolate reusable local knowledge during retrieval."""
     target_products: NotRequired[list[str] | None]
     thread_id: NotRequired[str | None]
     """Analysis thread ID for logging and notification routing."""
