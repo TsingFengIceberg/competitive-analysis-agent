@@ -260,6 +260,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS knowledge_documents (
             document_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL DEFAULT 'default',
+            space_id TEXT NOT NULL DEFAULT '',
             source_key TEXT NOT NULL,
             title TEXT NOT NULL,
             filename TEXT NOT NULL DEFAULT '',
@@ -281,6 +282,12 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             error TEXT,
+            approval_status TEXT NOT NULL DEFAULT 'approved',
+            approved_by TEXT,
+            approved_at TEXT,
+            retention_until TEXT,
+            deleted_at TEXT,
+            deleted_by TEXT,
             metadata_json TEXT NOT NULL DEFAULT '{}',
             UNIQUE(user_id, source_key)
         );
@@ -354,10 +361,120 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_user ON knowledge_retrieval_logs(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_spaces (
+            space_id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            visibility TEXT NOT NULL DEFAULT 'private',
+            require_approval INTEGER NOT NULL DEFAULT 0,
+            retention_days INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_spaces_owner ON knowledge_spaces(owner_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_space_members (
+            space_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (space_id, user_id),
+            FOREIGN KEY (space_id) REFERENCES knowledge_spaces(space_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_members_user ON knowledge_space_members(user_id, role);
+
+        CREATE TABLE IF NOT EXISTS knowledge_deletion_audit (
+            audit_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_deletion_space ON knowledge_deletion_audit(space_id, deleted_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_entities (
+            entity_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            canonical_name TEXT NOT NULL,
+            entity_type TEXT NOT NULL DEFAULT 'product',
+            normalized_key TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(space_id, normalized_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_entities_space ON knowledge_entities(space_id, canonical_name);
+
+        CREATE TABLE IF NOT EXISTS knowledge_entity_aliases (
+            space_id TEXT NOT NULL,
+            alias_key TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (space_id, alias_key),
+            FOREIGN KEY (entity_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_events (
+            event_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            dimension TEXT NOT NULL DEFAULT 'general',
+            title TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            occurred_at TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'observed',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            cluster_key TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(space_id, cluster_key),
+            FOREIGN KEY (entity_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_events_scope ON knowledge_events(space_id, entity_id, occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_event_evidence (
+            event_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            version_no INTEGER NOT NULL,
+            chunk_id TEXT,
+            source_uri TEXT NOT NULL DEFAULT '',
+            authority_tier TEXT NOT NULL DEFAULT 'third_party',
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (event_id, document_id, version_no),
+            FOREIGN KEY (event_id) REFERENCES knowledge_events(event_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_insights (
+            insight_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            insight_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            status TEXT NOT NULL DEFAULT 'active',
+            period_start TEXT,
+            period_end TEXT,
+            evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+            generated_at TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_insights_space ON knowledge_insights(space_id, insight_type, generated_at DESC);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)
     _migrate_phase_history(conn)
+    _migrate_knowledge_governance(conn)
 
     # Content persistence: full fetched page text for evidence verification
     conn.execute("""
@@ -440,6 +557,27 @@ def _migrate_analysis_history(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
         except sqlite3.OperationalError:
             pass  # column already exists
+
+
+def _migrate_knowledge_governance(conn: sqlite3.Connection) -> None:
+    """Extend pre-space knowledge databases without discarding local content."""
+    migrations = (
+        "ALTER TABLE knowledge_documents ADD COLUMN space_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE knowledge_documents ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+        "ALTER TABLE knowledge_documents ADD COLUMN approved_by TEXT",
+        "ALTER TABLE knowledge_documents ADD COLUMN approved_at TEXT",
+        "ALTER TABLE knowledge_documents ADD COLUMN retention_until TEXT",
+        "ALTER TABLE knowledge_documents ADD COLUMN deleted_at TEXT",
+        "ALTER TABLE knowledge_documents ADD COLUMN deleted_by TEXT",
+    )
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_space ON knowledge_documents(space_id, approval_status, deleted_at, updated_at DESC)"
+    )
 
 
 # ── Source Credibility (§3.14.2) ──

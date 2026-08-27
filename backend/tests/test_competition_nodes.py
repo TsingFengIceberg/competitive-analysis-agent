@@ -462,6 +462,7 @@ from competition.nodes.reviewer import (  # noqa: E402
     check_source_diversity,
     check_statistical_outliers,
     check_url_reachability,
+    reviewer_node,
 )
 
 
@@ -675,6 +676,49 @@ class TestGenerateNotes:
         notes = _generate_notes([{"severity": "critical"}], 0.0)
         assert "1" in notes
         assert "critical" in notes
+
+
+class TestSemanticClaimVerification:
+    def test_reviewer_persists_supported_claims_and_grounding_metrics(self):
+        result = reviewer_node(
+            {
+                "user_id": "verification-test",
+                "target_products": ["Cursor"],
+                "analysis_result": {
+                    "comparison_matrix": {
+                        "products": ["Cursor"],
+                        "dimensions": ["pricing"],
+                        "cells": [
+                            {
+                                "product": "Cursor",
+                                "dimension": "pricing",
+                                "rating": 4,
+                                "evidence": "Cursor Pro costs $20 monthly.",
+                                "source_data_point_ids": ["dp-1"],
+                            }
+                        ],
+                    }
+                },
+                "collected_data": [
+                    {
+                        "id": "dp-1",
+                        "product": "Cursor",
+                        "category": "pricing",
+                        "label": "Pro price",
+                        "value": "Cursor Pro costs $20 monthly.",
+                        "source_url": "https://cursor.com/pricing",
+                        "source_type": "official",
+                        "confidence": 0.95,
+                        "collected_at": "2026-08-27T00:00:00+00:00",
+                    }
+                ],
+            }
+        )
+        verification = result["claim_verification"]
+        assert verification["supported"] == 1
+        assert verification["groundedness"] == 1.0
+        assert result["review_verdict"]["claim_verification"] == verification
+        assert result["review_verdict"]["quality_summary"]["claim_verification"]["citation_precision"] == 1.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -933,6 +977,69 @@ class TestWriterNarrative:
         sections = result["report_data"]["sections"]
         assert "矩阵结论" in next(s for s in sections if s["id"] == "sec-executive-summary")["content"]
         assert "[LLM" not in str(sections)
+
+    def test_writer_only_exposes_supported_evidence_as_citations(self, monkeypatch):
+        monkeypatch.setattr(
+            "competition.executor.execute_structured_agent",
+            lambda *args, **kwargs: ({"executive_summary": "仅使用已核验证据 [1]", "recommendations": ["继续验证 [1]"]}, 4),
+        )
+        verification = {
+            "schema_version": 1,
+            "status": "ready",
+            "total": 1,
+            "supported": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "groundedness": 1.0,
+            "citation_precision": 1.0,
+            "numeric_consistency": 1.0,
+            "claims": [
+                {
+                    "claim_id": "claim-1",
+                    "claim_text": "A costs $20.",
+                    "origin": "comparison_matrix",
+                    "status": "supported",
+                    "evidence": [
+                        {"data_point_id": "dp-1", "relation": "supports", "semantic_score": 0.9},
+                        {"data_point_id": "dp-2", "relation": "contradicts", "semantic_score": 0.8},
+                    ],
+                }
+            ],
+        }
+        result = writer_node(
+            {
+                "analysis_result": {
+                    "comparison_matrix": {
+                        "products": ["A"],
+                        "dimensions": ["pricing"],
+                        "summary": "A costs $20.",
+                        "cells": [
+                            {
+                                "product": "A",
+                                "dimension": "pricing",
+                                "rating": 4,
+                                "evidence": "A costs $20.",
+                                "source_data_point_ids": ["dp-1", "dp-2"],
+                            }
+                        ],
+                    }
+                },
+                "review_verdict": {"quality_summary": {}, "claim_verification": verification},
+                "target_products": ["A"],
+                "collected_data": [
+                    {"id": "dp-1", "source_url": "https://official.example", "collected_at": "2026-08-27"},
+                    {"id": "dp-2", "source_url": "https://conflict.example", "collected_at": "2026-08-27"},
+                ],
+            }
+        )
+        report = result["report_data"]
+        matrix = next(section for section in report["sections"] if section["id"] == "sec-comparison-matrix")
+        sources = next(section for section in report["sections"] if section["id"] == "sec-sources")
+        assert matrix["source_ids"] == ["1"]
+        assert sources["source_ids"] == ["1"]
+        assert report["traceability_map"]["1"]["verified"] is True
+        assert report["traceability_map"]["2"]["verified"] is False
+        assert report["claim_verification"]["claims"][0]["evidence"][0]["citation_id"] == "1"
 
 
 class TestComputeMetrics:

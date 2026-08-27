@@ -81,11 +81,15 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 侧边栏的“本地知识库”支持上传文件、导入受限 Inbox 路径，以及从持续观察情报池显式选择事实沉淀。TXT、Markdown、HTML、CSV、JSON 直接解析，PDF、Office 文档和图片由 Docling + RapidOCR 在本地解析；原文件、规范化 Markdown、文档版本、结构化分块和处理任务分别保存，重复内容不会生成新版本，新版本索引失败时继续保留旧版本可用。
 
-检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、竞品、维度、市场、来源权威等级和时间范围过滤。Collector 会先复用本地证据再补充实时搜索，命中结果沿用 `CollectedDataPoint`、Analysis Context Pack 和 `traceability_map` 证据契约；报告来源检查器可直接查看本地文档章节、页码和原文分块。模型或索引不可用时 RAG 明确降级，分析主流程仍可继续实时采集。
+检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、知识空间、竞品、维度、市场、来源权威等级、发布时间以及当前/历史/全部/指定时间点版本过滤。查询规划器会让单一事实问题走低成本直查，将比较、时序和多维问题拆成多查询首跳与证据桥接跳，再对重复命中做融合。旧版本继续保存在 SQLite 和 Qdrant 中，索引重建会恢复全部成功版本；从持续观察导入事实时会按原始观察时间依次沉淀完整版本序列。
+
+知识空间提供所有者、编辑者和只读成员角色。空间可以要求资料审批、设置保留天数，审批前或驳回后的内容不会进入 Agent 证据；到期资料会从索引和文件存储中清理，同时保留不含正文的删除审计。已批准版本会归一化竞品实体，将相似的跨来源事实归并成事件并标记单源观察或多源印证，再以“事实、推断、待验证假设”三层生成长期洞察，避免把推测伪装成结论。知识库页面同时展示版本变化、数值冲突、实体事件、分层洞察和治理状态。
+
+Collector 会先复用本地证据再补充实时搜索。Reviewer 从对比矩阵、SWOT、趋势和动态洞察中提取事实性主张，批量结合明确引用与本地语义检索，将每条主张标记为“证据支持”“存在矛盾”或“证据不足”，并检查数字与否定关系。Writer 只能把确认支持的证据作为正文引用，矛盾和相关但不足的材料仍保留在报告审计数据中。命中与核验结果沿用 `CollectedDataPoint`、Analysis Context Pack、`ReviewVerdict`、`ReportData` 和 `traceability_map` 契约；模型或索引不可用时核验会明确标记降级，分析主流程仍可继续。
 
 ### 研究工作台
 
-报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、来源、证据图谱和执行流程。工作台支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
+报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、语义核验、长期洞察、来源、证据图谱和执行流程。核验视图展示结论有据率、引用精确率、数字一致率以及每条主张的支持、矛盾和不足证据，并可跳转到报告来源或打开指定本地历史分块。洞察视图保留报告生成时匹配到的事实、推断和待验证假设，并区分已关联本次证据与仅作研判背景的内容。工作台同时支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
 
 每个报告版本都会保存不可变的完整快照，包含报告正文、分析结果、Reviewer 判定、阶段结果、Token 用量、采集数据、Analysis Brief、原始请求和返工意见。版本详情接口和工作台切换会按指定版本加载这些数据，质量、来源、证据和流程面板不会混入当前版本内容。历史数据按快照状态标记为“完整快照”“部分快照”或“不可恢复”，旧数据缺失时明确提示而不虚构报告。
 
@@ -247,6 +251,14 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 
 模型默认写入 `.ci-agent/models`，原始资料、规范化 Markdown 和 Qdrant 索引默认写入 `.ci-agent/knowledge`，两者均被 Git 忽略。运行时只加载本地资产，不会自动联网下载模型。知识库入口为 `/competition/knowledge`，默认单文件上限 50 MB；可将服务器本地资料放入 `.ci-agent/knowledge/inbox` 后，通过界面填写相对路径导入。
 
+FastAPI 默认在后台预热本地检索模型，避免第一次分析承担完整模型加载时间。分析检索会规范化常见竞品别名与中英文维度名，将多个“竞品 × 维度”查询批量编码，并缓存重复的查询向量和检索结果；资料新版本激活、删除或索引重建后会自动清除对应用户的结果缓存。
+
+默认严格评测集 `evals/rag/real-v1.json` 由带来源 URL、采集时间和人工预期标签的公开一手竞品文档快照组成；`basic-v1.json` 保留为明确标记的合成单元回归集。评测数据不会写入业务知识库。以下命令会在临时 SQLite 和内存 Qdrant 中完成摄取、分级查询规划、检索和主张核验，输出 Recall@5、MRR、NDCG@5、无答案拒答率、追溯完整率、P50/P95 延迟、直查/多跳路由准确率、问题拆解覆盖率、主张状态准确率、矛盾召回率、引用精确率、数字一致性准确率及结论有据率，并将详细报告写入已忽略的 `.ci-agent/evaluations/`：
+
+```bash
+make rag-eval
+```
+
 以下环境变量可覆盖默认位置与检索阈值：
 
 | 变量 | 默认值 | 说明 |
@@ -259,6 +271,10 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 | `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local 存储目录 |
 | `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | 单文件上传字节上限 |
 | `CI_AGENT_RAG_MIN_SCORE` | `0.08` | 重排后的最低返回分数 |
+| `CI_AGENT_RAG_PREWARM` | `true` | 是否在 FastAPI 启动后后台预热本地检索模型 |
+| `CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE` | `256` | 进程内查询向量 LRU 缓存容量，设为 `0` 可禁用 |
+| `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | 按用户和过滤条件隔离的检索结果 LRU 缓存容量 |
+| `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | 检索结果缓存有效期，设为 `0` 可禁用 |
 
 ### DB 模式（默认）
 
@@ -733,6 +749,13 @@ competitive-analysis-agent/
 | GET | `/api/competition/intelligence/changes/{change_id}` | 查询单条变化详情、当前事实、来源和版本历史 |
 | GET | `/api/competition/intelligence/items` | 查询可显式沉淀到知识库的情报事实 |
 | GET | `/api/competition/knowledge/status` | 获取知识库、模型与索引状态 |
+| GET / POST / PATCH | `/api/competition/knowledge/spaces` | 管理项目知识空间、审批和保留策略 |
+| GET / PUT / DELETE | `/api/competition/knowledge/spaces/{space_id}/members` | 管理空间成员及只读/编辑权限 |
+| POST | `/api/competition/knowledge/documents/{document_id}/review` | 批准或驳回待审资料 |
+| GET | `/api/competition/knowledge/events` | 查询归一化实体的跨来源事件时间线 |
+| GET / POST | `/api/competition/knowledge/insights` / `/api/competition/knowledge/insights/refresh` | 查询或重算事实、推断和假设三层洞察 |
+| GET | `/api/competition/knowledge/deletions` | 查询可审计删除记录 |
+| POST | `/api/competition/knowledge/retention/run` | 立即执行到期保留策略 |
 | POST | `/api/competition/knowledge/upload` | 上传并异步解析、分块和索引资料 |
 | POST | `/api/competition/knowledge/import-inbox` | 从受限 Inbox 相对路径导入本地文件 |
 | POST | `/api/competition/knowledge/import-intelligence` | 将显式选择的情报事实沉淀为知识文档 |
@@ -759,9 +782,9 @@ competitive-analysis-agent/
 
 ### RAG 深化
 
-- **查询理解与分解**：在现有混合检索前加入 query rewrite、HyDE 和多跳子问题规划，并以离线评测集约束召回收益
-- **更细粒度权限与生命周期**：增加项目/团队知识空间、文档审批、保留策略和可审计删除
-- **语义证据核验与长期洞察**：让 Reviewer 在本地原文中做跨语言 claim 核验，并基于多版本资料生成长期趋势对比
+- **受评测约束的生成式查询增强**：在当前零 LLM 的直查/多跳规划器之上，对确有收益的复杂问题增加可关闭的模型改写或 HyDE，并继续用真实黄金集约束成本和召回
+- **事件关系图与人工研判闭环**：在现有实体事件、跨来源归并和三层洞察之上，增加可编辑关系、假设批准/驳回、研判反馈与历史准确率
+- **持续扩充真实评测覆盖**：逐步加入经授权的真实报告、观察历史、PDF/OCR 难例、跨语言问题和高相似负样本，不使用业务数据训练或污染生产知识库
 
 ### 高并发与生产化
 

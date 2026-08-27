@@ -309,6 +309,14 @@ Dimensions: {", ".join(dimensions)}
 STRUCTURED ANALYSIS CONTEXT PACK (authoritative evidence scope and quality):
 {_context_excerpt(state)}
 
+LONG-HORIZON CONTEXT (facts, inferences, and hypotheses are explicitly labeled):
+{json.dumps(state.get("long_term_insights") or [], ensure_ascii=False, default=str)[:16000]}
+
+LONG-HORIZON RULES:
+- This context may identify a trend or question worth analyzing, but it is not a substitute for source evidence.
+- Use only listed source_data_point_ids in report claims; context_only items cannot support a rating or citation.
+- Keep hypotheses labeled as hypotheses and do not convert them into factual conclusions.
+
 Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with citation
 """
 

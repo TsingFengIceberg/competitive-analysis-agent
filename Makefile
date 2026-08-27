@@ -1,4 +1,4 @@
-.PHONY: help install dev watch start stop restart clean test lint format typecheck build
+.PHONY: help install dev watch start stop restart clean test rag-eval lint format typecheck build
 
 UV_CACHE_DIR ?= $(CURDIR)/.ci-agent/uv-cache
 export UV_CACHE_DIR
@@ -12,6 +12,7 @@ help:
 	@echo "  make stop       Stop services started by this repository"
 	@echo "  make restart    Restart in development mode"
 	@echo "  make test       Run backend and frontend tests"
+	@echo "  make rag-eval   Run the versioned local RAG golden-set evaluation"
 	@echo "  make lint       Run Python and frontend linters"
 	@echo "  make typecheck  Run the frontend TypeScript checker"
 	@echo "  make build      Build the frontend"
@@ -42,6 +43,9 @@ clean:
 test:
 	cd backend && uv run pytest
 	cd frontend && pnpm test
+
+rag-eval:
+	cd backend && uv run --locked python ../scripts/evaluate-rag.py --strict
 
 lint:
 	cd backend && uv run ruff check app packages/competition/competition tests

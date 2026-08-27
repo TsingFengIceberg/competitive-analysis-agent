@@ -425,6 +425,69 @@ class AnalysisResult(BaseModel):
 # ── Edge ③: Reviewer → Writer (§3.13.4) ──
 
 
+class ClaimEvidenceReference(BaseModel):
+    """One auditable evidence relationship produced by semantic verification."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    data_point_id: str | None = None
+    citation_id: str | None = None
+    document_id: str | None = None
+    chunk_id: str | None = None
+    version_no: int | None = Field(default=None, ge=1)
+    source_url: str = ""
+    source_title: str = ""
+    excerpt: str = ""
+    authority_tier: str = ""
+    published_at: str | None = None
+    observed_at: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    temporal_status: Literal["current", "historical", "future", "unknown"] = "unknown"
+    retrieval_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    semantic_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    relation: Literal["supports", "contradicts", "context"] = "context"
+    numeric_match: bool | None = None
+
+
+class ClaimVerification(BaseModel):
+    """Reviewer decision for one factual claim extracted from Analyst output."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    claim_id: str
+    claim_text: str
+    origin: str
+    product: str = ""
+    dimension: str = ""
+    source_data_point_ids: list[str] = Field(default_factory=list)
+    status: Literal["supported", "contradicted", "insufficient"] = "insufficient"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    numeric_consistency: bool | None = None
+    evidence: list[ClaimEvidenceReference] = Field(default_factory=list)
+    checked_at: str = ""
+
+
+class ClaimVerificationSummary(BaseModel):
+    """Aggregate claim-grounding metrics persisted with verdicts and reports."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: Literal[1] = 1
+    status: Literal["ready", "degraded", "empty"] = "empty"
+    generated_at: str = ""
+    total: int = Field(default=0, ge=0)
+    supported: int = Field(default=0, ge=0)
+    contradicted: int = Field(default=0, ge=0)
+    insufficient: int = Field(default=0, ge=0)
+    groundedness: float = Field(default=0.0, ge=0.0, le=1.0)
+    citation_precision: float = Field(default=0.0, ge=0.0, le=1.0)
+    numeric_consistency: float = Field(default=1.0, ge=0.0, le=1.0)
+    degraded_reason: str | None = None
+    claims: list[ClaimVerification] = Field(default_factory=list)
+
+
 class QualitySummary(BaseModel):
     """Data quality overview from Reviewer to Writer."""
 
@@ -446,6 +509,7 @@ class ReviewVerdict(BaseModel):
     gaps: list[ReviewGap] = Field(default_factory=list)  # forward-ref handled below
     fact_errors: list[dict] = Field(default_factory=list)
     quality_summary: QualitySummary = Field(default_factory=QualitySummary)
+    claim_verification: ClaimVerificationSummary = Field(default_factory=ClaimVerificationSummary)
     reviewer_notes: str = Field(default="")
 
 
@@ -644,6 +708,11 @@ class ReportData(BaseModel):
     quality_gate: QualityGateSnapshot | None = Field(
         default=None,
         description="Version-specific deterministic quality gate; absent on legacy reports",
+    )
+    claim_verification: ClaimVerificationSummary = Field(default_factory=ClaimVerificationSummary)
+    long_term_insights: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Versioned fact, inference, and hypothesis context from entity events",
     )
     structured_analysis: dict[str, Any] = Field(
         default_factory=dict,

@@ -132,12 +132,83 @@ export interface KnowledgeDocument {
   size_bytes: number;
   updated_at: string;
   error?: string | null;
+  space_id: string;
+  space_role?: KnowledgeSpaceRole;
+  approval_status: "pending" | "approved" | "rejected";
+  retention_until?: string | null;
+}
+
+export type KnowledgeSpaceRole = "owner" | "editor" | "viewer";
+
+export interface KnowledgeSpace {
+  space_id: string;
+  owner_id: string;
+  name: string;
+  description: string;
+  visibility: "private";
+  role: KnowledgeSpaceRole;
+  require_approval: boolean;
+  retention_days: number;
+  member_count: number;
+  document_count: number;
+  pending_count: number;
+  updated_at: string;
+}
+
+export interface KnowledgeQueryPlan {
+  route: "direct" | "multi_hop";
+  normalized_query: string;
+  steps: Array<{
+    step_id: string;
+    query: string;
+    purpose: string;
+    hop: number;
+    depends_on: string[];
+  }>;
+  reasons: string[];
+  estimated_cost: "low" | "medium";
+}
+
+export interface KnowledgeEvent {
+  event_id: string;
+  space_id: string;
+  entity_id: string;
+  entity_name: string;
+  event_type: string;
+  dimension: string;
+  title: string;
+  statement: string;
+  occurred_at?: string | null;
+  status: "observed" | "corroborated";
+  confidence: number;
+  evidence_count: number;
+  evidence: Array<{
+    document_id: string;
+    version_no: number;
+    chunk_id?: string | null;
+    source_uri: string;
+  }>;
+}
+
+export interface KnowledgeInsight {
+  insight_id: string;
+  space_id: string;
+  entity_id: string;
+  entity_name: string;
+  insight_type: "fact" | "inference" | "hypothesis";
+  title: string;
+  summary: string;
+  confidence: number;
+  evidence_event_ids: string[];
+  period_start?: string | null;
+  period_end?: string | null;
+  metadata: { requires_human_review?: boolean };
 }
 
 export interface KnowledgeJob {
   job_id: string;
   document_id?: string | null;
-  operation: "ingest" | "reindex" | "rebuild";
+  operation: "ingest" | "reindex" | "rebuild" | "import_history";
   status: "queued" | "running" | "completed" | "failed";
   progress: number;
   error?: string | null;
@@ -161,6 +232,9 @@ export interface KnowledgeHit {
   page_no?: number | null;
   published_at?: string | null;
   observed_at?: string | null;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  temporal_status: "current" | "historical" | "future" | "unknown";
   score: number;
   confidence: number;
 }
@@ -173,7 +247,9 @@ export interface KnowledgeStatus {
     size_bytes: number;
     chunks: number;
     active_jobs: number;
+    pending_approval: number;
   };
+  spaces: KnowledgeSpace[];
   index: {
     available: boolean;
     collection_exists?: boolean;
@@ -372,6 +448,20 @@ export interface ReportData {
       page_no?: number | null;
       retrieval_score?: number | null;
       is_local_knowledge?: boolean;
+      knowledge_version_no?: number | null;
+      knowledge_valid_from?: string | null;
+      knowledge_valid_to?: string | null;
+      knowledge_temporal_status?:
+        | "current"
+        | "historical"
+        | "future"
+        | "unknown"
+        | null;
+      claim_relations?: Array<{
+        claim_id: string;
+        claim_status: ClaimVerificationStatus;
+        relation: ClaimEvidenceRelation;
+      }>;
     }
   >;
   quality_summary: Record<string, unknown>;
@@ -379,6 +469,21 @@ export interface ReportData {
   metrics: Record<string, number>;
   analysis_scope?: Record<string, unknown> | null;
   quality_gate?: QualityGateSnapshot | null;
+  claim_verification?: ClaimVerificationSummary;
+  long_term_insights?: Array<{
+    insight_id: string;
+    entity_name: string;
+    insight_type: "fact" | "inference" | "hypothesis";
+    title: string;
+    summary: string;
+    confidence: number;
+    period_start?: string | null;
+    period_end?: string | null;
+    evidence_event_ids: string[];
+    source_data_point_ids: string[];
+    evidence_status: "linked" | "context_only";
+    requires_human_review: boolean;
+  }>;
   structured_analysis?: {
     comparison_matrix?: {
       products?: string[];
@@ -397,6 +502,63 @@ export interface ReportData {
     forecast?: unknown;
     dynamic_blocks?: unknown[];
   };
+}
+
+export type ClaimVerificationStatus =
+  | "supported"
+  | "contradicted"
+  | "insufficient";
+export type ClaimEvidenceRelation = "supports" | "contradicts" | "context";
+
+export interface ClaimEvidenceReference {
+  data_point_id?: string | null;
+  citation_id?: string | null;
+  document_id?: string | null;
+  chunk_id?: string | null;
+  version_no?: number | null;
+  source_url: string;
+  source_title: string;
+  excerpt: string;
+  authority_tier: string;
+  published_at?: string | null;
+  observed_at?: string | null;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  temporal_status: "current" | "historical" | "future" | "unknown";
+  retrieval_score?: number | null;
+  semantic_score: number;
+  relation: ClaimEvidenceRelation;
+  numeric_match?: boolean | null;
+}
+
+export interface ClaimVerification {
+  claim_id: string;
+  claim_text: string;
+  origin: string;
+  product: string;
+  dimension: string;
+  source_data_point_ids: string[];
+  status: ClaimVerificationStatus;
+  confidence: number;
+  reason: string;
+  numeric_consistency?: boolean | null;
+  evidence: ClaimEvidenceReference[];
+  checked_at: string;
+}
+
+export interface ClaimVerificationSummary {
+  schema_version: 1;
+  status: "ready" | "degraded" | "empty";
+  generated_at: string;
+  total: number;
+  supported: number;
+  contradicted: number;
+  insufficient: number;
+  groundedness: number;
+  citation_precision: number;
+  numeric_consistency: number;
+  degraded_reason?: string | null;
+  claims: ClaimVerification[];
 }
 
 export interface DimensionCoverage {
@@ -590,26 +752,44 @@ export { API_BASE };
 export function useCompetitionAPI() {
   const [loading, setLoading] = useState(false);
 
-  const listAnalysisTemplates = useCallback(async (): Promise<Array<{ id: number; name: string; brief: AnalysisBrief; created_at: string; updated_at: string }>> => {
-    const res = await fetch(`${API_BASE}/templates`, { credentials: "include", cache: "no-store" });
+  const listAnalysisTemplates = useCallback(async (): Promise<
+    Array<{
+      id: number;
+      name: string;
+      brief: AnalysisBrief;
+      created_at: string;
+      updated_at: string;
+    }>
+  > => {
+    const res = await fetch(`${API_BASE}/templates`, {
+      credentials: "include",
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error(`Template fetch failed: ${res.status}`);
     const payload = await res.json();
     return payload.templates ?? [];
   }, []);
 
-  const saveAnalysisTemplate = useCallback(async (name: string, brief: AnalysisBrief) => {
-    const res = await fetch(`${API_BASE}/templates`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...csrfHeaders() },
-      credentials: "include",
-      body: JSON.stringify({ name, brief }),
-    });
-    if (!res.ok) throw new Error(`Template save failed: ${res.status}`);
-    return res.json();
-  }, []);
+  const saveAnalysisTemplate = useCallback(
+    async (name: string, brief: AnalysisBrief) => {
+      const res = await fetch(`${API_BASE}/templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        credentials: "include",
+        body: JSON.stringify({ name, brief }),
+      });
+      if (!res.ok) throw new Error(`Template save failed: ${res.status}`);
+      return res.json();
+    },
+    [],
+  );
 
   const deleteAnalysisTemplate = useCallback(async (id: number) => {
-    const res = await fetch(`${API_BASE}/templates/${id}`, { method: "DELETE", headers: csrfHeaders(), credentials: "include" });
+    const res = await fetch(`${API_BASE}/templates/${id}`, {
+      method: "DELETE",
+      headers: csrfHeaders(),
+      credentials: "include",
+    });
     if (!res.ok) throw new Error(`Template delete failed: ${res.status}`);
   }, []);
 

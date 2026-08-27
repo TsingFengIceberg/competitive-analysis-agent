@@ -9,25 +9,46 @@ import re
 import threading
 import time
 import uuid
+from collections import OrderedDict
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from competition.db import DEFAULT_DB_PATH
 from competition.knowledge_chunking import build_chunks
+from competition.knowledge_governance import (
+    REVIEW_ROLES,
+    SPACE_ROLES,
+    WRITE_ROLES,
+    retention_deadline,
+)
 from competition.knowledge_index import KnowledgeIndex, merge_scores
+from competition.knowledge_intelligence import (
+    build_event_candidate,
+    build_long_term_insights,
+    entity_key,
+    event_similarity,
+)
 from competition.knowledge_parser import SUPPORTED_SUFFIXES, DocumentParser
+from competition.knowledge_query import (
+    RetrievalPlan,
+    build_analysis_queries,
+    build_bridge_query,
+    normalize_query_text,
+    plan_retrieval_query,
+)
 from competition.knowledge_repo import KnowledgeRepository
 from competition.knowledge_types import KnowledgeChunk, KnowledgeHit, RetrievalFilters
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_KNOWLEDGE_ROOT = Path(
-    os.getenv("CI_AGENT_KNOWLEDGE_ROOT", str(_PROJECT_ROOT / ".ci-agent/knowledge"))
-)
+DEFAULT_KNOWLEDGE_ROOT = Path(os.getenv("CI_AGENT_KNOWLEDGE_ROOT", str(_PROJECT_ROOT / ".ci-agent/knowledge")))
 MAX_UPLOAD_BYTES = int(os.getenv("CI_AGENT_RAG_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 MIN_RETRIEVAL_SCORE = float(os.getenv("CI_AGENT_RAG_MIN_SCORE", "0.08"))
+RESULT_CACHE_TTL_SECONDS = max(0, int(os.getenv("CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS", "300")))
+RESULT_CACHE_SIZE = max(0, int(os.getenv("CI_AGENT_RAG_RESULT_CACHE_SIZE", "256")))
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\-\u3400-\u9fff]+")
 
 
@@ -45,9 +66,16 @@ def _user_segment(user_id: str) -> str:
     return hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
 
 
-def _source_key(*, source_uri: str, filename: str, product: str, dimension: str) -> str:
+def _source_key(
+    *,
+    source_uri: str,
+    filename: str,
+    product: str,
+    dimension: str,
+    namespace: str = "",
+) -> str:
     identity = source_uri.strip() or filename.casefold()
-    return hashlib.sha256(f"{identity}|{product.casefold()}|{dimension}".encode()).hexdigest()
+    return hashlib.sha256(f"{namespace}|{identity}|{product.casefold()}|{dimension}".encode()).hexdigest()
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -83,9 +111,23 @@ class KnowledgeService:
         self.index = index or KnowledgeIndex(path=self.root / "indexes" / "qdrant")
         self._registration_lock = threading.RLock()
         self._ingestion_slot = threading.BoundedSemaphore(1)
+        self._cache_lock = threading.RLock()
+        self._result_cache: OrderedDict[tuple[Any, ...], tuple[float, tuple[KnowledgeHit, ...]]] = OrderedDict()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_invalidations = 0
+        self._warmup_status: dict[str, Any] = {"status": "not_started"}
 
     def _repo(self) -> KnowledgeRepository:
         return KnowledgeRepository(db_path=self.db_path)
+
+    def _resolve_space(self, user_id: str, space_id: str | None, *, roles: frozenset[str] = frozenset(SPACE_ROLES)) -> dict[str, Any]:
+        with self._repo() as repository:
+            personal = repository.ensure_personal_space(user_id)
+            space = repository.get_space(space_id or personal["space_id"], user_id)
+        if space is None or space.get("role") not in roles:
+            raise PermissionError("Knowledge space not found or permission denied")
+        return space
 
     def register_bytes(
         self,
@@ -104,6 +146,7 @@ class KnowledgeService:
         published_at: str | None = None,
         observed_at: str | None = None,
         metadata: dict[str, Any] | None = None,
+        space_id: str | None = None,
     ) -> dict[str, Any]:
         if not data:
             raise ValueError("Document is empty")
@@ -116,14 +159,16 @@ class KnowledgeService:
         if authority_tier not in {"primary", "structured_fact", "change_event", "third_party", "report"}:
             raise ValueError(f"Unsupported authority tier: {authority_tier}")
         digest = hashlib.sha256(data).hexdigest()
+        space = self._resolve_space(user_id, space_id, roles=WRITE_ROLES)
         source_identity = _source_key(
             source_uri=source_uri,
             filename=safe_name,
             product=product,
             dimension=dimension,
+            namespace=space["space_id"],
         )
         with self._registration_lock, self._repo() as repository:
-            existing = repository.find_document_by_source(user_id, source_identity)
+            existing = repository.find_document_by_source(user_id, source_identity, space["space_id"])
             if existing and existing.get("content_hash") == digest and existing.get("status") in {"indexed", "partial"}:
                 job_id = f"kjob-{uuid.uuid4().hex}"
                 repository.create_job(
@@ -137,13 +182,8 @@ class KnowledgeService:
                 return {"document": existing, "job": repository.get_job(job_id, user_id), "unchanged": True}
 
             document_id = existing["document_id"] if existing else f"kdoc-{uuid.uuid4().hex}"
-            version_numbers = [
-                int(version.get("version_no") or 0)
-                for version in repository.list_versions(document_id)
-            ] if existing else []
-            version_no = max(
-                [int(existing.get("current_version", 0) if existing else 0), *version_numbers]
-            ) + 1
+            version_numbers = [int(version.get("version_no") or 0) for version in repository.list_versions(document_id)] if existing else []
+            version_no = max([int(existing.get("current_version", 0) if existing else 0), *version_numbers]) + 1
             original_path = self.root / "originals" / _user_segment(user_id) / document_id / f"v{version_no}-{safe_name}"
             _write_atomic(original_path, data)
             candidate_fields = {
@@ -160,19 +200,35 @@ class KnowledgeService:
                 "published_at": published_at,
                 "observed_at": observed_at or _now(),
                 "metadata": metadata or {},
+                "space_id": space["space_id"],
+                "approval_status": "pending" if space.get("require_approval") else "approved",
+                "retention_until": retention_deadline(int(space.get("retention_days") or 0)),
             }
             values = {
                 "document_id": document_id,
                 "user_id": user_id,
                 "source_key": source_identity,
+                "space_id": space["space_id"],
                 **candidate_fields,
                 "status": "queued",
                 "current_version": 0,
                 "content_hash": "",
                 "file_path": str(original_path),
+                "approval_status": candidate_fields["approval_status"],
+                "approved_by": None if candidate_fields["approval_status"] == "pending" else user_id,
+                "approved_at": None if candidate_fields["approval_status"] == "pending" else _now(),
+                "retention_until": candidate_fields["retention_until"],
             }
             if existing:
-                repository.update_document(document_id, status="queued", error=None)
+                repository.update_document(
+                    document_id,
+                    status="queued",
+                    error=None,
+                    approval_status=candidate_fields["approval_status"],
+                    approved_by=None,
+                    approved_at=None,
+                    retention_until=candidate_fields["retention_until"],
+                )
             else:
                 repository.create_document(values)
             repository.create_version(
@@ -181,6 +237,7 @@ class KnowledgeService:
                 content_hash=digest,
                 file_path=str(original_path),
                 metadata={"media_type": media_type, "document_fields": candidate_fields},
+                valid_from=observed_at,
             )
             job_id = f"kjob-{uuid.uuid4().hex}"
             repository.create_job(
@@ -259,10 +316,19 @@ class KnowledgeService:
                 raise ValueError("Document parser produced no indexable content")
             with self._repo() as repository:
                 stale_chunks = repository.list_chunks(document_id=document["document_id"], active_only=True)
+                version_record = next(
+                    (
+                        item
+                        for item in repository.list_versions(document["document_id"])
+                        if int(item["version_no"]) == version_no
+                    ),
+                    {},
+                )
                 repository.update_job(job_id, progress=55)
             self.index.replace_document(
                 document_for_chunks,
                 chunks,
+                valid_from=version_record.get("created_at"),
             )
             with self._repo() as repository:
                 repository.update_job(job_id, progress=90)
@@ -282,7 +348,11 @@ class KnowledgeService:
                         "document_fields": candidate_fields,
                     },
                 )
-                repository.activate_version(document["document_id"], version_no)
+                repository.activate_version(
+                    document["document_id"],
+                    version_no,
+                    superseded_at=version_record.get("created_at"),
+                )
                 repository.update_document(
                     document["document_id"],
                     title=document_for_chunks["title"],
@@ -315,13 +385,21 @@ class KnowledgeService:
                 result = repository.get_job(job_id)
                 assert result is not None
             new_point_ids = {chunk.qdrant_point_id for chunk in chunks}
-            stale_point_ids = [str(item["qdrant_point_id"]) for item in stale_chunks if str(item["qdrant_point_id"]) not in new_point_ids]
+            stale_point_ids = [
+                str(item["qdrant_point_id"])
+                for item in stale_chunks
+                if int(item.get("version_no") or 0) == version_no
+                and str(item["qdrant_point_id"]) not in new_point_ids
+            ]
             try:
                 self.index.delete_points(stale_point_ids)
             except Exception:
                 # SQLite active-chunk filtering keeps stale points invisible;
                 # rebuild can reclaim them later without failing ingestion.
                 logger.warning("Stale knowledge point cleanup degraded for %s", document["document_id"], exc_info=True)
+            self._invalidate_result_cache()
+            if document_for_chunks.get("approval_status") == "approved":
+                self._sync_version_event(document_for_chunks, version_no, chunks[0])
             return result
         except Exception as exc:
             logger.exception("Knowledge ingestion failed for %s", job_id)
@@ -344,6 +422,8 @@ class KnowledgeService:
             document = repository.get_document(document_id, user_id)
             if document is None:
                 raise KeyError(f"Knowledge document not found: {document_id}")
+            if document.get("space_role") not in WRITE_ROLES:
+                raise PermissionError("Knowledge-space write permission is required")
             if not document.get("current_version") or not document.get("file_path"):
                 raise ValueError("Document has no completed version to reindex")
             job_id = f"kjob-{uuid.uuid4().hex}"
@@ -369,6 +449,166 @@ class KnowledgeService:
                 metadata={},
             )
 
+    def queue_intelligence_history(
+        self,
+        *,
+        user_id: str,
+        item: dict[str, Any],
+        title: str,
+        authority_tier: str,
+        space_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Queue one observation fact's complete immutable version series."""
+        with self._repo() as repository:
+            return repository.create_job(
+                job_id=f"kjob-{uuid.uuid4().hex}",
+                user_id=user_id,
+                operation="import_history",
+                metadata={
+                    "item": item,
+                    "title": title,
+                    "authority_tier": authority_tier,
+                    "space_id": self._resolve_space(user_id, space_id, roles=WRITE_ROLES)["space_id"],
+                },
+            )
+
+    def process_intelligence_history_job(self, job_id: str) -> dict[str, Any]:
+        """Import observation versions serially so validity intervals remain ordered."""
+        with self._repo() as repository:
+            job = repository.get_job(job_id)
+            if job is None:
+                raise KeyError(f"Knowledge job not found: {job_id}")
+            if job["status"] == "completed":
+                return job
+            repository.update_job(job_id, status="running", progress=5, started_at=_now(), error=None)
+        metadata = job.get("metadata") or {}
+        item = metadata.get("item") or {}
+        versions = list(item.get("versions") or [])
+        if not versions:
+            versions = [
+                {
+                    "version": 1,
+                    "content_hash": item.get("content_hash") or "",
+                    "payload": {
+                        "product": item.get("product"),
+                        "dimension": item.get("dimension"),
+                        "label": item.get("label"),
+                        "value": item.get("value"),
+                        "source_url": item.get("source_url"),
+                        "source_type": item.get("source_type"),
+                        "published_at": item.get("published_at"),
+                        "scope": item.get("scope"),
+                    },
+                    "observed_at": item.get("fetched_at") or _now(),
+                }
+            ]
+        versions.sort(key=lambda value: (str(value.get("observed_at") or ""), int(value.get("version") or 0)))
+        source_uri = f"intelligence://{item['item_key']}"
+        source_identity = _source_key(
+            source_uri=source_uri,
+            filename=f"{item['item_key']}.md",
+            product=str(item.get("product") or ""),
+            dimension=str(item.get("dimension") or ""),
+            namespace=str(metadata.get("space_id") or ""),
+        )
+        with self._repo() as repository:
+            existing = repository.find_document_by_source(
+                job["user_id"], source_identity, str(metadata.get("space_id") or "")
+            )
+            imported_hashes = {
+                str(
+                    (
+                        ((version.get("metadata") or {}).get("document_fields") or {}).get("metadata")
+                        or {}
+                    ).get("intelligence_content_hash")
+                    or ""
+                )
+                for version in repository.list_versions(existing["document_id"])
+            } if existing else set()
+
+        imported = 0
+        skipped = 0
+        failures: list[dict[str, str]] = []
+        document_id: str | None = existing.get("document_id") if existing else None
+        for index, version in enumerate(versions):
+            content_hash = str(version.get("content_hash") or "")
+            if content_hash and content_hash in imported_hashes:
+                skipped += 1
+                continue
+            payload = version.get("payload") or {}
+            observed_at = str(version.get("observed_at") or _now())
+            markdown = (
+                f"# {payload.get('label') or item.get('label') or 'Observed fact'}\n\n"
+                f"- Product: {payload.get('product') or item.get('product') or ''}\n"
+                f"- Dimension: {payload.get('dimension') or item.get('dimension') or ''}\n"
+                f"- Source: {payload.get('source_url') or item.get('source_url') or ''}\n"
+                f"- Published: {payload.get('published_at') or 'unknown'}\n"
+                f"- Observed: {observed_at}\n"
+                f"- Observation version: {version.get('version') or index + 1}\n\n"
+                f"## Fact\n\n{payload.get('value', item.get('value', ''))}\n"
+            )
+            registration = self.register_bytes(
+                user_id=job["user_id"],
+                filename=f"{item['item_key']}.md",
+                data=markdown.encode(),
+                title=f"{metadata.get('title') or 'Intelligence history'}: {payload.get('label') or item.get('label') or ''}",
+                media_type="text/markdown",
+                source_type="intelligence",
+                source_uri=source_uri,
+                product=str(payload.get("product") or item.get("product") or ""),
+                dimension=str(payload.get("dimension") or item.get("dimension") or ""),
+                market_scope=str(payload.get("scope") or item.get("scope") or "Global / unspecified"),
+                authority_tier=str(metadata.get("authority_tier") or "structured_fact"),
+                published_at=payload.get("published_at"),
+                observed_at=observed_at,
+                metadata={
+                    "intelligence_item_key": item["item_key"],
+                    "intelligence_version": version.get("version") or index + 1,
+                    "intelligence_content_hash": content_hash,
+                    "original_source_url": payload.get("source_url") or item.get("source_url"),
+                },
+                space_id=str(metadata.get("space_id") or "") or None,
+            )
+            document_id = (registration.get("document") or {}).get("document_id") or document_id
+            child = registration.get("job") or {}
+            completed = child if child.get("status") == "completed" else self.process_job(child["job_id"])
+            if completed.get("status") == "completed":
+                imported += 1
+                imported_hashes.add(content_hash)
+            else:
+                failures.append(
+                    {
+                        "version": str(version.get("version") or index + 1),
+                        "error": str(completed.get("error") or "ingestion failed")[:300],
+                    }
+                )
+            with self._repo() as repository:
+                repository.update_job(
+                    job_id,
+                    document_id=document_id,
+                    progress=min(95, 5 + int((index + 1) / max(1, len(versions)) * 90)),
+                )
+
+        with self._repo() as repository:
+            repository.update_job(
+                job_id,
+                document_id=document_id,
+                status="failed" if failures else "completed",
+                progress=100,
+                error="Some observation versions failed to import" if failures else None,
+                finished_at=_now(),
+                metadata={
+                    "item_key": item.get("item_key"),
+                    "versions_requested": len(versions),
+                    "versions_imported": imported,
+                    "versions_skipped": skipped,
+                    "failures": failures,
+                },
+            )
+            result = repository.get_job(job_id)
+            assert result is not None
+            return result
+
     def process_rebuild_job(self, job_id: str) -> dict[str, Any]:
         with self._repo() as repository:
             job = repository.get_job(job_id)
@@ -389,6 +629,7 @@ class KnowledgeService:
                 )
                 completed = repository.get_job(job_id)
                 assert completed is not None
+                self._invalidate_result_cache(job["user_id"])
                 return completed
         except Exception as exc:
             with self._repo() as repository:
@@ -411,106 +652,330 @@ class KnowledgeService:
         filters: RetrievalFilters | None = None,
         limit: int = 12,
     ) -> list[KnowledgeHit]:
+        return self.search_many(
+            [(query, filters or RetrievalFilters(), limit)],
+            user_id=user_id,
+        )[0]
+
+    def search_many(
+        self,
+        requests: list[tuple[str, RetrievalFilters, int]],
+        *,
+        user_id: str,
+    ) -> list[list[KnowledgeHit]]:
+        """Retrieve several scoped queries with batch inference and result caching."""
+        if not requests:
+            return []
+        with self._repo() as repository:
+            accessible = set(repository.accessible_space_ids(user_id))
+        scoped_requests: list[tuple[str, RetrievalFilters, int] | None] = []
+        for query, filters, limit in requests:
+            requested = set(filters.space_ids)
+            allowed = accessible.intersection(requested) if requested else accessible
+            scoped_requests.append(
+                (query, replace(filters, space_ids=tuple(sorted(allowed))), limit)
+                if allowed
+                else None
+            )
         started = time.monotonic()
-        retrieval_id = f"kret-{uuid.uuid4().hex}"
-        effective_filters = filters or RetrievalFilters()
+        output: list[list[KnowledgeHit] | None] = [None] * len(requests)
+        missing: list[tuple[int, str, RetrievalFilters, int, tuple[Any, ...]]] = []
+        for index, scoped in enumerate(scoped_requests):
+            if scoped is None:
+                output[index] = []
+                continue
+            query, filters, limit = scoped
+            normalized = normalize_query_text(query)
+            cache_key = self._cache_key(user_id, normalized, filters, limit)
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                output[index] = cached
+                self._log_retrieval(
+                    user_id=user_id,
+                    query=normalized,
+                    filters=filters,
+                    hits=cached,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    cache_hit=True,
+                )
+            else:
+                missing.append((index, normalized, filters, limit, cache_key))
+        if not missing:
+            return [hits or [] for hits in output]
         try:
-            recalled = self.index.search_ids(
-                query,
-                user_id=user_id,
-                filters=effective_filters,
-                limit=limit,
-                candidate_limit=max(24, limit * 3),
+            index_requests = [(query, user_id, filters, limit, max(24, limit * 3)) for _, query, filters, limit, _ in missing]
+            if hasattr(self.index, "search_many_ids"):
+                recalled_groups = self.index.search_many_ids(index_requests)
+            else:
+                recalled_groups = [
+                    self.index.search_ids(
+                        query,
+                        user_id=request_user,
+                        filters=request_filters,
+                        limit=request_limit,
+                        candidate_limit=candidate_limit,
+                    )
+                    for query, request_user, request_filters, request_limit, candidate_limit in index_requests
+                ]
+            all_chunk_ids = list(dict.fromkeys(chunk_id for recalled in recalled_groups for chunk_id, _ in recalled))
+            include_historical = any(
+                filters.temporal_mode != "current"
+                for _, _, filters, _, _ in missing
             )
             with self._repo() as repository:
-                rows_by_id = repository.get_chunks_by_ids([chunk_id for chunk_id, _ in recalled], user_id)
-            candidates = [(rows_by_id[chunk_id], score) for chunk_id, score in recalled if chunk_id in rows_by_id]
-            rerank_scores = self.index.rerank(query, [row["contextual_text"] for row, _ in candidates])
-            ranked = merge_scores(candidates, rerank_scores)
-            hits: list[KnowledgeHit] = []
-            for row, score in ranked:
-                if score < MIN_RETRIEVAL_SCORE:
-                    continue
-                hits.append(
-                    KnowledgeHit(
-                        chunk_id=row["chunk_id"],
-                        document_id=row["document_id"],
-                        version_no=int(row["version_no"]),
-                        title=row.get("title") or row.get("filename") or "Knowledge document",
-                        text=row["text"],
-                        contextual_text=row["contextual_text"],
-                        source_uri=row.get("source_uri") or "",
-                        source_type=row.get("source_type") or "upload",
-                        authority_tier=row.get("authority_tier") or "third_party",
-                        product=row.get("product") or "",
-                        dimension=row.get("dimension") or "",
-                        market_scope=row.get("market_scope") or "Global / unspecified",
-                        section_path=row.get("section_path") or "",
-                        page_no=row.get("page_no"),
-                        published_at=row.get("published_at"),
-                        observed_at=row.get("observed_at"),
-                        score=score,
-                        retrieval_sources=("dense", "sparse", "reranker"),
-                        metadata=row.get("metadata") or {},
-                    )
+                rows_by_id = repository.get_chunks_by_ids(
+                    all_chunk_ids,
+                    user_id,
+                    include_historical=include_historical,
+                    space_ids=tuple(sorted(accessible)),
                 )
-                if len(hits) >= limit:
-                    break
-            duration_ms = int((time.monotonic() - started) * 1000)
-            with self._repo() as repository:
-                repository.log_retrieval(
-                    retrieval_id=retrieval_id,
+            candidate_groups = [[(rows_by_id[chunk_id], score) for chunk_id, score in recalled if chunk_id in rows_by_id] for recalled in recalled_groups]
+            rerank_groups = [(query, [row["contextual_text"] for row, _ in candidates]) for (_, query, _, _, _), candidates in zip(missing, candidate_groups, strict=True)]
+            if hasattr(self.index, "rerank_many"):
+                score_groups = self.index.rerank_many(rerank_groups)
+            else:
+                score_groups = [self.index.rerank(query, texts) for query, texts in rerank_groups]
+            for request, candidates, rerank_scores in zip(missing, candidate_groups, score_groups, strict=True):
+                index, query, filters, limit, cache_key = request
+                hits = self._build_hits(candidates, rerank_scores, limit)
+                output[index] = hits
+                self._put_cached(cache_key, hits)
+                self._log_retrieval(
                     user_id=user_id,
                     query=query,
-                    filters=effective_filters.to_dict(),
-                    chunk_ids=[hit.chunk_id for hit in hits],
-                    duration_ms=duration_ms,
+                    filters=filters,
+                    hits=hits,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    cache_hit=False,
                 )
-            return hits
+            return [hits or [] for hits in output]
         except Exception as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
-            with self._repo() as repository:
-                repository.log_retrieval(
-                    retrieval_id=retrieval_id,
+            for _, query, filters, _, _ in missing:
+                self._log_retrieval(
                     user_id=user_id,
                     query=query,
-                    filters=effective_filters.to_dict(),
-                    chunk_ids=[],
+                    filters=filters,
+                    hits=[],
                     duration_ms=duration_ms,
                     status="failed",
                     error=str(exc)[:1000],
                 )
             raise
 
+    def _build_hits(
+        self,
+        candidates: list[tuple[dict[str, Any], float]],
+        rerank_scores: list[float],
+        limit: int,
+    ) -> list[KnowledgeHit]:
+        hits: list[KnowledgeHit] = []
+        for row, score in merge_scores(candidates, rerank_scores):
+            if score < MIN_RETRIEVAL_SCORE:
+                continue
+            hits.append(
+                KnowledgeHit(
+                    chunk_id=row["chunk_id"],
+                    document_id=row["document_id"],
+                    version_no=int(row["version_no"]),
+                    title=row.get("title") or row.get("filename") or "Knowledge document",
+                    text=row["text"],
+                    contextual_text=row["contextual_text"],
+                    source_uri=row.get("source_uri") or "",
+                    source_type=row.get("source_type") or "upload",
+                    authority_tier=row.get("authority_tier") or "third_party",
+                    product=row.get("product") or "",
+                    dimension=row.get("dimension") or "",
+                    market_scope=row.get("market_scope") or "Global / unspecified",
+                    section_path=row.get("section_path") or "",
+                    page_no=row.get("page_no"),
+                    published_at=row.get("published_at"),
+                    observed_at=row.get("observed_at"),
+                    valid_from=row.get("valid_from"),
+                    valid_to=row.get("valid_to"),
+                    temporal_status=row.get("temporal_status") or ("current" if row.get("active") else "historical"),
+                    score=score,
+                    retrieval_sources=("dense", "sparse", "reranker"),
+                    metadata=row.get("metadata") or {},
+                )
+            )
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def _cache_key(
+        self,
+        user_id: str,
+        query: str,
+        filters: RetrievalFilters,
+        limit: int,
+    ) -> tuple[Any, ...]:
+        values = filters.to_dict()
+        return (
+            user_id,
+            query.casefold(),
+            tuple(values["products"]),
+            tuple(values["dimensions"]),
+            values["market_scope"],
+            tuple(values["source_types"]),
+            tuple(values["authority_tiers"]),
+            values["published_after"],
+            values["published_before"],
+            values["include_reports"],
+            values["temporal_mode"],
+            values["as_of"],
+            tuple(values["space_ids"]),
+            limit,
+        )
+
+    def search_planned(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        filters: RetrievalFilters | None = None,
+        limit: int = 12,
+    ) -> tuple[list[KnowledgeHit], RetrievalPlan]:
+        result = self.search_planned_many(
+            [(query, filters or RetrievalFilters(), limit)],
+            user_id=user_id,
+        )
+        return result[0]
+
+    def search_planned_many(
+        self,
+        requests: list[tuple[str, RetrievalFilters, int]],
+        *,
+        user_id: str,
+    ) -> list[tuple[list[KnowledgeHit], RetrievalPlan]]:
+        """Execute cost-routed multi-query plans with one batch per hop."""
+        if not requests:
+            return []
+        plans = [plan_retrieval_query(query, filters) for query, filters, _ in requests]
+        flat: list[tuple[str, RetrievalFilters, int]] = []
+        owners: list[int] = []
+        for owner, ((_, filters, limit), plan) in enumerate(zip(requests, plans, strict=True)):
+            per_step = max(limit, min(24, limit * 2))
+            for step in plan.steps:
+                if step.hop != 1:
+                    continue
+                flat.append((step.query, filters, per_step))
+                owners.append(owner)
+        groups = self.search_many(flat, user_id=user_id)
+        accumulated: list[list[KnowledgeHit]] = [[] for _ in requests]
+        for owner, hits in zip(owners, groups, strict=True):
+            accumulated[owner].extend(hits)
+        bridge_requests: list[tuple[str, RetrievalFilters, int]] = []
+        bridge_owners: list[int] = []
+        for owner, ((_, filters, limit), plan) in enumerate(zip(requests, plans, strict=True)):
+            if plan.route != "multi_hop" or not accumulated[owner]:
+                continue
+            bridge_requests.append((build_bridge_query(plan, accumulated[owner][:5]), filters, max(limit, limit * 2)))
+            bridge_owners.append(owner)
+        if bridge_requests:
+            bridge_groups = self.search_many(bridge_requests, user_id=user_id)
+            for owner, hits in zip(bridge_owners, bridge_groups, strict=True):
+                accumulated[owner].extend(hits)
+        output: list[tuple[list[KnowledgeHit], RetrievalPlan]] = []
+        for hits, plan, (_, _, limit) in zip(accumulated, plans, requests, strict=True):
+            output.append((self._fuse_planned_hits(hits, limit), plan))
+        return output
+
+    @staticmethod
+    def _fuse_planned_hits(hits: list[KnowledgeHit], limit: int) -> list[KnowledgeHit]:
+        grouped: dict[str, list[KnowledgeHit]] = {}
+        for hit in hits:
+            grouped.setdefault(hit.chunk_id, []).append(hit)
+        fused: list[KnowledgeHit] = []
+        for candidates in grouped.values():
+            best = max(candidates, key=lambda item: item.score)
+            coverage_bonus = min(0.08, max(0, len(candidates) - 1) * 0.02)
+            fused.append(
+                replace(
+                    best,
+                    score=round(min(1.0, best.score + coverage_bonus), 6),
+                    retrieval_sources=tuple(dict.fromkeys((*best.retrieval_sources, "query_planner"))),
+                    metadata={**best.metadata, "query_match_count": len(candidates)},
+                )
+            )
+        return sorted(fused, key=lambda item: item.score, reverse=True)[:limit]
+
+    def _get_cached(self, key: tuple[Any, ...]) -> list[KnowledgeHit] | None:
+        if RESULT_CACHE_SIZE == 0 or RESULT_CACHE_TTL_SECONDS == 0:
+            self._cache_misses += 1
+            return None
+        with self._cache_lock:
+            item = self._result_cache.get(key)
+            if item is None or time.monotonic() - item[0] > RESULT_CACHE_TTL_SECONDS:
+                if item is not None:
+                    self._result_cache.pop(key, None)
+                self._cache_misses += 1
+                return None
+            self._result_cache.move_to_end(key)
+            self._cache_hits += 1
+            return list(item[1])
+
+    def _put_cached(self, key: tuple[Any, ...], hits: list[KnowledgeHit]) -> None:
+        if RESULT_CACHE_SIZE == 0 or RESULT_CACHE_TTL_SECONDS == 0:
+            return
+        with self._cache_lock:
+            self._result_cache[key] = (time.monotonic(), tuple(hits))
+            self._result_cache.move_to_end(key)
+            while len(self._result_cache) > RESULT_CACHE_SIZE:
+                self._result_cache.popitem(last=False)
+
+    def _invalidate_result_cache(self, user_id: str | None = None) -> None:
+        with self._cache_lock:
+            if user_id is None:
+                removed = len(self._result_cache)
+                self._result_cache.clear()
+            else:
+                keys = [key for key in self._result_cache if key[0] == user_id]
+                for key in keys:
+                    self._result_cache.pop(key, None)
+                removed = len(keys)
+            self._cache_invalidations += removed
+
+    def _log_retrieval(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        filters: RetrievalFilters,
+        hits: list[KnowledgeHit],
+        duration_ms: int,
+        cache_hit: bool = False,
+        status: str = "completed",
+        error: str | None = None,
+    ) -> None:
+        logged_filters = {**filters.to_dict(), "cache_hit": cache_hit}
+        with self._repo() as repository:
+            repository.log_retrieval(
+                retrieval_id=f"kret-{uuid.uuid4().hex}",
+                user_id=user_id,
+                query=query,
+                filters=logged_filters,
+                chunk_ids=[hit.chunk_id for hit in hits],
+                duration_ms=duration_ms,
+                status=status,
+                error=error,
+            )
+
     def retrieve_for_analysis(self, state: dict[str, Any], limit: int = 16) -> list[dict[str, Any]]:
         user_id = str(state.get("user_id") or "default")
-        brief = state.get("analysis_brief") or {}
-        products = [str(value) for value in state.get("target_products") or brief.get("target_products") or []]
-        dimensions = [str(item.get("id")) for item in (brief.get("effective_dimensions") or brief.get("dimensions") or []) if isinstance(item, dict) and item.get("id")] or ["features", "pricing", "users", "market", "technology"]
-        time_range = brief.get("time_range") if isinstance(brief.get("time_range"), dict) else {}
-        base_query = str(state.get("user_request") or brief.get("objective") or "competitive intelligence")
-        pairs = [(product, dimension) for product in products for dimension in dimensions]
-        if not pairs:
-            pairs = [("", dimension) for dimension in dimensions]
-        hits: list[tuple[KnowledgeHit, str]] = []
-        per_pair = max(2, min(4, limit // max(1, len(pairs)) + 1))
-        for product, dimension in pairs[:20]:
-            query = " ".join(value for value in (base_query, product, dimension) if value)
-            filters = RetrievalFilters(
-                products=(product,) if product else (),
-                dimensions=(dimension,),
-                market_scope=str(brief.get("market_scope") or ""),
-                published_after=time_range.get("start"),
-                published_before=time_range.get("end"),
-                include_reports=False,
-            )
-            for hit in self.search(query, user_id=user_id, filters=filters, limit=per_pair):
-                hits.append((hit, dimension))
-        unique: dict[tuple[str, str], tuple[KnowledgeHit, str]] = {}
-        for hit, requested_dimension in sorted(hits, key=lambda value: value[0].score, reverse=True):
-            unique.setdefault((hit.chunk_id, hit.dimension or requested_dimension), (hit, requested_dimension))
+        queries = build_analysis_queries(state)
+        products = list(dict.fromkeys(query.product for query in queries if query.product))
+        hits: list[tuple[KnowledgeHit, str, str]] = []
+        per_pair = max(2, min(4, limit // max(1, len(queries)) + 1))
+        requests = [(query.query, query.filters, per_pair) for query in queries]
+        result_groups = self.search_planned_many(requests, user_id=user_id)
+        for planned, (result, retrieval_plan) in zip(queries, result_groups, strict=True):
+            hits.extend((hit, planned.dimension, retrieval_plan.route) for hit in result)
+        unique: dict[tuple[str, str], tuple[KnowledgeHit, str, str]] = {}
+        for hit, requested_dimension, route in sorted(hits, key=lambda value: value[0].score, reverse=True):
+            unique.setdefault((hit.chunk_id, hit.dimension or requested_dimension), (hit, requested_dimension, route))
         points: list[dict[str, Any]] = []
-        for hit, requested_dimension in list(unique.values())[:limit]:
+        for hit, requested_dimension, route in list(unique.values())[:limit]:
             source_url = hit.source_uri if hit.source_uri.startswith(("http://", "https://")) else f"knowledge://{hit.document_id}/{hit.chunk_id}"
             source_type = _agent_source_type(hit)
             points.append(
@@ -532,6 +997,11 @@ class KnowledgeService:
                     "page_no": hit.page_no,
                     "retrieval_score": hit.score,
                     "source_title": hit.title,
+                    "knowledge_version_no": hit.version_no,
+                    "knowledge_valid_from": hit.valid_from,
+                    "knowledge_valid_to": hit.valid_to,
+                    "knowledge_temporal_status": hit.temporal_status,
+                    "knowledge_query_route": route,
                 }
             )
         return points
@@ -547,23 +1017,53 @@ class KnowledgeService:
                 continue
             try:
                 with self._repo() as repository:
-                    rows = repository.list_chunks(document_id=document["document_id"], active_only=True)
-                chunks = [_chunk_from_row(row) for row in rows]
-                self.index.replace_document(document, chunks)
-                indexed += len(chunks)
+                    rows = repository.list_chunks(document_id=document["document_id"], active_only=False)
+                    versions = {
+                        int(item["version_no"]): item
+                        for item in repository.list_versions(document["document_id"])
+                        if item.get("status") in {"indexed", "partial"}
+                    }
+                rows_by_version: dict[int, list[dict[str, Any]]] = {}
+                for row in rows:
+                    version_no = int(row["version_no"])
+                    if version_no in versions:
+                        rows_by_version.setdefault(version_no, []).append(row)
+                for version_no in sorted(rows_by_version):
+                    version = versions[version_no]
+                    version_fields = (version.get("metadata") or {}).get("document_fields") or {}
+                    version_document = {**document, **version_fields}
+                    chunks = [_chunk_from_row(row) for row in rows_by_version[version_no]]
+                    self.index.replace_document(
+                        version_document,
+                        chunks,
+                        is_current=version_no == int(document.get("current_version") or 0),
+                        valid_from=version.get("created_at"),
+                        valid_to=version.get("superseded_at"),
+                        deactivate_previous=False,
+                    )
+                    indexed += len(chunks)
             except Exception as exc:
                 failed.append({"document_id": document["document_id"], "error": str(exc)[:300]})
+        self._invalidate_result_cache()
         return {"documents": len(documents), "chunks_indexed": indexed, "failures": failed}
 
     def delete_document(self, document_id: str, user_id: str) -> bool:
         with self._repo() as repository:
-            deleted = repository.delete_document(document_id, user_id)
+            document = repository.get_document(document_id, user_id)
+            if document is None or document.get("space_role") not in WRITE_ROLES:
+                return False
+            deleted = repository.soft_delete_document(document_id, user_id)
         if deleted is None:
             return False
         try:
             self.index.delete_document(document_id)
         except Exception:
             logger.warning("Knowledge index cleanup degraded for %s", document_id, exc_info=True)
+        self._remove_document_files(deleted)
+        self._invalidate_result_cache()
+        return True
+
+    def _remove_document_files(self, deleted: dict[str, Any]) -> None:
         for value in [deleted.get("file_path"), deleted.get("normalized_path")]:
             path = Path(value) if value else None
             if path and _within(path, self.root):
@@ -574,7 +1074,232 @@ class KnowledgeService:
                 path = Path(value) if value else None
                 if path and _within(path, self.root):
                     path.unlink(missing_ok=True)
-        return True
+
+    def create_space(
+        self,
+        user_id: str,
+        *,
+        name: str,
+        description: str = "",
+        require_approval: bool = True,
+        retention_days: int = 0,
+    ) -> dict[str, Any]:
+        with self._repo() as repository:
+            return repository.create_space(
+                owner_id=user_id,
+                name=name.strip(),
+                description=description.strip(),
+                require_approval=require_approval,
+                retention_days=retention_days,
+            )
+
+    def list_spaces(self, user_id: str) -> list[dict[str, Any]]:
+        with self._repo() as repository:
+            return repository.list_spaces(user_id)
+
+    def update_space(self, user_id: str, space_id: str, **values: Any) -> dict[str, Any]:
+        self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)
+        with self._repo() as repository:
+            repository.update_space(space_id, **values)
+            updated = repository.get_space(space_id, user_id)
+        assert updated is not None
+        return updated
+
+    def list_space_members(self, user_id: str, space_id: str) -> list[dict[str, Any]]:
+        self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_space_members(space_id)
+
+    def set_space_member(self, user_id: str, space_id: str, member_id: str, role: str) -> list[dict[str, Any]]:
+        self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)
+        if role not in {"editor", "viewer"}:
+            raise ValueError("Member role must be editor or viewer")
+        if member_id == user_id:
+            raise ValueError("The space owner role cannot be replaced")
+        with self._repo() as repository:
+            repository.upsert_space_member(space_id, member_id, role)
+            return repository.list_space_members(space_id)
+
+    def remove_space_member(self, user_id: str, space_id: str, member_id: str) -> bool:
+        self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)
+        with self._repo() as repository:
+            return repository.remove_space_member(space_id, member_id)
+
+    def review_document(self, user_id: str, document_id: str, decision: str) -> dict[str, Any]:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("Decision must be approved or rejected")
+        with self._repo() as repository:
+            document = repository.get_document(document_id, user_id)
+            if document is None or document.get("space_role") not in REVIEW_ROLES:
+                raise PermissionError("Only the knowledge-space owner can review documents")
+            updated = repository.set_document_approval(document_id, status=decision, reviewer_id=user_id)
+            chunks = repository.list_chunks(document_id=document_id, active_only=True)
+        assert updated is not None
+        if decision == "approved" and chunks:
+            try:
+                self.index.replace_document(updated, [_chunk_from_row(item) for item in chunks])
+            except Exception:
+                logger.warning("Approval payload refresh degraded for %s", document_id, exc_info=True)
+            self._sync_version_event(updated, int(updated.get("current_version") or 0), chunks[0])
+        else:
+            try:
+                self.index.delete_document(document_id)
+            except Exception:
+                logger.warning("Rejected-document index cleanup degraded for %s", document_id, exc_info=True)
+        self._invalidate_result_cache()
+        return updated
+
+    def purge_expired(self, *, actor_id: str = "system") -> dict[str, Any]:
+        with self._repo() as repository:
+            expired = repository.list_expired_documents()
+        purged: list[str] = []
+        for document in expired:
+            with self._repo() as repository:
+                deleted = repository.soft_delete_document(
+                    document["document_id"],
+                    actor_id,
+                    reason="retention_expired",
+                    internal=True,
+                )
+            if deleted is None:
+                continue
+            try:
+                self.index.delete_document(document["document_id"])
+            except Exception:
+                logger.warning("Expired-document index cleanup degraded for %s", document["document_id"], exc_info=True)
+            self._remove_document_files(deleted)
+            purged.append(document["document_id"])
+        if purged:
+            self._invalidate_result_cache()
+        return {"purged": purged, "count": len(purged), "actor_id": actor_id}
+
+    def deletion_audit(self, user_id: str, *, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_deletion_audit(user_id, space_id=space_id, limit=limit)
+
+    def _sync_version_event(self, document: dict[str, Any], version_no: int, chunk: KnowledgeChunk | dict[str, Any]) -> dict[str, Any] | None:
+        if not document.get("space_id") or not version_no:
+            return None
+        chunk_data = chunk if isinstance(chunk, dict) else {
+            "chunk_id": chunk.chunk_id,
+            "text": chunk.text,
+            "created_at": document.get("observed_at"),
+        }
+        candidate = build_event_candidate(document, version_no=version_no, chunk=chunk_data)
+        if not candidate.get("statement"):
+            return None
+        with self._repo() as repository:
+            entity = repository.upsert_entity(
+                entity_id=candidate["entity_id"],
+                space_id=candidate["space_id"],
+                canonical_name=candidate["entity_name"],
+                normalized_key=entity_key(candidate["entity_name"]),
+                alias=candidate["entity_alias"],
+            )
+            candidate["entity_id"] = entity["entity_id"]
+            existing = repository.find_event_candidates(
+                space_id=candidate["space_id"],
+                entity_id=candidate["entity_id"],
+                dimension=candidate["dimension"],
+            )
+            match = next((item for item in existing if event_similarity(item, candidate) >= 0.58), None)
+            if match:
+                candidate["cluster_key"] = match["cluster_key"]
+                candidate["event_id"] = match["event_id"]
+            event = repository.upsert_event(candidate)
+            updated_event = repository.add_event_evidence(
+                event["event_id"],
+                {
+                    **candidate,
+                    "authority_tier": candidate["authority_tier"],
+                    "observed_at": candidate.get("occurred_at") or _now(),
+                },
+            )
+            events = repository.list_events(
+                str(document.get("user_id") or "default"),
+                space_id=candidate["space_id"],
+                limit=1000,
+            )
+            repository.replace_insights(
+                candidate["space_id"],
+                build_long_term_insights(events, space_id=candidate["space_id"]),
+            )
+            return updated_event
+
+    def list_events(self, user_id: str, *, space_id: str | None = None, entity_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_events(user_id, space_id=space_id, entity_id=entity_id, limit=limit)
+
+    def refresh_insights(self, user_id: str, space_id: str) -> list[dict[str, Any]]:
+        self._resolve_space(user_id, space_id, roles=WRITE_ROLES)
+        with self._repo() as repository:
+            events = repository.list_events(user_id, space_id=space_id, limit=1000)
+            insights = build_long_term_insights(events, space_id=space_id)
+            repository.replace_insights(space_id, insights)
+            return repository.list_insights(user_id, space_id=space_id)
+
+    def list_insights(self, user_id: str, *, space_id: str | None = None) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_insights(user_id, space_id=space_id)
+
+    def insights_for_analysis(
+        self,
+        state: dict[str, Any],
+        retrieved_points: list[dict[str, Any]],
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        user_id = str(state.get("user_id") or "default")
+        targets = {
+            entity_key(str(value))
+            for value in (state.get("target_products") or [])
+            if str(value).strip()
+        }
+        point_ids_by_chunk = {
+            str(item.get("knowledge_chunk_id")): str(item.get("id"))
+            for item in retrieved_points
+            if item.get("knowledge_chunk_id") and item.get("id")
+        }
+        with self._repo() as repository:
+            insights = repository.list_insights(user_id)
+            events = repository.list_events(user_id, limit=1000)
+        events_by_id = {str(item.get("event_id")): item for item in events}
+        output: list[dict[str, Any]] = []
+        for insight in insights:
+            if targets and entity_key(str(insight.get("entity_name") or "")) not in targets:
+                continue
+            source_ids: list[str] = []
+            for event_id in insight.get("evidence_event_ids") or []:
+                event = events_by_id.get(str(event_id)) or {}
+                for evidence in event.get("evidence") or []:
+                    point_id = point_ids_by_chunk.get(str(evidence.get("chunk_id") or ""))
+                    if point_id and point_id not in source_ids:
+                        source_ids.append(point_id)
+            output.append(
+                {
+                    "insight_id": insight["insight_id"],
+                    "entity_name": insight.get("entity_name") or "",
+                    "insight_type": insight.get("insight_type") or "hypothesis",
+                    "title": insight.get("title") or "",
+                    "summary": insight.get("summary") or "",
+                    "confidence": insight.get("confidence") or 0.0,
+                    "period_start": insight.get("period_start"),
+                    "period_end": insight.get("period_end"),
+                    "evidence_event_ids": list(insight.get("evidence_event_ids") or []),
+                    "source_data_point_ids": source_ids,
+                    "evidence_status": "linked" if source_ids else "context_only",
+                    "requires_human_review": bool((insight.get("metadata") or {}).get("requires_human_review")),
+                }
+            )
+            if len(output) >= limit:
+                break
+        return output
 
     def list_documents(self, user_id: str, **filters: Any) -> list[dict[str, Any]]:
         with self._repo() as repository:
@@ -599,7 +1324,32 @@ class KnowledgeService:
 
     def get_chunk(self, chunk_id: str, user_id: str) -> dict[str, Any] | None:
         with self._repo() as repository:
-            return repository.get_chunks_by_ids([chunk_id], user_id).get(chunk_id)
+            return repository.get_chunks_by_ids(
+                [chunk_id], user_id, include_historical=True
+            ).get(chunk_id)
+
+    def timeline(
+        self,
+        user_id: str,
+        *,
+        product: str | None = None,
+        dimension: str | None = None,
+        space_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        from competition.knowledge_timeline import build_knowledge_timeline
+
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            events = repository.list_timeline(
+                user_id,
+                product=product,
+                dimension=dimension,
+                space_id=space_id,
+                limit=limit,
+            )
+        return build_knowledge_timeline(events)
 
     def get_job(self, job_id: str, user_id: str) -> dict[str, Any] | None:
         with self._repo() as repository:
@@ -612,13 +1362,42 @@ class KnowledgeService:
     def status(self, user_id: str) -> dict[str, Any]:
         with self._repo() as repository:
             database = repository.stats(user_id)
+            spaces = repository.list_spaces(user_id)
         return {
             "database": database,
+            "spaces": spaces,
             "index": self.index.status(),
             "supported_extensions": sorted(SUPPORTED_SUFFIXES),
             "max_upload_bytes": MAX_UPLOAD_BYTES,
             "inbox": str(self.inbox),
+            "result_cache": {
+                "size": len(self._result_cache),
+                "capacity": RESULT_CACHE_SIZE,
+                "ttl_seconds": RESULT_CACHE_TTL_SECONDS,
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
+                "invalidations": self._cache_invalidations,
+            },
+            "warmup": dict(self._warmup_status),
         }
+
+    def warmup(self) -> dict[str, Any]:
+        self._warmup_status = {"status": "running", "started_at": _now()}
+        try:
+            retention = self.purge_expired()
+            result = self.index.warmup()
+            self._warmup_status = {**result, "retention": retention, "finished_at": _now()}
+        except Exception as exc:
+            self._warmup_status = {
+                "status": "degraded",
+                "error": str(exc)[:300],
+                "finished_at": _now(),
+            }
+            logger.warning("Local RAG model warmup degraded: %s", exc)
+        return dict(self._warmup_status)
+
+    def close(self) -> None:
+        self.index.close()
 
 
 def _chunk_from_row(row: dict[str, Any]) -> KnowledgeChunk:
@@ -667,5 +1446,5 @@ def close_knowledge_service() -> None:
     global _service
     with _service_lock:
         if _service is not None:
-            _service.index.close()
+            _service.close()
             _service = None

@@ -57,6 +57,17 @@ def reviewer_node(state: dict) -> dict:
     # G10: Claim number verification — check numbers in claims against source full text
     gaps.extend(_check_claim_numbers(analysis, collected, review_round))
 
+    # G11: Persisted semantic claim/evidence verification. This reuses cited
+    # data deterministically and adds one batched local-RAG pass when available.
+    claim_verification = _run_claim_verification(
+        analysis,
+        collected,
+        user_id=str(state.get("user_id") or "default"),
+    )
+    from competition.evidence_verification import verification_gaps
+
+    gaps.extend(verification_gaps(claim_verification, review_round))
+
     # Detect feedback loop (§3.15.6.2): same gap 3x → force close
     gaps = _filter_loop_gaps(gaps, prev_gaps, review_round)
 
@@ -80,6 +91,20 @@ def reviewer_node(state: dict) -> dict:
         quality["evidence_policy_compliant"] = not any(g.get("method") == "evidence_policy" or g.get("method") == "multi_source_policy" for g in gaps)
     quality["round_metrics"] = round_metrics
     quality["round_metrics_prev"] = prev_metrics
+    quality["claim_verification"] = {
+        key: claim_verification.get(key)
+        for key in (
+            "status",
+            "total",
+            "supported",
+            "contradicted",
+            "insufficient",
+            "groundedness",
+            "citation_precision",
+            "numeric_consistency",
+            "degraded_reason",
+        )
+    }
     # repair_delta: improvement in evidence tier distribution from previous round
     prev_strong = prev_metrics.get("strong", 0) if prev_metrics else 0
     curr_strong = round_metrics.get("strong", 0)
@@ -94,16 +119,56 @@ def reviewer_node(state: dict) -> dict:
         "gaps": gaps,
         "fact_errors": [g for g in gaps if g.get("type") == "fact_error"],
         "quality_summary": quality,
+        "claim_verification": claim_verification,
         "reviewer_notes": _generate_notes(gaps, improvement),
     }
 
     return {
         "review_verdict": verdict,
+        "claim_verification": claim_verification,
         "analysis_context_pack": context_pack,
         "review_round": new_round,
         "gap_coverage_improvement": improvement,
         "round_metrics": round_metrics,
     }
+
+
+def _run_claim_verification(
+    analysis: dict,
+    collected: list[dict],
+    *,
+    user_id: str,
+) -> dict:
+    """Use the local index when populated and degrade to cited evidence safely."""
+    from competition.evidence_verification import verify_claims
+
+    search_many = None
+    semantic_scorer = None
+    has_local_evidence = any(
+        isinstance(point, dict) and point.get("knowledge_chunk_id")
+        for point in collected
+    )
+    try:
+        from competition.knowledge_service import get_knowledge_service
+
+        if has_local_evidence:
+            service = get_knowledge_service()
+
+            def search_many(requests, owner):
+                return service.search_many(requests, user_id=owner)
+
+            if hasattr(service.index, "rerank_many"):
+                semantic_scorer = service.index.rerank_many
+    except Exception:
+        logger.warning("Claim verification could not inspect the local knowledge runtime", exc_info=True)
+
+    return verify_claims(
+        analysis,
+        collected,
+        user_id=user_id,
+        search_many=search_many,
+        semantic_scorer=semantic_scorer,
+    )
 
 
 # ── G1: URL Reachability (§3.6.1) ──

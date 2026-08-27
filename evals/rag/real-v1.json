@@ -1,0 +1,275 @@
+{
+  "name": "competitive-intelligence-public-snapshots-v1",
+  "description": "Curated excerpts from public first-party product documentation, captured with source URLs and dates for reproducible offline RAG regression testing.",
+  "schema_version": 1,
+  "curation": {
+    "policy": "Each excerpt must preserve a verifiable first-party claim, source URL, capture date, product, dimension, and expected retrieval labels. Refresh snapshots when the upstream page materially changes.",
+    "review_status": "human_curated",
+    "last_reviewed_at": "2026-08-27"
+  },
+  "k": 5,
+  "thresholds": {
+    "recall_at_k": 0.8,
+    "mrr": 0.7,
+    "ndcg_at_k": 0.75,
+    "abstention_accuracy": 1.0,
+    "traceability_rate": 1.0,
+    "claim_status_accuracy": 0.8,
+    "contradiction_recall": 0.8,
+    "citation_precision": 0.8,
+    "numeric_consistency_accuracy": 0.8,
+    "groundedness": 0.4,
+    "query_route_accuracy": 0.9,
+    "decomposition_coverage": 0.8
+  },
+  "documents": [
+    {
+      "id": "cursor-tab-docs",
+      "filename": "cursor-tab.md",
+      "title": "Cursor Tab overview snapshot",
+      "product": "Cursor",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.cursor.com/tab/overview",
+      "text": "# Cursor Tab\n\nCursor Tab is a specialized autocomplete model that predicts the next action and can suggest edits around the current code. It supports multi-line edits and suggestions that account for recent changes and surrounding code."
+    },
+    {
+      "id": "cursor-privacy-docs",
+      "filename": "cursor-privacy.md",
+      "title": "Cursor privacy overview snapshot",
+      "product": "Cursor",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://www.cursor.com/security",
+      "text": "# Privacy Mode\n\nWhen Privacy Mode is enabled, code data is not stored by model providers or used for training. Cursor is SOC 2 Type II certified and provides enterprise privacy controls."
+    },
+    {
+      "id": "copilot-coding-agent-docs",
+      "filename": "copilot-coding-agent.md",
+      "title": "GitHub Copilot coding agent snapshot",
+      "product": "GitHub Copilot",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-05-19T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-coding-agent",
+      "text": "# About Copilot coding agent\n\nGitHub Copilot coding agent works independently in a GitHub Actions-powered environment. It can complete development tasks and create a pull request for human review."
+    },
+    {
+      "id": "copilot-free-limits-docs",
+      "filename": "copilot-free-limits.md",
+      "title": "GitHub Copilot Free limits snapshot",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "published_at": "2024-12-18T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.github.com/en/copilot/get-started/plans-for-github-copilot",
+      "text": "# GitHub Copilot Free\n\nCopilot Free includes up to 2,000 code completions and 50 chat requests per month. Paid plans provide higher allowances and additional capabilities."
+    },
+    {
+      "id": "codex-cloud-docs",
+      "filename": "codex-cloud.md",
+      "title": "OpenAI Codex cloud snapshot",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-05-16T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://openai.com/index/introducing-codex/",
+      "text": "# Codex cloud tasks\n\nCodex can work on many tasks in parallel in isolated cloud environments. Each task runs in a sandbox preloaded with the repository and produces changes that a developer can review."
+    },
+    {
+      "id": "codex-cli-docs",
+      "filename": "codex-cli.md",
+      "title": "OpenAI Codex CLI snapshot",
+      "product": "OpenAI Codex",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-04-16T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://developers.openai.com/codex/cli/",
+      "text": "# Codex CLI\n\nCodex CLI is a coding agent that runs locally from the terminal. It can read, change, and run code in the selected directory while presenting actions for review and approval."
+    },
+    {
+      "id": "claude-code-overview-docs",
+      "filename": "claude-code-overview.md",
+      "title": "Claude Code overview snapshot",
+      "product": "Claude Code",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-02-24T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/overview",
+      "text": "# Claude Code overview\n\nClaude Code is an agentic coding tool that lives in the terminal, understands a codebase, and helps developers code faster through natural language commands."
+    },
+    {
+      "id": "claude-code-security-docs",
+      "filename": "claude-code-security.md",
+      "title": "Claude Code security snapshot",
+      "product": "Claude Code",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-02-24T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/security",
+      "text": "# Security safeguards\n\nClaude Code uses permission-based controls for sensitive operations. Write operations and commands are governed by explicit permissions that users can review and configure."
+    },
+    {
+      "id": "nextjs-routing-docs",
+      "filename": "nextjs-routing.md",
+      "title": "Next.js routing snapshot",
+      "product": "Next.js",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://nextjs.org/docs/app/building-your-application/routing",
+      "text": "# Routing fundamentals\n\nNext.js uses file-system routing where folders define routes and files create user interface segments."
+    }
+  ],
+  "queries": [
+    {
+      "id": "cursor-tab-direct",
+      "query": "What does Cursor Tab predict and suggest?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "relevant": ["cursor-tab-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "cursor-privacy-direct-zh",
+      "query": "Cursor 隐私模式如何处理代码数据？",
+      "products": ["Cursor"],
+      "dimensions": ["technology"],
+      "relevant": ["cursor-privacy-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "copilot-agent-direct",
+      "query": "Where does GitHub Copilot coding agent work and what artifact does it create for review?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["features"],
+      "relevant": ["copilot-coding-agent-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "copilot-free-direct",
+      "query": "How many completions and chat requests are included in Copilot Free each month?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["pricing"],
+      "relevant": ["copilot-free-limits-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "codex-cloud-direct",
+      "query": "How are Codex cloud tasks isolated and reviewed?",
+      "products": ["OpenAI Codex"],
+      "dimensions": ["technology"],
+      "relevant": ["codex-cloud-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "claude-permission-direct",
+      "query": "Which Claude Code safeguards govern write operations and commands?",
+      "products": ["Claude Code"],
+      "dimensions": ["technology"],
+      "relevant": ["claude-code-security-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "codex-copilot-comparison",
+      "query": "Compare how Codex and GitHub Copilot execute delegated tasks and return work for human review",
+      "products": ["OpenAI Codex", "GitHub Copilot"],
+      "dimensions": ["features", "technology"],
+      "relevant": ["codex-cloud-docs", "copilot-coding-agent-docs"],
+      "expected_route": "multi_hop",
+      "required_step_purposes": ["scoped_rewrite", "bridge_from_first_hop_evidence"]
+    },
+    {
+      "id": "terminal-agents-comparison",
+      "query": "比较 Codex CLI 和 Claude Code 的终端工作方式以及权限控制",
+      "products": ["OpenAI Codex", "Claude Code"],
+      "dimensions": ["features", "technology"],
+      "relevant": ["codex-cli-docs", "claude-code-overview-docs", "claude-code-security-docs"],
+      "expected_route": "multi_hop",
+      "required_step_purposes": ["scoped_rewrite", "bridge_from_first_hop_evidence"]
+    },
+    {
+      "id": "absent-product-abstention",
+      "query": "What enterprise controls are documented for Product Zeta Quantum?",
+      "products": ["Product Zeta Quantum"],
+      "dimensions": ["technology"],
+      "relevant": [],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    }
+  ],
+  "verification_cases": [
+    {
+      "id": "supported-copilot-free-limits",
+      "claim": "Copilot Free includes 2,000 code completions and 50 chat requests per month.",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "cited_documents": ["copilot-free-limits-docs"],
+      "expected_status": "supported",
+      "expected_supporting": ["copilot-free-limits-docs"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": true
+    },
+    {
+      "id": "contradictory-copilot-free-limits",
+      "claim": "Copilot Free includes 5,000 code completions and 50 chat requests per month.",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "cited_documents": ["copilot-free-limits-docs"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["copilot-free-limits-docs"],
+      "expected_numeric_consistency": false
+    },
+    {
+      "id": "insufficient-absent-product",
+      "claim": "Product Zeta Quantum offers an isolated private cloud coding agent.",
+      "product": "Product Zeta Quantum",
+      "dimension": "technology",
+      "cited_documents": [],
+      "expected_status": "insufficient",
+      "expected_supporting": [],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": null
+    },
+    {
+      "id": "polarity-contradiction-codex-cli",
+      "claim": "Codex CLI cannot read, change, or run code in the selected directory.",
+      "product": "OpenAI Codex",
+      "dimension": "features",
+      "cited_documents": ["codex-cli-docs"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["codex-cli-docs"],
+      "expected_numeric_consistency": null
+    },
+    {
+      "id": "incorrect-citation-recovers-codex-cloud",
+      "claim": "Codex can work on many tasks in parallel in isolated cloud environments.",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "cited_documents": ["nextjs-routing-docs"],
+      "expected_status": "supported",
+      "expected_supporting": ["codex-cloud-docs"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": null
+    }
+  ]
+}

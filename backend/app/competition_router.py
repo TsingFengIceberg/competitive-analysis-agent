@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue as _queue_mod
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -146,12 +147,14 @@ class KnowledgeInboxImportRequest(BaseModel):
     market_scope: str = Field(default="Global / unspecified", max_length=200)
     authority_tier: str = "third_party"
     published_at: str | None = None
+    space_id: str | None = None
 
 
 class KnowledgeIntelligenceImportRequest(BaseModel):
     item_keys: list[str] = Field(..., min_length=1, max_length=200)
     title: str = Field(default="Intelligence pool selection", max_length=300)
     authority_tier: str = "structured_fact"
+    space_id: str | None = None
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -164,7 +167,34 @@ class KnowledgeSearchRequest(BaseModel):
     published_after: str | None = None
     published_before: str | None = None
     include_reports: bool = False
+    temporal_mode: str = Field(default="current", pattern=r"^(current|historical|all|as_of)$")
+    as_of: str | None = None
+    space_ids: list[str] = Field(default_factory=list, max_length=20)
+    advanced: bool = True
     limit: int = Field(default=12, ge=1, le=50)
+
+
+class KnowledgeSpaceCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    require_approval: bool = True
+    retention_days: int = Field(default=0, ge=0, le=3650)
+
+
+class KnowledgeSpaceUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    require_approval: bool | None = None
+    retention_days: int | None = Field(default=None, ge=0, le=3650)
+
+
+class KnowledgeSpaceMemberRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=200)
+    role: str = Field(..., pattern=r"^(editor|viewer)$")
+
+
+class KnowledgeReviewRequest(BaseModel):
+    decision: str = Field(..., pattern=r"^(approved|rejected)$")
 
 
 class StreamEvent(BaseModel):
@@ -1100,19 +1130,42 @@ def _process_knowledge_job(job_id: str, operation: str) -> None:
     service = get_knowledge_service()
     if operation == "rebuild":
         service.process_rebuild_job(job_id)
+    elif operation == "import_history":
+        service.process_intelligence_history_job(job_id)
     else:
         service.process_job(job_id)
 
 
-def _queue_knowledge_job(result: dict) -> dict:
+def _get_knowledge_executor() -> ThreadPoolExecutor:
     global _knowledge_executor
+    with _knowledge_executor_lock:
+        if _knowledge_executor is None:
+            _knowledge_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-worker")
+        return _knowledge_executor
+
+
+def start_knowledge_runtime() -> None:
+    """Warm local retrieval models in the background without delaying API startup."""
+    def warmup() -> None:
+        from competition.knowledge_service import get_knowledge_service
+
+        service = get_knowledge_service()
+        if os.getenv("CI_AGENT_RAG_PREWARM", "true").lower() == "true":
+            service.warmup()
+        else:
+            service.purge_expired()
+
+    _get_knowledge_executor().submit(warmup)
+
+
+def _queue_knowledge_job(result: dict) -> dict:
     job = result.get("job") or result
     if job.get("status") == "queued":
-        with _knowledge_executor_lock:
-            if _knowledge_executor is None:
-                _knowledge_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-ingest")
-            executor = _knowledge_executor
-        executor.submit(_process_knowledge_job, job["job_id"], job.get("operation", "ingest"))
+        _get_knowledge_executor().submit(
+            _process_knowledge_job,
+            job["job_id"],
+            job.get("operation", "ingest"),
+        )
     return result
 
 
@@ -1143,6 +1196,7 @@ async def upload_knowledge_document(
     market_scope: str = Form("Global / unspecified"),
     authority_tier: str = Form("third_party"),
     published_at: str | None = Form(None),
+    space_id: str | None = Form(None),
 ) -> dict:
     from competition.knowledge_service import MAX_UPLOAD_BYTES, get_knowledge_service
 
@@ -1162,8 +1216,9 @@ async def upload_knowledge_document(
             market_scope=market_scope,
             authority_tier=authority_tier,
             published_at=published_at,
+            space_id=space_id,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _queue_knowledge_job(result)
 
@@ -1186,8 +1241,9 @@ async def import_knowledge_inbox(
             market_scope=body.market_scope,
             authority_tier=body.authority_tier,
             published_at=body.published_at,
+            space_id=body.space_id,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _queue_knowledge_job(result)
 
@@ -1196,7 +1252,10 @@ def _load_intelligence_items(item_keys: list[str]) -> list[dict]:
     from competition.intelligence_repo import IntelligenceRepository
 
     with IntelligenceRepository() as repository:
-        return repository.get_items_by_keys(item_keys)
+        items = repository.get_items_by_keys(item_keys)
+        for item in items:
+            item["versions"] = repository.get_versions(item["item_key"])
+        return items
 
 
 @router.post("/knowledge/import-intelligence", status_code=202)
@@ -1212,32 +1271,13 @@ async def import_intelligence_to_knowledge(
     service = get_knowledge_service()
     imports: list[dict] = []
     for item in items:
-        markdown = (
-            f"# {item['label']}\n\n"
-            f"- Product: {item['product']}\n"
-            f"- Dimension: {item['dimension']}\n"
-            f"- Source: {item['source_url']}\n"
-            f"- Published: {item.get('published_at') or 'unknown'}\n"
-            f"- Observed: {item.get('fetched_at') or 'unknown'}\n"
-            f"- Confidence: {item.get('confidence', 0.5)}\n\n"
-            f"## Fact\n\n{item['value']}\n"
-        )
         result = await asyncio.to_thread(
-            service.register_bytes,
+            service.queue_intelligence_history,
             user_id=_get_user_id(fastapi_request),
-            filename=f"{item['item_key']}.md",
-            data=markdown.encode(),
-            title=f"{body.title}: {item['label']}",
-            media_type="text/markdown",
-            source_type="intelligence",
-            source_uri=f"intelligence://{item['item_key']}",
-            product=item["product"],
-            dimension=item["dimension"],
-            market_scope=item.get("scope") or "Global / unspecified",
+            item=item,
+            title=body.title,
             authority_tier=body.authority_tier,
-            published_at=item.get("published_at"),
-            observed_at=item.get("fetched_at"),
-            metadata={"intelligence_item_key": item["item_key"], "original_source_url": item["source_url"]},
+            space_id=body.space_id,
         )
         imports.append(_queue_knowledge_job(result))
     return {"imports": imports, "requested": len(body.item_keys), "found": len(items)}
@@ -1249,6 +1289,8 @@ async def list_knowledge_documents(
     status: str | None = None,
     product: str | None = None,
     source_type: str | None = None,
+    space_id: str | None = None,
+    approval_status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -1260,6 +1302,8 @@ async def list_knowledge_documents(
         status=status,
         product=product,
         source_type=source_type,
+        space_id=space_id,
+        approval_status=approval_status,
         limit=limit,
         offset=offset,
     )
@@ -1339,6 +1383,16 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
     from competition.knowledge_service import get_knowledge_service
     from competition.knowledge_types import RetrievalFilters
 
+    if body.temporal_mode == "as_of":
+        if not body.as_of:
+            raise HTTPException(status_code=422, detail="as_of is required when temporal_mode is 'as_of'")
+        try:
+            from datetime import datetime
+
+            datetime.fromisoformat(body.as_of.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="as_of must be an ISO 8601 timestamp") from exc
+
     filters = RetrievalFilters(
         products=tuple(body.products),
         dimensions=tuple(body.dimensions),
@@ -1348,18 +1402,237 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
         published_after=body.published_after,
         published_before=body.published_before,
         include_reports=body.include_reports,
+        temporal_mode=body.temporal_mode,
+        as_of=body.as_of,
+        space_ids=tuple(body.space_ids),
     )
     try:
-        hits = await asyncio.to_thread(
-            get_knowledge_service().search,
-            body.query,
-            user_id=_get_user_id(fastapi_request),
-            filters=filters,
-            limit=body.limit,
-        )
+        service = get_knowledge_service()
+        if body.advanced:
+            hits, plan = await asyncio.to_thread(
+                service.search_planned,
+                body.query,
+                user_id=_get_user_id(fastapi_request),
+                filters=filters,
+                limit=body.limit,
+            )
+        else:
+            hits = await asyncio.to_thread(
+                service.search,
+                body.query,
+                user_id=_get_user_id(fastapi_request),
+                filters=filters,
+                limit=body.limit,
+            )
+            plan = None
     except KnowledgeUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"query": body.query, "hits": [hit.to_dict() for hit in hits]}
+    return {
+        "query": body.query,
+        "hits": [hit.to_dict() for hit in hits],
+        "plan": plan.to_dict() if plan is not None else None,
+    }
+
+
+@router.get("/knowledge/timeline")
+async def get_knowledge_timeline(
+    fastapi_request: Request,
+    product: str | None = None,
+    dimension: str | None = None,
+    space_id: str | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    return await asyncio.to_thread(
+        get_knowledge_service().timeline,
+        _get_user_id(fastapi_request),
+        product=product,
+        dimension=dimension,
+        space_id=space_id,
+        limit=limit,
+    )
+
+
+@router.get("/knowledge/spaces")
+async def list_knowledge_spaces(fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    spaces = await asyncio.to_thread(get_knowledge_service().list_spaces, _get_user_id(fastapi_request))
+    return {"spaces": spaces}
+
+
+@router.post("/knowledge/spaces", status_code=201)
+async def create_knowledge_space(body: KnowledgeSpaceCreateRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    space = await asyncio.to_thread(
+        get_knowledge_service().create_space,
+        _get_user_id(fastapi_request),
+        name=body.name,
+        description=body.description,
+        require_approval=body.require_approval,
+        retention_days=body.retention_days,
+    )
+    return {"space": space}
+
+
+@router.patch("/knowledge/spaces/{space_id}")
+async def update_knowledge_space(space_id: str, body: KnowledgeSpaceUpdateRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    values = body.model_dump(exclude_none=True)
+    try:
+        space = await asyncio.to_thread(
+            get_knowledge_service().update_space,
+            _get_user_id(fastapi_request),
+            space_id,
+            **values,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"space": space}
+
+
+@router.get("/knowledge/spaces/{space_id}/members")
+async def list_knowledge_space_members(space_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        members = await asyncio.to_thread(
+            get_knowledge_service().list_space_members, _get_user_id(fastapi_request), space_id
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"members": members}
+
+
+@router.put("/knowledge/spaces/{space_id}/members")
+async def set_knowledge_space_member(space_id: str, body: KnowledgeSpaceMemberRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        members = await asyncio.to_thread(
+            get_knowledge_service().set_space_member,
+            _get_user_id(fastapi_request),
+            space_id,
+            body.user_id,
+            body.role,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"members": members}
+
+
+@router.delete("/knowledge/spaces/{space_id}/members/{member_id}")
+async def remove_knowledge_space_member(space_id: str, member_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        removed = await asyncio.to_thread(
+            get_knowledge_service().remove_space_member,
+            _get_user_id(fastapi_request),
+            space_id,
+            member_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Knowledge-space member not found")
+    return {"removed": True}
+
+
+@router.post("/knowledge/documents/{document_id}/review")
+async def review_knowledge_document(document_id: str, body: KnowledgeReviewRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        document = await asyncio.to_thread(
+            get_knowledge_service().review_document,
+            _get_user_id(fastapi_request),
+            document_id,
+            body.decision,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"document": document}
+
+
+@router.get("/knowledge/deletions")
+async def list_knowledge_deletions(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    records = await asyncio.to_thread(
+        get_knowledge_service().deletion_audit,
+        _get_user_id(fastapi_request),
+        space_id=space_id,
+        limit=limit,
+    )
+    return {"records": records}
+
+
+@router.post("/knowledge/retention/run")
+async def run_knowledge_retention(fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    return await asyncio.to_thread(
+        get_knowledge_service().purge_expired,
+        actor_id=_get_user_id(fastapi_request),
+    )
+
+
+@router.get("/knowledge/events")
+async def list_knowledge_events(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    entity_id: str | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    events = await asyncio.to_thread(
+        get_knowledge_service().list_events,
+        _get_user_id(fastapi_request),
+        space_id=space_id,
+        entity_id=entity_id,
+        limit=limit,
+    )
+    return {"events": events}
+
+
+@router.get("/knowledge/insights")
+async def list_knowledge_insights(fastapi_request: Request, space_id: str | None = None) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    insights = await asyncio.to_thread(
+        get_knowledge_service().list_insights,
+        _get_user_id(fastapi_request),
+        space_id=space_id,
+    )
+    return {"insights": insights}
+
+
+@router.post("/knowledge/insights/refresh")
+async def refresh_knowledge_insights(space_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        insights = await asyncio.to_thread(
+            get_knowledge_service().refresh_insights,
+            _get_user_id(fastapi_request),
+            space_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"insights": insights}
 
 
 @router.get("/knowledge/chunks/{chunk_id}")

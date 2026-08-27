@@ -3,15 +3,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
+  BrainCircuit,
+  Check,
+  Clock3,
   Database,
   FileSearch,
   FileUp,
   FolderInput,
+  History,
   Loader2,
+  Plus,
   RefreshCw,
   RotateCw,
   Search,
+  ShieldCheck,
   Trash2,
+  Users,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,7 +28,11 @@ import {
   type KnowledgeAuthority,
   type KnowledgeDocument,
   type KnowledgeHit,
+  type KnowledgeEvent,
+  type KnowledgeInsight,
   type KnowledgeJob,
+  type KnowledgeQueryPlan,
+  type KnowledgeSpace,
   type KnowledgeStatus,
 } from "@/components/competition/api-client";
 import { Button } from "@/components/ui/button";
@@ -63,6 +75,7 @@ const AUTHORITIES: Array<[KnowledgeAuthority, string]> = [
 ];
 
 type ImportMode = "upload" | "inbox" | "intelligence";
+type TemporalMode = "current" | "historical" | "all" | "as_of";
 
 interface IntelligenceItem {
   item_key: string;
@@ -101,6 +114,61 @@ interface KnowledgeChunkDetail {
   section_path: string;
   page_no?: number | null;
   title?: string;
+  version_no?: number;
+  temporal_status?: string;
+  valid_from?: string | null;
+  valid_to?: string | null;
+}
+
+interface KnowledgeTimeline {
+  summary: {
+    event_count: number;
+    document_count: number;
+    current_count: number;
+    historical_count: number;
+    conflict_count: number;
+    unresolved_conflict_count: number;
+  };
+  events: Array<{
+    document_id: string;
+    version_no: number;
+    title: string;
+    product: string;
+    dimension: string;
+    valid_from: string;
+    temporal_status: "current" | "historical";
+    change_type: "version_added" | "version_changed";
+    changed: boolean;
+    excerpt: string;
+    chunk_id?: string | null;
+  }>;
+  conflicts: Array<{
+    conflict_id: string;
+    type: "numeric_source_conflict";
+    product: string;
+    dimension: string;
+    left: { source_uri: string; values: string[]; excerpt: string };
+    right: { source_uri: string; values: string[]; excerpt: string };
+    resolution: {
+      status: "resolved" | "unresolved";
+      strategy: "higher_authority" | "newer_evidence" | "manual_review";
+      preferred_document_id?: string | null;
+    };
+  }>;
+}
+
+interface KnowledgeMember {
+  user_id: string;
+  role: "owner" | "editor" | "viewer";
+  created_at: string;
+}
+
+interface KnowledgeDeletion {
+  audit_id: string;
+  document_id: string;
+  title: string;
+  reason: string;
+  deleted_at: string;
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -167,17 +235,49 @@ export default function KnowledgePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
+  const [temporalMode, setTemporalMode] = useState<TemporalMode>("current");
+  const [asOf, setAsOf] = useState("");
+  const [timeline, setTimeline] = useState<KnowledgeTimeline | null>(null);
   const [detail, setDetail] = useState<KnowledgeDetail | null>(null);
   const [chunk, setChunk] = useState<KnowledgeChunkDetail | null>(null);
+  const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
+  const [spaceId, setSpaceId] = useState("");
+  const [members, setMembers] = useState<KnowledgeMember[]>([]);
+  const [events, setEvents] = useState<KnowledgeEvent[]>([]);
+  const [insights, setInsights] = useState<KnowledgeInsight[]>([]);
+  const [deletions, setDeletions] = useState<KnowledgeDeletion[]>([]);
+  const [queryPlan, setQueryPlan] = useState<KnowledgeQueryPlan | null>(null);
+  const [newSpaceName, setNewSpaceName] = useState("");
+  const [newMemberId, setNewMemberId] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState<"editor" | "viewer">(
+    "viewer",
+  );
+  const [retentionDays, setRetentionDays] = useState("0");
+  const [requireApproval, setRequireApproval] = useState(false);
 
-  const refresh = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true);
-    try {
-      const [statusPayload, documentPayload, jobPayload, factPayload] =
-        await Promise.all([
+  const selectedSpace = useMemo(
+    () => spaces.find((space) => space.space_id === spaceId) ?? null,
+    [spaceId, spaces],
+  );
+
+  const refresh = useCallback(
+    async (quiet = false) => {
+      if (!quiet) setLoading(true);
+      try {
+        const scope = spaceId ? `space_id=${encodeURIComponent(spaceId)}&` : "";
+        const [
+          statusPayload,
+          documentPayload,
+          jobPayload,
+          factPayload,
+          timelinePayload,
+          eventPayload,
+          insightPayload,
+          deletionPayload,
+        ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
-            `${API}/knowledge/documents?limit=200`,
+            `${API}/knowledge/documents?${scope}limit=200`,
           ),
           requestJson<{ jobs: KnowledgeJob[] }>(
             `${API}/knowledge/jobs?limit=30`,
@@ -185,24 +285,59 @@ export default function KnowledgePage() {
           requestJson<{ items: IntelligenceItem[] }>(
             `${API}/intelligence/items?limit=30`,
           ),
+          requestJson<KnowledgeTimeline>(
+            `${API}/knowledge/timeline?${scope}limit=200`,
+          ),
+          requestJson<{ events: KnowledgeEvent[] }>(
+            `${API}/knowledge/events?${scope}limit=200`,
+          ),
+          requestJson<{ insights: KnowledgeInsight[] }>(
+            `${API}/knowledge/insights?${spaceId ? `space_id=${encodeURIComponent(spaceId)}` : ""}`,
+          ),
+          requestJson<{ records: KnowledgeDeletion[] }>(
+            `${API}/knowledge/deletions?${scope}limit=30`,
+          ),
         ]);
-      setStatus(statusPayload);
-      setDocuments(documentPayload.documents);
-      setJobs(jobPayload.jobs);
-      setFacts(factPayload.items);
-    } catch (error) {
-      if (!quiet)
-        toast.error(
-          error instanceof Error ? error.message : "知识库状态加载失败",
-        );
-    } finally {
-      if (!quiet) setLoading(false);
-    }
-  }, []);
+        setStatus(statusPayload);
+        setDocuments(documentPayload.documents);
+        setJobs(jobPayload.jobs);
+        setFacts(factPayload.items);
+        setTimeline(timelinePayload);
+        setSpaces(statusPayload.spaces ?? []);
+        setEvents(eventPayload.events);
+        setInsights(insightPayload.insights);
+        setDeletions(deletionPayload.records);
+        if (!spaceId && statusPayload.spaces?.length) {
+          const preferred =
+            statusPayload.spaces.find(
+              (space) => space.name === "Personal knowledge",
+            ) ?? statusPayload.spaces[0];
+          if (preferred) setSpaceId(preferred.space_id);
+        }
+      } catch (error) {
+        if (!quiet)
+          toast.error(
+            error instanceof Error ? error.message : "知识库状态加载失败",
+          );
+      } finally {
+        if (!quiet) setLoading(false);
+      }
+    },
+    [spaceId],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!spaceId) return;
+    void requestJson<{ members: KnowledgeMember[] }>(
+      `${API}/knowledge/spaces/${spaceId}/members`,
+    )
+      .then((payload) => setMembers(payload.members))
+      .catch(() => setMembers([]));
+  }, [spaceId]);
 
   useEffect(() => {
     if (!jobs.some((job) => ["queued", "running"].includes(job.status))) return;
@@ -230,6 +365,7 @@ export default function KnowledgePage() {
     body.set("product", product);
     body.set("dimension", dimension);
     body.set("authority_tier", authority);
+    if (spaceId) body.set("space_id", spaceId);
     if (publishedAt)
       body.set("published_at", new Date(publishedAt).toISOString());
     setBusy(true);
@@ -265,6 +401,7 @@ export default function KnowledgePage() {
           dimension,
           authority_tier: authority,
           published_at: publishedAt || null,
+          space_id: spaceId || null,
         }),
       });
       toast.success("本地文档已进入处理队列");
@@ -290,6 +427,7 @@ export default function KnowledgePage() {
             item_keys: selectedFacts,
             title: title || "竞品观察事实",
             authority_tier: "structured_fact",
+            space_id: spaceId || null,
           }),
         },
       );
@@ -307,21 +445,29 @@ export default function KnowledgePage() {
     if (!searchQuery.trim()) return;
     setSearching(true);
     try {
-      const result = await requestJson<{ hits: KnowledgeHit[] }>(
-        `${API}/knowledge/search`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...csrfHeaders() },
-          body: JSON.stringify({
-            query: searchQuery,
-            products: product ? [product] : [],
-            dimensions: dimension ? [dimension] : [],
-            include_reports: false,
-            limit: 12,
-          }),
-        },
-      );
+      const result = await requestJson<{
+        hits: KnowledgeHit[];
+        plan: KnowledgeQueryPlan | null;
+      }>(`${API}/knowledge/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({
+          query: searchQuery,
+          products: product ? [product] : [],
+          dimensions: dimension ? [dimension] : [],
+          include_reports: false,
+          temporal_mode: temporalMode,
+          as_of:
+            temporalMode === "as_of" && asOf
+              ? new Date(asOf).toISOString()
+              : null,
+          space_ids: spaceId ? [spaceId] : [],
+          advanced: true,
+          limit: 12,
+        }),
+      });
       setHits(result.hits);
+      setQueryPlan(result.plan);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "检索失败");
     } finally {
@@ -366,6 +512,146 @@ export default function KnowledgePage() {
       setBusy(false);
     }
   };
+
+  const createSpace = async () => {
+    if (!newSpaceName.trim()) return toast.error("请输入知识空间名称");
+    setBusy(true);
+    try {
+      const result = await requestJson<{ space: KnowledgeSpace }>(
+        `${API}/knowledge/spaces`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({
+            name: newSpaceName.trim(),
+            require_approval: true,
+            retention_days: 0,
+          }),
+        },
+      );
+      setNewSpaceName("");
+      setSpaceId(result.space.space_id);
+      toast.success("项目知识空间已创建");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "知识空间创建失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePolicy = async () => {
+    if (!selectedSpace || selectedSpace.role !== "owner") return;
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/spaces/${selectedSpace.space_id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({
+          require_approval: requireApproval,
+          retention_days: Math.max(
+            0,
+            Number.parseInt(retentionDays || "0", 10) || 0,
+          ),
+        }),
+      });
+      toast.success("空间治理策略已更新");
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "策略更新失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addMember = async () => {
+    if (!selectedSpace || !newMemberId.trim()) return;
+    setBusy(true);
+    try {
+      const result = await requestJson<{ members: KnowledgeMember[] }>(
+        `${API}/knowledge/spaces/${selectedSpace.space_id}/members`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({
+            user_id: newMemberId.trim(),
+            role: newMemberRole,
+          }),
+        },
+      );
+      setMembers(result.members);
+      setNewMemberId("");
+      toast.success("空间成员已更新");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "成员更新失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMember = async (memberId: string) => {
+    if (!selectedSpace || selectedSpace.role !== "owner") return;
+    setBusy(true);
+    try {
+      await requestJson(
+        `${API}/knowledge/spaces/${selectedSpace.space_id}/members/${encodeURIComponent(memberId)}`,
+        { method: "DELETE", headers: csrfHeaders() },
+      );
+      setMembers((current) =>
+        current.filter((member) => member.user_id !== memberId),
+      );
+      toast.success("成员已移出知识空间");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "移除成员失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reviewDocument = async (
+    documentId: string,
+    decision: "approved" | "rejected",
+  ) => {
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/documents/${documentId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ decision }),
+      });
+      toast.success(
+        decision === "approved" ? "资料已批准并可用于检索" : "资料已驳回",
+      );
+      setDetail(null);
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "审批失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshInsights = async () => {
+    if (!spaceId) return;
+    setBusy(true);
+    try {
+      const result = await requestJson<{ insights: KnowledgeInsight[] }>(
+        `${API}/knowledge/insights/refresh?space_id=${encodeURIComponent(spaceId)}`,
+        { method: "POST", headers: csrfHeaders() },
+      );
+      setInsights(result.insights);
+      toast.success("长期洞察已根据当前事件重新计算");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "洞察刷新失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedSpace) return;
+    setRetentionDays(String(selectedSpace.retention_days));
+    setRequireApproval(selectedSpace.require_approval);
+  }, [selectedSpace]);
 
   return (
     <main className="bg-background h-full min-w-0 overflow-y-auto">
@@ -423,6 +709,429 @@ export default function KnowledgePage() {
           <StatusNotice tone="warning" title="本地检索当前不可用">
             文档仍可管理，但分析会自动退回实时采集。请检查本地嵌入、稀疏检索和重排模型路径。
           </StatusNotice>
+        )}
+
+        <section className="ui-panel overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <ShieldCheck className="size-4 shrink-0" />
+              <div>
+                <h2 className="text-sm font-semibold">知识空间与治理</h2>
+                <div className="text-muted-foreground text-xs">
+                  空间决定资料边界；审批、成员权限、保留期限和删除记录均可审计。
+                </div>
+              </div>
+            </div>
+            {selectedSpace && (
+              <StatusBadge
+                tone={selectedSpace.role === "owner" ? "success" : "info"}
+                label={
+                  selectedSpace.role === "owner"
+                    ? "所有者"
+                    : selectedSpace.role === "editor"
+                      ? "可编辑"
+                      : "只读"
+                }
+              />
+            )}
+          </div>
+          <div className="grid divide-y lg:grid-cols-[minmax(260px,0.7fr)_minmax(0,1.3fr)] lg:divide-x lg:divide-y-0">
+            <div className="space-y-3 p-4">
+              <div className="space-y-1.5">
+                <label
+                  className="text-xs font-medium"
+                  htmlFor="knowledge-space"
+                >
+                  当前空间
+                </label>
+                <Select value={spaceId} onValueChange={setSpaceId}>
+                  <SelectTrigger id="knowledge-space">
+                    <SelectValue placeholder="选择知识空间" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {spaces.map((space) => (
+                      <SelectItem key={space.space_id} value={space.space_id}>
+                        {space.name} · {space.document_count} 份资料
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={newSpaceName}
+                  onChange={(event) => setNewSpaceName(event.target.value)}
+                  placeholder="新项目空间名称"
+                  onKeyDown={(event) =>
+                    event.key === "Enter" && void createSpace()
+                  }
+                />
+                <Button
+                  size="icon"
+                  variant="outline"
+                  title="创建项目知识空间"
+                  aria-label="创建项目知识空间"
+                  disabled={busy || !newSpaceName.trim()}
+                  onClick={() => void createSpace()}
+                >
+                  <Plus className="size-4" />
+                </Button>
+              </div>
+              {selectedSpace && (
+                <div className="text-muted-foreground grid grid-cols-3 border-y py-2 text-center text-[11px]">
+                  <span>{selectedSpace.member_count} 位成员</span>
+                  <span>{selectedSpace.pending_count} 条待审</span>
+                  <span>
+                    {selectedSpace.retention_days
+                      ? `${selectedSpace.retention_days} 天`
+                      : "长期保留"}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="grid divide-y md:grid-cols-2 md:divide-x md:divide-y-0">
+              <div className="space-y-3 p-4">
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <Clock3 className="size-3.5" />
+                  审批与保留策略
+                </div>
+                <label className="flex items-center justify-between gap-3 text-xs">
+                  <span>新资料需所有者批准</span>
+                  <input
+                    type="checkbox"
+                    checked={requireApproval}
+                    disabled={selectedSpace?.role !== "owner"}
+                    onChange={(event) =>
+                      setRequireApproval(event.target.checked)
+                    }
+                  />
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    max="3650"
+                    value={retentionDays}
+                    disabled={selectedSpace?.role !== "owner"}
+                    onChange={(event) => setRetentionDays(event.target.value)}
+                    aria-label="资料保留天数"
+                  />
+                  <span className="text-muted-foreground shrink-0 text-xs">
+                    天，0 为长期
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  disabled={busy || selectedSpace?.role !== "owner"}
+                  onClick={() => void savePolicy()}
+                >
+                  <Check className="size-3.5" />
+                  保存策略
+                </Button>
+              </div>
+              <div className="space-y-3 p-4">
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <Users className="size-3.5" />
+                  成员权限
+                </div>
+                <div className="max-h-20 divide-y overflow-y-auto border-y text-xs">
+                  {members.map((member) => (
+                    <div
+                      key={member.user_id}
+                      className="flex items-center justify-between gap-2 py-1.5"
+                    >
+                      <span className="min-w-0 truncate" title={member.user_id}>
+                        {member.user_id}
+                      </span>
+                      <span className="text-muted-foreground ml-auto shrink-0">
+                        {member.role}
+                      </span>
+                      {selectedSpace?.role === "owner" &&
+                        member.role !== "owner" && (
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive"
+                            title="移除成员"
+                            aria-label={`移除成员 ${member.user_id}`}
+                            disabled={busy}
+                            onClick={() => void removeMember(member.user_id)}
+                          >
+                            <X className="size-3" />
+                          </button>
+                        )}
+                    </div>
+                  ))}
+                </div>
+                {selectedSpace?.role === "owner" && (
+                  <div className="flex gap-2">
+                    <Input
+                      value={newMemberId}
+                      onChange={(event) => setNewMemberId(event.target.value)}
+                      placeholder="成员用户 ID"
+                    />
+                    <Select
+                      value={newMemberRole}
+                      onValueChange={(value) =>
+                        setNewMemberRole(value as "editor" | "viewer")
+                      }
+                    >
+                      <SelectTrigger className="w-24" aria-label="成员角色">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="viewer">只读</SelectItem>
+                        <SelectItem value="editor">编辑</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      title="添加成员"
+                      aria-label="添加成员"
+                      disabled={busy || !newMemberId.trim()}
+                      onClick={() => void addMember()}
+                    >
+                      <Plus className="size-4" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          {deletions.length > 0 && (
+            <div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 border-t px-4 py-2 text-[11px]">
+              <span className="text-foreground font-medium">最近删除审计</span>
+              {deletions.slice(0, 3).map((record) => (
+                <span key={record.audit_id}>
+                  {record.title} · {record.reason} ·{" "}
+                  {new Date(record.deleted_at).toLocaleDateString("zh-CN")}
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {timeline && timeline.summary.event_count > 0 && (
+          <section className="ui-panel overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <History className="size-4 shrink-0" />
+                <div>
+                  <h2 className="text-sm font-semibold">知识变化与来源冲突</h2>
+                  <div className="text-muted-foreground text-xs">
+                    每个版本保留有效期；不同来源的数字差异单独标记，不会静默覆盖。
+                  </div>
+                </div>
+              </div>
+              <StatusBadge
+                tone={
+                  timeline.summary.unresolved_conflict_count
+                    ? "danger"
+                    : timeline.summary.conflict_count
+                      ? "warning"
+                      : "success"
+                }
+                label={`${timeline.summary.conflict_count} 个冲突`}
+              />
+            </div>
+            <div className="grid divide-y sm:grid-cols-[minmax(0,1fr)_minmax(280px,0.8fr)] sm:divide-x sm:divide-y-0">
+              <div className="max-h-56 divide-y overflow-y-auto px-4">
+                {timeline.events.slice(0, 20).map((event) => (
+                  <button
+                    key={`${event.document_id}-${event.version_no}`}
+                    type="button"
+                    disabled={!event.chunk_id}
+                    onClick={() =>
+                      event.chunk_id && void loadChunk(event.chunk_id)
+                    }
+                    className="hover:bg-muted/50 grid w-full min-w-0 gap-1 py-2.5 text-left sm:grid-cols-[minmax(0,1fr)_auto]"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium">
+                        {event.title} · v{event.version_no}
+                      </div>
+                      <div className="text-muted-foreground mt-0.5 truncate text-[10px]">
+                        {event.product || "通用"} ·{" "}
+                        {event.dimension || "跨维度"} ·{" "}
+                        {event.change_type === "version_changed"
+                          ? "内容变化"
+                          : "首次入库"}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge
+                        tone={
+                          event.temporal_status === "current"
+                            ? "success"
+                            : "neutral"
+                        }
+                        label={
+                          event.temporal_status === "current" ? "当前" : "历史"
+                        }
+                      />
+                      <span className="text-muted-foreground text-[10px] tabular-nums">
+                        {new Date(event.valid_from).toLocaleDateString("zh-CN")}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="max-h-56 space-y-2 overflow-y-auto p-3">
+                {timeline.conflicts.length ? (
+                  timeline.conflicts.map((conflict) => (
+                    <div
+                      key={conflict.conflict_id}
+                      className="ui-inset p-2.5 text-xs"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-medium">
+                          {conflict.product || "通用"} ·{" "}
+                          {conflict.dimension || "跨维度"}
+                        </span>
+                        <StatusBadge
+                          tone={
+                            conflict.resolution.status === "resolved"
+                              ? "warning"
+                              : "danger"
+                          }
+                          label={
+                            conflict.resolution.status === "resolved"
+                              ? "已给出优先依据"
+                              : "需人工判断"
+                          }
+                        />
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-[10px] [overflow-wrap:anywhere] break-words">
+                        {conflict.left.values.join(", ")} ↔{" "}
+                        {conflict.right.values.join(", ")}
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-[10px]">
+                        处理策略：
+                        {conflict.resolution.strategy === "higher_authority"
+                          ? "优先权威来源"
+                          : conflict.resolution.strategy === "newer_evidence"
+                            ? "优先较新证据"
+                            : "保留冲突并等待人工复核"}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <StatusNotice tone="success" title="当前来源一致">
+                    没有发现同一竞品和维度下的数值冲突。
+                  </StatusNotice>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {(events.length > 0 || insights.length > 0) && (
+          <section className="ui-panel overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <BrainCircuit className="size-4 shrink-0" />
+                <div>
+                  <h2 className="text-sm font-semibold">实体事件与长期洞察</h2>
+                  <div className="text-muted-foreground text-xs">
+                    事件由跨来源证据归并；事实、推断和待验证假设始终分层呈现。
+                  </div>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || !spaceId || selectedSpace?.role === "viewer"}
+                onClick={() => void refreshInsights()}
+              >
+                <RefreshCw className="size-3.5" />
+                重新计算洞察
+              </Button>
+            </div>
+            <div className="grid divide-y lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+              <div className="max-h-80 divide-y overflow-y-auto px-4">
+                {events.map((event) => (
+                  <button
+                    key={event.event_id}
+                    type="button"
+                    className="hover:bg-muted/50 w-full py-3 text-left"
+                    disabled={!event.evidence[0]?.chunk_id}
+                    onClick={() =>
+                      event.evidence[0]?.chunk_id &&
+                      void loadChunk(event.evidence[0].chunk_id)
+                    }
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium">
+                          {event.entity_name} · {event.title}
+                        </div>
+                        <div className="text-muted-foreground mt-1 line-clamp-2 text-[11px]">
+                          {event.statement}
+                        </div>
+                      </div>
+                      <StatusBadge
+                        tone={
+                          event.status === "corroborated"
+                            ? "success"
+                            : "neutral"
+                        }
+                        label={
+                          event.status === "corroborated"
+                            ? `${event.evidence_count} 源印证`
+                            : "单源观察"
+                        }
+                      />
+                    </div>
+                    <div className="text-muted-foreground mt-1 text-[10px]">
+                      {event.dimension} · {event.event_type}
+                    </div>
+                  </button>
+                ))}
+                {!events.length && (
+                  <div className="text-muted-foreground py-10 text-center text-xs">
+                    批准资料后会自动形成事件。
+                  </div>
+                )}
+              </div>
+              <div className="max-h-80 divide-y overflow-y-auto px-4">
+                {insights.map((insight) => {
+                  const presentation =
+                    insight.insight_type === "fact"
+                      ? { label: "事实", tone: "success" as const }
+                      : insight.insight_type === "inference"
+                        ? { label: "推断", tone: "info" as const }
+                        : { label: "待验证假设", tone: "warning" as const };
+                  return (
+                    <div key={insight.insight_id} className="py-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 text-xs font-medium">
+                          {insight.entity_name} · {insight.title}
+                        </div>
+                        <StatusBadge
+                          tone={presentation.tone}
+                          label={presentation.label}
+                        />
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-[11px] leading-5">
+                        {insight.summary}
+                      </div>
+                      <div className="text-muted-foreground mt-1 text-[10px]">
+                        置信度 {Math.round(insight.confidence * 100)}% ·{" "}
+                        {insight.evidence_event_ids.length} 个事件依据
+                      </div>
+                    </div>
+                  );
+                })}
+                {!insights.length && (
+                  <div className="text-muted-foreground py-10 text-center text-xs">
+                    至少形成一个事件后才会生成分层洞察。
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
         )}
 
         <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.6fr)]">
@@ -630,6 +1339,52 @@ export default function KnowledgePage() {
                     )}
                   </Button>
                 </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                  <Select
+                    value={temporalMode}
+                    onValueChange={(value) =>
+                      setTemporalMode(value as TemporalMode)
+                    }
+                  >
+                    <SelectTrigger aria-label="知识版本范围">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="current">仅当前版本</SelectItem>
+                      <SelectItem value="historical">仅历史版本</SelectItem>
+                      <SelectItem value="all">全部版本</SelectItem>
+                      <SelectItem value="as_of">指定时间点</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {temporalMode === "as_of" && (
+                    <Input
+                      type="datetime-local"
+                      value={asOf}
+                      onChange={(event) => setAsOf(event.target.value)}
+                      aria-label="指定检索时间点"
+                    />
+                  )}
+                </div>
+                {queryPlan && (
+                  <div className="border-y py-2 text-[11px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">检索路径</span>
+                      <StatusBadge
+                        tone={queryPlan.route === "direct" ? "success" : "info"}
+                        label={
+                          queryPlan.route === "direct"
+                            ? "低成本直查"
+                            : `多跳拆解 · ${queryPlan.steps.length} 步`
+                        }
+                      />
+                    </div>
+                    {queryPlan.route === "multi_hop" && (
+                      <div className="text-muted-foreground mt-1 line-clamp-2">
+                        {queryPlan.steps.map((step) => step.query).join(" → ")}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="space-y-2">
                   {hits.map((hit) => (
                     <button
@@ -652,6 +1407,10 @@ export default function KnowledgePage() {
                       <div className="text-muted-foreground mt-1 text-[10px]">
                         {hit.product || "通用"} · {hit.section_path || "正文"}
                         {hit.page_no ? ` · 第 ${hit.page_no} 页` : ""}
+                        {` · v${hit.version_no}`}
+                        {hit.temporal_status === "historical"
+                          ? " · 历史版本"
+                          : ""}
                       </div>
                     </button>
                   ))}
@@ -748,6 +1507,20 @@ export default function KnowledgePage() {
                           tone={presentation.tone}
                           label={presentation.label}
                         />
+                        {document.approval_status !== "approved" && (
+                          <StatusBadge
+                            tone={
+                              document.approval_status === "pending"
+                                ? "warning"
+                                : "danger"
+                            }
+                            label={
+                              document.approval_status === "pending"
+                                ? "待审批"
+                                : "已驳回"
+                            }
+                          />
+                        )}
                       </div>
                       <div className="text-muted-foreground mt-1 truncate pl-6 text-xs">
                         {document.product || "通用资料"} ·{" "}
@@ -800,10 +1573,40 @@ export default function KnowledgePage() {
           {detail && (
             <div className="space-y-5 px-4 pb-6">
               <div className="flex flex-wrap gap-2">
+                {detail.approval_status === "pending" &&
+                  detail.space_role === "owner" && (
+                    <>
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          void reviewDocument(detail.document_id, "approved")
+                        }
+                      >
+                        <Check className="size-3.5" />
+                        批准入库
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          void reviewDocument(detail.document_id, "rejected")
+                        }
+                      >
+                        <X className="size-3.5" />
+                        驳回
+                      </Button>
+                    </>
+                  )}
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={busy || !detail.current_version}
+                  disabled={
+                    busy ||
+                    !detail.current_version ||
+                    detail.space_role === "viewer"
+                  }
                   onClick={() =>
                     void runAction(
                       `${API}/knowledge/documents/${detail.document_id}/reindex`,
@@ -817,7 +1620,7 @@ export default function KnowledgePage() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  disabled={busy}
+                  disabled={busy || detail.space_role === "viewer"}
                   onClick={() =>
                     window.confirm("删除该资料及其所有版本？") &&
                     void runAction(

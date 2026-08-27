@@ -12,7 +12,9 @@ import type {
 } from "./api-client";
 import { generationTraceKey } from "./api-client";
 import CompetitionReportPanel from "./competition-report-panel";
+import ClaimVerificationPanel from "./claim-verification-panel";
 import EvidenceGraph from "./evidence-graph";
+import LongTermInsightsPanel from "./long-term-insights-panel";
 import QualityGatePanel from "./quality-gate-panel";
 import SourceInspector from "./source-inspector";
 import StructuredAnalysisPanel from "./structured-analysis-panel";
@@ -30,6 +32,8 @@ export type WorkbenchTab =
   | "report"
   | "versions"
   | "quality"
+  | "verification"
+  | "insights"
   | "sources"
   | "evidence"
   | "structured"
@@ -126,19 +130,22 @@ export default function ResearchWorkbench(props: Props) {
         if (!cancelled) {
           setTrace(value);
           const selected = viewingHistory?.version
-            ? value.generations.find(
+            ? (value.generations.find(
                 (item) => item.report_version === viewingHistory.version,
               ) ??
               value.generations.find(
                 (item) => item.version === viewingHistory.version,
-              )
-            : value.generations.find(
+              ))
+            : (value.generations.find(
                 (item) => item.report_version === value.current_version,
               ) ??
               value.generations.find(
                 (item) => item.version === value.current_version,
-              ) ?? value.generations.at(-1);
-          setSelectedGenerationId(selected ? generationTraceKey(selected) : null);
+              ) ??
+              value.generations.at(-1));
+          setSelectedGenerationId(
+            selected ? generationTraceKey(selected) : null,
+          );
         }
       })
       .catch((error: Error) => {
@@ -195,19 +202,35 @@ export default function ResearchWorkbench(props: Props) {
     ["report", "报告"],
     ["versions", "版本"],
     ["quality", "质量"],
+    ["verification", "核验"],
+    ["insights", "洞察"],
     ["sources", "来源"],
     ["evidence", "证据图谱"],
     ["structured", "结构化"],
     ["process", "流程"],
   ];
-  const inspectorTab: "quality" | "sources" | "evidence" | "structured" | "process" =
-    tab === "sources" || tab === "evidence" || tab === "structured" || tab === "process" ? tab : "quality";
+  const inspectorTab:
+    | "quality"
+    | "verification"
+    | "insights"
+    | "sources"
+    | "evidence"
+    | "structured"
+    | "process" =
+    tab === "verification" ||
+    tab === "insights" ||
+    tab === "sources" ||
+    tab === "evidence" ||
+    tab === "structured" ||
+    tab === "process"
+      ? tab
+      : "quality";
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogContent
         showCloseButton={false}
         aria-describedby="research-workbench-description"
-        className="inset-0 flex h-dvh w-screen max-w-none sm:max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 shadow-2xl"
+        className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 shadow-2xl sm:max-w-none"
       >
         <DialogTitle className="sr-only">研究工作台</DialogTitle>
         <DialogDescription
@@ -353,9 +376,9 @@ export default function ResearchWorkbench(props: Props) {
               />
             </main>
             <aside
-              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "sources" || tab === "evidence" || tab === "structured" || tab === "process" ? "block" : "hidden lg:block"}`}
+              className={`border-subtle min-h-0 min-w-0 overflow-y-auto border-l p-3 ${tab === "quality" || tab === "verification" || tab === "insights" || tab === "sources" || tab === "evidence" || tab === "structured" || tab === "process" ? "block" : "hidden lg:block"}`}
             >
-              <div className="border-subtle mb-3 flex gap-1 border-b pb-2 text-xs lg:flex">
+              <div className="border-subtle mb-3 flex flex-wrap gap-1 border-b pb-2 text-xs lg:flex">
                 <Button
                   type="button"
                   variant="ghost"
@@ -365,6 +388,26 @@ export default function ResearchWorkbench(props: Props) {
                   data-active={inspectorTab === "quality"}
                 >
                   质量
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setTab("verification")}
+                  className="ui-tab"
+                  data-active={inspectorTab === "verification"}
+                >
+                  核验
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setTab("insights")}
+                  className="ui-tab"
+                  data-active={inspectorTab === "insights"}
+                >
+                  洞察
                 </Button>
                 <Button
                   type="button"
@@ -414,6 +457,27 @@ export default function ResearchWorkbench(props: Props) {
                   onSelectIssue={selectIssue}
                 />
               )}
+              {inspectorTab === "verification" && (
+                <ClaimVerificationPanel
+                  summary={displayReport?.claim_verification}
+                  onSelectSource={(id) => {
+                    setSelectedSourceId(id);
+                    setTab("sources");
+                  }}
+                />
+              )}
+              {inspectorTab === "insights" && (
+                <LongTermInsightsPanel
+                  insights={displayReport?.long_term_insights}
+                  onSelectSource={(id) => {
+                    const citationId = Object.entries(
+                      displayReport?.traceability_map ?? {},
+                    ).find(([, source]) => source.data_point_id === id)?.[0];
+                    setSelectedSourceId(citationId ?? id);
+                    setTab("sources");
+                  }}
+                />
+              )}
               {inspectorTab === "sources" && (
                 <SourceInspector
                   report={displayReport}
@@ -432,7 +496,13 @@ export default function ResearchWorkbench(props: Props) {
                   onSelectSection={selectEvidenceSection}
                   onRequestRework={(action, comment) => {
                     if (onReanalyze && isViewingLatest) {
-                      onReanalyze(action, comment, viewingHistory?.version ?? historyEntries.at(-1)?.version ?? 1);
+                      onReanalyze(
+                        action,
+                        comment,
+                        viewingHistory?.version ??
+                          historyEntries.at(-1)?.version ??
+                          1,
+                      );
                     }
                   }}
                 />
@@ -442,7 +512,13 @@ export default function ResearchWorkbench(props: Props) {
                   report={displayReport}
                   onRequestRework={(action, comment) => {
                     if (onReanalyze && isViewingLatest) {
-                      onReanalyze(action, comment, viewingHistory?.version ?? historyEntries.at(-1)?.version ?? 1);
+                      onReanalyze(
+                        action,
+                        comment,
+                        viewingHistory?.version ??
+                          historyEntries.at(-1)?.version ??
+                          1,
+                      );
                     }
                   }}
                 />

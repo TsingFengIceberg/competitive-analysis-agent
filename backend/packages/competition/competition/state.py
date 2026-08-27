@@ -66,12 +66,16 @@ class CompetitionState(AgentState):
     # ── Analyst Output ── [竞赛要求 R4]
     analysis_context_pack: NotRequired[dict | None]
     """Filtered durable/current evidence and explicit quality semantics for Analyst/Reviewer."""
+    long_term_insights: NotRequired[list[dict] | None]
+    """Entity-event facts, inferences, and hypotheses used only as labeled analysis context."""
     analysis_result: NotRequired[dict | None]
     """AnalysisResult: comparison_matrix + swot + trends + forecast + visualization_paths (§3.13.3)."""
 
     # ── Reviewer Output ──
     review_verdict: NotRequired[dict | None]
     """ReviewVerdict: passed + gaps + fact_errors + quality_summary (§3.13.4)."""
+    claim_verification: NotRequired[dict | None]
+    """Deterministic claim/evidence relationships and aggregate grounding metrics."""
     review_round: NotRequired[int | None]
     """Current feedback round (top-level for routing ergonomics, §3.12 route_after_reviewer)."""
     gap_coverage_improvement: NotRequired[float | None]

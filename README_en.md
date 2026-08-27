@@ -77,11 +77,15 @@ The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixe
 
 The **Local Knowledge Base** workspace supports file uploads, imports from a restricted Inbox path, and explicit promotion of selected monitoring facts. TXT, Markdown, HTML, CSV, and JSON use lightweight parsers; PDF, Office documents, and images are processed locally by Docling and RapidOCR. Original files, normalized Markdown, document versions, structured chunks, and ingestion jobs are stored separately. Identical content does not create another version, and a failed replacement keeps the previous indexed version usable.
 
-Retrieval combines BGE-M3 dense vectors and Chinese-aware FastEmbed BM25 sparse vectors through Qdrant RRF fusion, followed by bge-reranker-v2-m3. Filters cover user, product, dimension, market, authority tier, source type, and publication time. Collector reuses local evidence before fresh web collection, while hits flow through the existing `CollectedDataPoint`, Analysis Context Pack, and `traceability_map` contracts. The report source inspector opens the exact local section, page, and chunk. Missing models or index assets produce an explicit degraded state and do not block realtime collection.
+Retrieval combines BGE-M3 dense vectors and Chinese-aware FastEmbed BM25 sparse vectors through Qdrant RRF fusion, followed by bge-reranker-v2-m3. Filters cover user, knowledge space, product, dimension, market, authority tier, source type, publication time, and current, historical, all-version, or as-of temporal modes. The query planner keeps focused fact lookups on a low-cost direct path and decomposes comparative, temporal, or multi-dimensional requests into batched first-hop queries plus an evidence-bridging hop before fusing repeated hits. Old versions remain in SQLite and Qdrant, and rebuilding restores every successfully indexed version. Promoting monitoring facts imports their complete version sequence using the original observation times.
+
+Knowledge spaces provide owner, editor, and viewer roles. A space can require document approval and set a retention period. Pending or rejected content cannot become Agent evidence; expired content is removed from the index and file store while a body-free deletion audit remains. Approved versions resolve canonical product entities, cluster similar cross-source facts into single-source or corroborated events, and generate long-horizon insights in three explicit layers: facts, inferences, and hypotheses requiring validation. The workspace exposes version changes, numeric conflicts, entity events, layered insights, and governance state together.
+
+Collector reuses local evidence before fresh web collection. Reviewer extracts factual claims from the comparison matrix, SWOT, trends, and dynamic insights, then batches explicit citations and local semantic retrieval to classify each claim as supported, contradicted, or insufficient while checking numbers and polarity. Writer may cite only evidence classified as supporting; contradictory and context-only material remains available in report audit data. Hits and verification results flow through the existing `CollectedDataPoint`, Analysis Context Pack, `ReviewVerdict`, `ReportData`, and `traceability_map` contracts. Missing model or index assets produce an explicit degraded verification state and do not block the analysis pipeline.
 
 ### Research workbench
 
-Completed reports open in a full-screen research workbench with version tree, report, quality gate, sources, evidence graph, and process views. It supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
+Completed reports open in a full-screen research workbench with version tree, report, quality gate, semantic verification, long-horizon insights, sources, evidence graph, and process views. The verification view shows groundedness, citation precision, numeric consistency, and the supporting, contradictory, or insufficient evidence for each claim, with jumps to report sources and exact local historical chunks. The insight view preserves the facts, inferences, and hypotheses matched when that report version was generated and distinguishes evidence-linked items from context-only signals. The workbench also supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
 
 Every report version stores an immutable full snapshot containing the report body, analysis result, reviewer verdict, stage results, token usage, collected data, Analysis Brief, original request, and rework feedback. The version-detail API and workbench load these fields for the selected version, so quality, source, evidence, and process panels do not mix in current-version state. Historical records are labeled as “complete snapshot”, “partial snapshot”, or “unavailable”; missing legacy data is reported explicitly instead of being fabricated.
 
@@ -235,6 +239,14 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 
 Models are stored under `.ci-agent/models`; originals, normalized Markdown, and the Qdrant index are stored under `.ci-agent/knowledge`. Both locations are ignored by Git. Runtime loading is local-only and never downloads models automatically. Open `/competition/knowledge` to manage documents. The default per-file limit is 50 MB; server-side files may be placed in `.ci-agent/knowledge/inbox` and imported by relative path.
 
+FastAPI warms the local retrieval models in the background by default so the first analysis does not pay the full model-loading cost. Analysis retrieval normalizes common product aliases and bilingual dimension names, batch-encodes multiple product-by-dimension queries, and caches repeated query vectors and retrieval results. Activating a new document version, deleting a document, or rebuilding the index automatically invalidates the affected user's result cache.
+
+The default strict set, `evals/rag/real-v1.json`, contains human-curated snapshots of public first-party competitor documentation with source URLs, capture times, and expected labels. `basic-v1.json` remains an explicitly synthetic unit-regression set. Neither enters the business knowledge base. The command below runs ingestion, cost-routed query planning, retrieval, and claim verification against temporary SQLite and in-memory Qdrant stores. It reports Recall@5, MRR, NDCG@5, no-answer abstention accuracy, traceability completeness, P50/P95 latency, direct/multi-hop route accuracy, decomposition coverage, claim-status accuracy, contradiction recall, citation precision, numeric-consistency accuracy, and groundedness, then writes the detailed report under the ignored `.ci-agent/evaluations/` directory:
+
+```bash
+make rag-eval
+```
+
 The following environment variables override storage and retrieval defaults:
 
 | Variable | Default | Description |
@@ -247,6 +259,10 @@ The following environment variables override storage and retrieval defaults:
 | `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local directory |
 | `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | Maximum uploaded file size in bytes |
 | `CI_AGENT_RAG_MIN_SCORE` | `0.08` | Minimum final reranked score |
+| `CI_AGENT_RAG_PREWARM` | `true` | Warm local retrieval models in the background after FastAPI starts |
+| `CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE` | `256` | In-process query-vector LRU capacity; set to `0` to disable |
+| `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | User- and filter-isolated retrieval-result LRU capacity |
+| `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | Retrieval-result cache lifetime; set to `0` to disable |
 
 ### DB mode
 
@@ -375,6 +391,13 @@ competitive-analysis-agent/
 | GET | `/api/competition/intelligence/changes/{change_id}` | Get one change with its current fact, sources, and version history |
 | GET | `/api/competition/intelligence/items` | List intelligence facts available for explicit knowledge ingestion |
 | GET | `/api/competition/knowledge/status` | Get knowledge database, model, and index status |
+| GET / POST / PATCH | `/api/competition/knowledge/spaces` | Manage project knowledge spaces, approval, and retention policies |
+| GET / PUT / DELETE | `/api/competition/knowledge/spaces/{space_id}/members` | Manage viewer and editor membership |
+| POST | `/api/competition/knowledge/documents/{document_id}/review` | Approve or reject a pending document |
+| GET | `/api/competition/knowledge/events` | List canonical-entity events clustered across sources |
+| GET / POST | `/api/competition/knowledge/insights` / `/api/competition/knowledge/insights/refresh` | List or regenerate fact, inference, and hypothesis layers |
+| GET | `/api/competition/knowledge/deletions` | List auditable deletion records |
+| POST | `/api/competition/knowledge/retention/run` | Apply expired retention policies immediately |
 | POST | `/api/competition/knowledge/upload` | Upload and asynchronously parse, chunk, and index a document |
 | POST | `/api/competition/knowledge/import-inbox` | Import a file by restricted Inbox-relative path |
 | POST | `/api/competition/knowledge/import-intelligence` | Promote explicitly selected intelligence facts into knowledge documents |
@@ -397,9 +420,9 @@ The current system combines realtime search with local hybrid RAG and persists b
 
 ### Advanced RAG
 
-- Add query rewriting, HyDE, and multi-hop decomposition before hybrid retrieval, measured against an offline evaluation set.
-- Add project/team knowledge spaces, document approval, retention policies, and auditable deletion.
-- Extend Reviewer to cross-language semantic claim verification and generate long-term insights from versioned evidence.
+- Add optional model-based rewriting or HyDE only for complex requests where the real golden set demonstrates gains over the current zero-LLM direct/multi-hop planner.
+- Extend the current entity events, cross-source clustering, and three-layer insights with editable relationships, hypothesis approval/rejection, analyst feedback, and historical accuracy.
+- Continuously expand authorized real evaluation coverage with completed reports, observation histories, PDF/OCR edge cases, cross-language questions, and hard negatives without training on or contaminating production knowledge.
 
 ### Higher concurrency and productionization
 

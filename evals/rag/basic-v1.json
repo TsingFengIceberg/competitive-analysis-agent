@@ -1,0 +1,180 @@
+{
+  "name": "competitive-intelligence-basic-v1",
+  "description": "Synthetic retrieval fixtures for regression testing only; facts are not production claims.",
+  "k": 5,
+  "thresholds": {
+    "recall_at_k": 0.8,
+    "mrr": 0.7,
+    "ndcg_at_k": 0.75,
+    "abstention_accuracy": 1.0,
+    "traceability_rate": 1.0,
+    "claim_status_accuracy": 0.8,
+    "contradiction_recall": 0.8,
+    "citation_precision": 0.8,
+    "numeric_consistency_accuracy": 0.8,
+    "groundedness": 0.4
+  },
+  "documents": [
+    {
+      "id": "cursor-pricing",
+      "filename": "cursor-pricing.md",
+      "title": "Cursor synthetic pricing fixture",
+      "product": "Cursor",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "published_at": "2026-07-01T00:00:00+00:00",
+      "text": "# Enterprise pricing\n\nSynthetic test record RAG-CURSOR-742 states an annual enterprise seat price of 480 dollars. This fixture is not a real product claim."
+    },
+    {
+      "id": "cursor-features",
+      "filename": "cursor-features.md",
+      "title": "Cursor synthetic feature fixture",
+      "product": "Cursor",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2026-07-02T00:00:00+00:00",
+      "text": "# Agent features\n\nSynthetic capability marker CURSOR-AGENT-19 describes repository-wide editing with explicit human approval. This fixture is not a real product claim."
+    },
+    {
+      "id": "copilot-pricing",
+      "filename": "copilot-pricing.md",
+      "title": "GitHub Copilot synthetic pricing fixture",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "published_at": "2026-07-03T00:00:00+00:00",
+      "text": "# Business pricing\n\nSynthetic test record RAG-COPILOT-315 states a monthly business seat price of 31 dollars. This fixture is not a real product claim."
+    },
+    {
+      "id": "copilot-security",
+      "filename": "copilot-security.md",
+      "title": "GitHub Copilot synthetic security fixture",
+      "product": "GitHub Copilot",
+      "dimension": "technology",
+      "authority_tier": "third_party",
+      "published_at": "2026-07-04T00:00:00+00:00",
+      "text": "# Enterprise controls\n\nSynthetic control marker COPILOT-POLICY-88 requires administrators to approve repository access policies. This fixture is not a real product claim."
+    },
+    {
+      "id": "codex-integration",
+      "filename": "codex-integration.md",
+      "title": "OpenAI Codex synthetic integration fixture",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2026-07-05T00:00:00+00:00",
+      "text": "# Integration\n\nSynthetic integration marker CODEX-CLOUD-204 describes isolated cloud task execution and reviewable patches. This fixture is not a real product claim."
+    },
+    {
+      "id": "unrelated-operations",
+      "filename": "unrelated-operations.md",
+      "title": "Unrelated operations fixture",
+      "product": "Internal Operations",
+      "dimension": "operations",
+      "authority_tier": "third_party",
+      "published_at": "2026-07-06T00:00:00+00:00",
+      "text": "# Office operations\n\nThe synthetic meeting-room inventory contains twelve chairs and two projectors."
+    }
+  ],
+  "queries": [
+    {
+      "id": "cursor-price-code",
+      "query": "What annual Cursor enterprise price is associated with RAG-CURSOR-742?",
+      "products": ["Cursor"],
+      "dimensions": ["pricing"],
+      "relevant": ["cursor-pricing"]
+    },
+    {
+      "id": "cursor-semantic-feature",
+      "query": "Which local evidence discusses repository-wide changes requiring human approval?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "relevant": ["cursor-features"]
+    },
+    {
+      "id": "copilot-price-zh",
+      "query": "GitHub Copilot 企业席位的测试月费是多少？",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["pricing"],
+      "relevant": ["copilot-pricing"]
+    },
+    {
+      "id": "copilot-security",
+      "query": "Which evidence describes administrator approval of repository access policies?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["technology"],
+      "relevant": ["copilot-security"]
+    },
+    {
+      "id": "codex-alias",
+      "query": "Codex cloud task execution and reviewable patches",
+      "products": ["OpenAI Codex"],
+      "dimensions": ["technology"],
+      "relevant": ["codex-integration"]
+    },
+    {
+      "id": "unknown-product-abstention",
+      "query": "What is the price marker for a product absent from this corpus?",
+      "products": ["Absent Product Zeta"],
+      "dimensions": ["pricing"],
+      "relevant": []
+    }
+  ],
+  "verification_cases": [
+    {
+      "id": "supported-cursor-price",
+      "claim": "Synthetic record RAG-CURSOR-742 states an annual enterprise seat price of 480 dollars.",
+      "product": "Cursor",
+      "dimension": "pricing",
+      "cited_documents": ["cursor-pricing"],
+      "expected_status": "supported",
+      "expected_supporting": ["cursor-pricing"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": true
+    },
+    {
+      "id": "contradictory-cursor-price",
+      "claim": "Synthetic record RAG-CURSOR-742 states an annual enterprise seat price of 999 dollars.",
+      "product": "Cursor",
+      "dimension": "pricing",
+      "cited_documents": ["cursor-pricing"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["cursor-pricing"],
+      "expected_numeric_consistency": false
+    },
+    {
+      "id": "insufficient-private-deployment",
+      "claim": "Absent Product Zeta includes a private deployment marker ZETA-PRIVATE-404.",
+      "product": "Absent Product Zeta",
+      "dimension": "technology",
+      "cited_documents": [],
+      "expected_status": "insufficient",
+      "expected_supporting": [],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": null
+    },
+    {
+      "id": "polarity-contradiction",
+      "claim": "Synthetic capability marker CURSOR-AGENT-19 does not require human approval for repository-wide editing.",
+      "product": "Cursor",
+      "dimension": "features",
+      "cited_documents": ["cursor-features"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["cursor-features"],
+      "expected_numeric_consistency": true
+    },
+    {
+      "id": "incorrect-citation-candidate",
+      "claim": "Synthetic integration marker CODEX-CLOUD-204 describes isolated cloud task execution and reviewable patches.",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "cited_documents": ["unrelated-operations"],
+      "expected_status": "supported",
+      "expected_supporting": ["codex-integration"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": true
+    }
+  ]
+}

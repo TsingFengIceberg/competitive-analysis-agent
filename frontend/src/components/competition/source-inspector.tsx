@@ -125,6 +125,12 @@ export default function SourceInspector({
                   {typeof source.retrieval_score === "number"
                     ? ` · 相关度 ${Math.round(source.retrieval_score * 100)}%`
                     : ""}
+                  {source.knowledge_version_no
+                    ? ` · v${source.knowledge_version_no}`
+                    : ""}
+                  {source.knowledge_temporal_status === "historical"
+                    ? " · 历史版本"
+                    : ""}
                 </div>
               </div>
             ) : source.content_ref ? (

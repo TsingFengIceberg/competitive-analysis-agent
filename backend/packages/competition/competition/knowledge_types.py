@@ -57,6 +57,9 @@ class RetrievalFilters:
     published_after: str | None = None
     published_before: str | None = None
     include_reports: bool = False
+    temporal_mode: str = "current"
+    as_of: str | None = None
+    space_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +71,9 @@ class RetrievalFilters:
             "published_after": self.published_after,
             "published_before": self.published_before,
             "include_reports": self.include_reports,
+            "temporal_mode": self.temporal_mode,
+            "as_of": self.as_of,
+            "space_ids": list(self.space_ids),
         }
 
 
@@ -89,6 +95,9 @@ class KnowledgeHit:
     page_no: int | None
     published_at: str | None
     observed_at: str | None
+    valid_from: str | None
+    valid_to: str | None
+    temporal_status: str
     score: float
     retrieval_sources: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -116,6 +125,9 @@ class KnowledgeHit:
             "page_no": self.page_no,
             "published_at": self.published_at,
             "observed_at": self.observed_at,
+            "valid_from": self.valid_from,
+            "valid_to": self.valid_to,
+            "temporal_status": self.temporal_status,
             "score": self.score,
             "confidence": self.confidence,
             "retrieval_sources": list(self.retrieval_sources),

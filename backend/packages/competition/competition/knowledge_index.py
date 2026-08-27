@@ -6,6 +6,8 @@ import logging
 import math
 import os
 import threading
+import time
+from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -20,19 +22,12 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "true")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_EMBEDDING_PATH = Path(
-    os.getenv("CI_AGENT_RAG_EMBEDDING_PATH", str(_PROJECT_ROOT / ".ci-agent/models/embeddings/bge-m3"))
-)
-DEFAULT_RERANKER_PATH = Path(
-    os.getenv("CI_AGENT_RAG_RERANKER_PATH", str(_PROJECT_ROOT / ".ci-agent/models/rerankers/bge-reranker-v2-m3"))
-)
-DEFAULT_FASTEMBED_PATH = Path(
-    os.getenv("CI_AGENT_RAG_FASTEMBED_PATH", str(_PROJECT_ROOT / ".ci-agent/models/fastembed"))
-)
-DEFAULT_QDRANT_PATH = Path(
-    os.getenv("CI_AGENT_RAG_QDRANT_PATH", str(_PROJECT_ROOT / ".ci-agent/knowledge/indexes/qdrant"))
-)
+DEFAULT_EMBEDDING_PATH = Path(os.getenv("CI_AGENT_RAG_EMBEDDING_PATH", str(_PROJECT_ROOT / ".ci-agent/models/embeddings/bge-m3")))
+DEFAULT_RERANKER_PATH = Path(os.getenv("CI_AGENT_RAG_RERANKER_PATH", str(_PROJECT_ROOT / ".ci-agent/models/rerankers/bge-reranker-v2-m3")))
+DEFAULT_FASTEMBED_PATH = Path(os.getenv("CI_AGENT_RAG_FASTEMBED_PATH", str(_PROJECT_ROOT / ".ci-agent/models/fastembed")))
+DEFAULT_QDRANT_PATH = Path(os.getenv("CI_AGENT_RAG_QDRANT_PATH", str(_PROJECT_ROOT / ".ci-agent/knowledge/indexes/qdrant")))
 DEFAULT_COLLECTION = os.getenv("CI_AGENT_RAG_COLLECTION", "competition_knowledge_v1")
+DEFAULT_QUERY_CACHE_SIZE = max(0, int(os.getenv("CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE", "256")))
 
 
 class KnowledgeUnavailableError(RuntimeError):
@@ -76,6 +71,11 @@ class LocalModelProvider:
         self._reranker: Any | None = None
         self._sparse_model: Any | None = None
         self._lock = threading.RLock()
+        self._query_cache_size = DEFAULT_QUERY_CACHE_SIZE
+        self._dense_query_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._sparse_query_cache: OrderedDict[str, Any] = OrderedDict()
+        self._query_cache_hits = 0
+        self._query_cache_misses = 0
 
     def readiness(self) -> dict[str, Any]:
         return {
@@ -85,6 +85,17 @@ class LocalModelProvider:
             "embedding_path": str(self.embedding_path),
             "reranker_path": str(self.reranker_path),
             "sparse_cache_path": str(self.sparse_cache_path),
+            "loaded": {
+                "embedding_model": self._dense_model is not None,
+                "reranker_model": self._reranker is not None,
+                "sparse_model": self._sparse_model is not None,
+            },
+            "query_vector_cache": {
+                "size": len(self._dense_query_cache),
+                "capacity": self._query_cache_size,
+                "hits": self._query_cache_hits,
+                "misses": self._query_cache_misses,
+            },
         }
 
     def _dense(self) -> Any:
@@ -150,6 +161,57 @@ class LocalModelProvider:
             return []
         return list(self._sparse().embed([_lexical_text(text) for text in texts]))
 
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """Embed queries in one batch and reuse vectors for repeated normalized text."""
+        if not texts:
+            return []
+        if self._query_cache_size == 0:
+            return self.embed(texts)
+        keys = [" ".join(text.split()) for text in texts]
+        missing: list[str] = []
+        with self._lock:
+            for key in dict.fromkeys(keys):
+                if key in self._dense_query_cache:
+                    self._query_cache_hits += keys.count(key)
+                    self._dense_query_cache.move_to_end(key)
+                else:
+                    self._query_cache_misses += 1
+                    missing.append(key)
+        if missing:
+            vectors = self.embed(missing)
+            with self._lock:
+                for key, vector in zip(missing, vectors, strict=True):
+                    self._dense_query_cache[key] = vector
+                    self._dense_query_cache.move_to_end(key)
+                    while len(self._dense_query_cache) > self._query_cache_size:
+                        self._dense_query_cache.popitem(last=False)
+        with self._lock:
+            return [list(self._dense_query_cache[key]) for key in keys]
+
+    def sparse_embed_queries(self, texts: list[str]) -> list[Any]:
+        if not texts:
+            return []
+        if self._query_cache_size == 0:
+            return self.sparse_embed(texts)
+        keys = [" ".join(text.split()) for text in texts]
+        missing: list[str] = []
+        with self._lock:
+            for key in dict.fromkeys(keys):
+                if key in self._sparse_query_cache:
+                    self._sparse_query_cache.move_to_end(key)
+                else:
+                    missing.append(key)
+        if missing:
+            vectors = self.sparse_embed(missing)
+            with self._lock:
+                for key, vector in zip(missing, vectors, strict=True):
+                    self._sparse_query_cache[key] = vector
+                    self._sparse_query_cache.move_to_end(key)
+                    while len(self._sparse_query_cache) > self._query_cache_size:
+                        self._sparse_query_cache.popitem(last=False)
+        with self._lock:
+            return [self._sparse_query_cache[key] for key in keys]
+
     def rerank(self, query: str, texts: list[str]) -> list[float]:
         if not texts:
             return []
@@ -159,6 +221,35 @@ class LocalModelProvider:
             show_progress_bar=False,
         )
         return [float(value) for value in scores]
+
+    def rerank_pairs(self, pairs: list[tuple[str, str]]) -> list[float]:
+        if not pairs:
+            return []
+        scores = self._cross_encoder().predict(
+            [[query, text] for query, text in pairs],
+            batch_size=max(1, min(8, len(pairs))),
+            show_progress_bar=False,
+        )
+        return [float(value) for value in scores]
+
+    def warmup(self) -> dict[str, Any]:
+        """Load all local models and execute one minimal inference per model."""
+        started = time.perf_counter()
+        self.embed_queries(["competitive intelligence model warmup"])
+        dense_ms = int((time.perf_counter() - started) * 1000)
+        sparse_started = time.perf_counter()
+        self.sparse_embed_queries(["competitive intelligence model warmup"])
+        sparse_ms = int((time.perf_counter() - sparse_started) * 1000)
+        rerank_started = time.perf_counter()
+        self.rerank("competitive intelligence", ["competitive intelligence evidence"])
+        rerank_ms = int((time.perf_counter() - rerank_started) * 1000)
+        return {
+            "status": "ready",
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "dense_ms": dense_ms,
+            "sparse_ms": sparse_ms,
+            "reranker_ms": rerank_ms,
+        }
 
 
 class KnowledgeIndex:
@@ -212,11 +303,17 @@ class KnowledgeIndex:
         chunks: list[KnowledgeChunk],
         *,
         stale_point_ids: list[str] | None = None,
+        is_current: bool = True,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        deactivate_previous: bool = True,
     ) -> None:
         from qdrant_client import models
 
         self.ensure_collection()
         client = self._get_client()
+        validity_start = _timestamp(valid_from) or _timestamp(document.get("observed_at")) or int(time.time())
+        validity_end = _timestamp(valid_to)
         dense_vectors = self.provider.embed([chunk.contextual_text for chunk in chunks])
         sparse_vectors = self.provider.sparse_embed([chunk.contextual_text for chunk in chunks])
         points: list[Any] = []
@@ -226,7 +323,12 @@ class KnowledgeIndex:
                 "document_id": chunk.document_id,
                 "version_no": chunk.version_no,
                 "user_id": chunk.user_id,
-                "active": True,
+                "space_id": document.get("space_id", ""),
+                "approval_status": document.get("approval_status", "approved"),
+                "active": is_current,
+                "is_current": is_current,
+                "valid_from_ts": validity_start,
+                "valid_to_ts": validity_end,
                 "product": document.get("product", ""),
                 "product_key": str(document.get("product", "")).casefold(),
                 "dimension": document.get("dimension", ""),
@@ -254,6 +356,36 @@ class KnowledgeIndex:
                 client.upsert(
                     collection_name=self.collection,
                     points=points[start : start + 64],
+                    wait=True,
+                )
+            if deactivate_previous:
+                client.set_payload(
+                    collection_name=self.collection,
+                    payload={
+                        "active": False,
+                        "is_current": False,
+                        "valid_to_ts": validity_start,
+                    },
+                    points=models.FilterSelector(
+                        filter=models.Filter(
+                            must=[
+                                models.FieldCondition(
+                                    key="document_id",
+                                    match=models.MatchValue(value=document.get("document_id") or chunks[0].document_id),
+                                ),
+                                models.FieldCondition(
+                                    key="active",
+                                    match=models.MatchValue(value=True),
+                                ),
+                            ],
+                            must_not=[
+                                models.FieldCondition(
+                                    key="version_no",
+                                    match=models.MatchValue(value=chunks[0].version_no),
+                                )
+                            ],
+                        )
+                    ),
                     wait=True,
                 )
             if stale_point_ids:
@@ -284,10 +416,35 @@ class KnowledgeIndex:
     def _filter(self, user_id: str, filters: RetrievalFilters) -> Any:
         from qdrant_client import models
 
-        must: list[Any] = [
-            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
-            models.FieldCondition(key="active", match=models.MatchValue(value=True)),
-        ]
+        must: list[Any] = []
+        if filters.space_ids:
+            must.append(
+                models.Filter(
+                    should=[
+                        models.FieldCondition(key="space_id", match=models.MatchAny(any=list(filters.space_ids))),
+                        models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                    ]
+                )
+            )
+        else:
+            must.append(models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)))
+        should: list[Any] = []
+        temporal_mode = filters.temporal_mode if filters.temporal_mode in {"current", "historical", "all", "as_of"} else "current"
+        if temporal_mode == "current":
+            # ``active`` keeps pre-temporal indexes readable until their next rebuild.
+            must.append(models.FieldCondition(key="active", match=models.MatchValue(value=True)))
+        elif temporal_mode == "historical":
+            must.append(models.FieldCondition(key="active", match=models.MatchValue(value=False)))
+        elif temporal_mode == "as_of":
+            as_of = _timestamp(filters.as_of)
+            if as_of is not None:
+                must.append(models.FieldCondition(key="valid_from_ts", range=models.Range(lte=as_of)))
+                should.extend(
+                    [
+                        models.FieldCondition(key="active", match=models.MatchValue(value=True)),
+                        models.FieldCondition(key="valid_to_ts", range=models.Range(gte=as_of)),
+                    ]
+                )
         if filters.products:
             must.append(
                 models.FieldCondition(
@@ -320,7 +477,7 @@ class KnowledgeIndex:
             time_range["lte"] = before
         if time_range:
             must.append(models.FieldCondition(key="published_ts", range=models.Range(**time_range)))
-        return models.Filter(must=must, must_not=must_not or None)
+        return models.Filter(must=must, must_not=must_not or None, should=should or None)
 
     def search_ids(
         self,
@@ -331,43 +488,73 @@ class KnowledgeIndex:
         limit: int = 12,
         candidate_limit: int = 40,
     ) -> list[tuple[str, float]]:
+        return self.search_many_ids([(query, user_id, filters, limit, candidate_limit)])[0]
+
+    def search_many_ids(
+        self,
+        requests: list[tuple[str, str, RetrievalFilters, int, int]],
+    ) -> list[list[tuple[str, float]]]:
+        """Batch query encoding while retaining request-specific Qdrant filters."""
         from qdrant_client import models
 
-        query = query.strip()
-        if not query:
+        if not requests:
             return []
+        queries = [query.strip() for query, *_ in requests]
+        nonempty = [query for query in queries if query]
+        if not nonempty:
+            return [[] for _ in requests]
         self.ensure_collection()
-        dense = self.provider.embed([query])[0]
-        sparse = self.provider.sparse_embed([query])[0]
-        query_filter = self._filter(user_id, filters)
-        result = self._get_client().query_points(
-            collection_name=self.collection,
-            prefetch=[
-                models.Prefetch(
-                    query=dense,
-                    using="dense",
-                    filter=query_filter,
-                    limit=max(limit, candidate_limit),
-                ),
-                models.Prefetch(
-                    query=models.SparseVector(
-                        indices=[int(value) for value in sparse.indices.tolist()],
-                        values=[float(value) for value in sparse.values.tolist()],
+        dense_vectors = self.provider.embed_queries(queries) if hasattr(self.provider, "embed_queries") else self.provider.embed(queries)
+        sparse_vectors = self.provider.sparse_embed_queries(queries) if hasattr(self.provider, "sparse_embed_queries") else self.provider.sparse_embed(queries)
+        output: list[list[tuple[str, float]]] = []
+        for dense, sparse, (_, user_id, filters, limit, candidate_limit) in zip(dense_vectors, sparse_vectors, requests, strict=True):
+            query_filter = self._filter(user_id, filters)
+            result = self._get_client().query_points(
+                collection_name=self.collection,
+                prefetch=[
+                    models.Prefetch(
+                        query=dense,
+                        using="dense",
+                        filter=query_filter,
+                        limit=max(limit, candidate_limit),
                     ),
-                    using="sparse",
-                    filter=query_filter,
-                    limit=max(limit, candidate_limit),
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=max(limit, candidate_limit),
-            with_payload=True,
-        )
-        return [(str(point.payload.get("chunk_id")), float(point.score)) for point in result.points if point.payload and point.payload.get("chunk_id")]
+                    models.Prefetch(
+                        query=models.SparseVector(
+                            indices=[int(value) for value in sparse.indices.tolist()],
+                            values=[float(value) for value in sparse.values.tolist()],
+                        ),
+                        using="sparse",
+                        filter=query_filter,
+                        limit=max(limit, candidate_limit),
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=max(limit, candidate_limit),
+                with_payload=True,
+            )
+            output.append([(str(point.payload.get("chunk_id")), float(point.score)) for point in result.points if point.payload and point.payload.get("chunk_id")])
+        return output
 
     def rerank(self, query: str, texts: list[str]) -> list[float]:
         scores = self.provider.rerank(query, texts)
         return [score if 0.0 <= score <= 1.0 else 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, score)))) for score in scores]
+
+    def rerank_many(self, groups: list[tuple[str, list[str]]]) -> list[list[float]]:
+        pairs = [(query, text) for query, texts in groups for text in texts]
+        if hasattr(self.provider, "rerank_pairs"):
+            raw = self.provider.rerank_pairs(pairs)
+        else:
+            raw = [score for query, texts in groups for score in self.provider.rerank(query, texts)]
+        normalized = [score if 0.0 <= score <= 1.0 else 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, score)))) for score in raw]
+        output: list[list[float]] = []
+        offset = 0
+        for _, texts in groups:
+            output.append(normalized[offset : offset + len(texts)])
+            offset += len(texts)
+        return output
+
+    def warmup(self) -> dict[str, Any]:
+        return self.provider.warmup() if hasattr(self.provider, "warmup") else {"status": "unsupported"}
 
     def delete_points(self, point_ids: list[str]) -> None:
         if not point_ids:

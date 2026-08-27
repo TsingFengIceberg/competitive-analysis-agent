@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -96,12 +97,38 @@ def writer_node(state: dict) -> dict:
     # Only use comment as what-if scenario when action is explicitly "rewrite"
     whatif_comment = ""  # what-if temporarily disabled
 
+    raw_verification = verdict.get("claim_verification") or state.get("claim_verification") or {}
+    eligible_point_ids = _verified_evidence_ids(raw_verification)
+    restrict_citations = bool(raw_verification.get("total"))
+    citation_index = _citation_index(
+        collected,
+        eligible_point_ids if restrict_citations else None,
+    )
+    claim_verification = _prepare_claim_verification(raw_verification, citation_index)
+
     # Build report sections — v4: schema_profile controls deep sections
     quality = verdict.get("quality_summary", {})
     schema_mode = _get_schema_mode(state)
-    sections = _build_sections(analysis, verdict, target_products, hitl_focus, whatif_comment, hitl_action, collected, quality, schema_mode)
+    sections = _build_sections(
+        analysis,
+        verdict,
+        target_products,
+        hitl_focus,
+        whatif_comment,
+        hitl_action,
+        collected,
+        quality,
+        schema_mode,
+        citation_index_override=citation_index,
+    )
 
     traceability = _build_traceability_map(collected)
+    _annotate_traceability(traceability, claim_verification)
+    writer_traceability = {
+        citation_id: source
+        for citation_id, source in traceability.items()
+        if not restrict_citations or citation_id in set(citation_index.values())
+    }
     persona = state.get("persona") if state.get("persona") in ("pm", "entrepreneur") else "pm"
     brief = state.get("analysis_brief") or {}
     task_specs = _build_writer_task_specs(
@@ -109,8 +136,8 @@ def writer_node(state: dict) -> dict:
         analysis=analysis,
         products=target_products,
         persona=persona,
-        traceability=traceability,
-        citation_index=_citation_index(collected),
+        traceability=writer_traceability,
+        citation_index=citation_index,
         hitl_action=hitl_action,
         hitl_focus=hitl_focus,
         hitl_comment=whatif_comment_raw,
@@ -132,7 +159,7 @@ def writer_node(state: dict) -> dict:
     _apply_narrative_result(
         sections,
         task_results.get("narrative"),
-        {str(key) for key in traceability},
+        {str(key) for key in writer_traceability},
     )
     forecast = analysis.get("forecast")
     extra_fields = analysis.get("extra_fields") or {}
@@ -171,6 +198,8 @@ def writer_node(state: dict) -> dict:
             "confirmation_source": brief.get("confirmation_source"),
         } if brief else None,
         "quality_gate": quality_gate,
+        "claim_verification": claim_verification,
+        "long_term_insights": state.get("long_term_insights") or [],
         "structured_analysis": {
             "comparison_matrix": analysis.get("comparison_matrix") or {},
             "swot": analysis.get("swot") or {},
@@ -209,16 +238,78 @@ def _get_hitl_focus(state: dict) -> list[str] | None:
     return decision.get("target_focus"), decision.get("comment", ""), decision.get("action", "")
 
 
-def _citation_index(collected: list[dict]) -> dict[str, str]:
+def _citation_index(
+    collected: list[dict],
+    allowed_point_ids: set[str] | None = None,
+) -> dict[str, str]:
     """Map original data-point IDs to stable numeric citation IDs."""
     index: dict[str, str] = {}
     for i, point in enumerate(collected):
         if not isinstance(point, dict):
             continue
         point_id = point.get("id")
-        if point_id and str(point_id) not in index:
+        if (
+            point_id
+            and (allowed_point_ids is None or str(point_id) in allowed_point_ids)
+            and str(point_id) not in index
+        ):
             index[str(point_id)] = str(i + 1)
     return index
+
+
+def _verified_evidence_ids(summary: dict[str, Any]) -> set[str]:
+    """Return only data points that have an explicit supporting relationship."""
+    return {
+        str(evidence["data_point_id"])
+        for claim in summary.get("claims") or []
+        if isinstance(claim, dict) and claim.get("status") == "supported"
+        for evidence in claim.get("evidence") or []
+        if isinstance(evidence, dict)
+        and evidence.get("relation") == "supports"
+        and evidence.get("data_point_id")
+    }
+
+
+def _prepare_claim_verification(
+    summary: dict[str, Any],
+    citation_index: dict[str, str],
+) -> dict[str, Any]:
+    """Attach stable report citation IDs without mutating Reviewer state."""
+    prepared = deepcopy(summary)
+    for claim in prepared.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            point_id = evidence.get("data_point_id")
+            evidence["citation_id"] = citation_index.get(str(point_id)) if point_id else None
+    return prepared
+
+
+def _annotate_traceability(
+    traceability: dict[str, dict],
+    summary: dict[str, Any],
+) -> None:
+    """Expose claim relations on source records while retaining all audit evidence."""
+    relations: dict[str, list[dict[str, str]]] = {}
+    for claim in summary.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict) or not evidence.get("citation_id"):
+                continue
+            relations.setdefault(str(evidence["citation_id"]), []).append(
+                {
+                    "claim_id": str(claim.get("claim_id") or ""),
+                    "claim_status": str(claim.get("status") or "insufficient"),
+                    "relation": str(evidence.get("relation") or "context"),
+                }
+            )
+    for citation_id, source in traceability.items():
+        source_relations = relations.get(citation_id, [])
+        source["claim_relations"] = source_relations
+        source["verified"] = any(item["relation"] == "supports" for item in source_relations)
 
 
 def _resolve_citations(point_ids: Any, index: dict[str, str]) -> tuple[str, list[str]]:
@@ -265,10 +356,22 @@ def _fallback_recommendations(analysis: dict, products: list[str], citation_inde
     return f"- **优先级：中**：结合{product_text}的已收集证据开展定向验证，并根据验证结果安排后续迭代。"
 
 
-def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: list[str] | None, whatif_comment: str, hitl_action: str, collected: list[dict], quality: dict, schema_profile: str = "baseline") -> list[dict]:
+def _build_sections(
+    analysis: dict,
+    verdict: dict,
+    products: list[str],
+    focus: list[str] | None,
+    whatif_comment: str,
+    hitl_action: str,
+    collected: list[dict],
+    quality: dict,
+    schema_profile: str = "baseline",
+    *,
+    citation_index_override: dict[str, str] | None = None,
+) -> list[dict]:
     """Build all report sections."""
     sections: list[dict] = []
-    citation_index = _citation_index(collected)
+    citation_index = citation_index_override if citation_index_override is not None else _citation_index(collected)
 
     def _src_ref(point_ids: list[str]) -> str:
         return _resolve_citations(point_ids, citation_index)[0]
@@ -412,13 +515,16 @@ def _build_sections(analysis: dict, verdict: dict, products: list[str], focus: l
 
     # 7. Sources (required)
     sources_text = ""
-    for i, dp in enumerate(collected):
-        if isinstance(dp, dict):
-            sources_text += f"[{i+1}] {dp.get('source_url', '?')} — {dp.get('collected_at', '?')} — {dp.get('label', '')}\n"
+    source_ids: list[str] = []
+    for dp in collected:
+        if isinstance(dp, dict) and str(dp.get("id") or "") in citation_index:
+            citation_id = citation_index[str(dp["id"])]
+            source_ids.append(citation_id)
+            sources_text += f"[{citation_id}] {dp.get('source_url', '?')} — {dp.get('collected_at', '?')} — {dp.get('label', '')}\n"
     sections.append({
         "id": "sec-sources", "title": "数据来源",
         "content": sources_text or "_暂无来源_", "content_type": "table",
-        "source_ids": [str(i + 1) for i, dp in enumerate(collected) if isinstance(dp, dict)], "chart_path": None, "subsections": None,
+        "source_ids": source_ids, "chart_path": None, "subsections": None,
     })
 
     # 8. Appendix: Quality (required)
@@ -917,6 +1023,10 @@ def _build_traceability_map(collected: list[dict]) -> dict:
                 "page_no": dp.get("page_no"),
                 "retrieval_score": dp.get("retrieval_score"),
                 "is_local_knowledge": bool(dp.get("knowledge_chunk_id")),
+                "knowledge_version_no": dp.get("knowledge_version_no"),
+                "knowledge_valid_from": dp.get("knowledge_valid_from"),
+                "knowledge_valid_to": dp.get("knowledge_valid_to"),
+                "knowledge_temporal_status": dp.get("knowledge_temporal_status"),
                 **snapshot_fields,
             }
     return trace
