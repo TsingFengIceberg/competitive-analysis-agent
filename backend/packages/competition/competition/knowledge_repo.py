@@ -600,13 +600,15 @@ class KnowledgeRepository:
                        d.published_at, d.observed_at, d.current_version,
                        v.version_no, v.content_hash, v.created_at AS valid_from,
                        v.superseded_at AS valid_to, v.metadata_json AS version_metadata_json,
-                       c.chunk_id, c.text AS excerpt
+                       MAX(CASE WHEN c.ordinal = 0 THEN c.chunk_id END) AS chunk_id,
+                       MAX(CASE WHEN c.ordinal = 0 THEN c.text END) AS excerpt,
+                       GROUP_CONCAT(c.text, '\n\n') AS comparison_text
                   FROM knowledge_document_versions v
                   JOIN knowledge_documents d ON d.document_id = v.document_id
              LEFT JOIN knowledge_chunks c
                     ON c.document_id = v.document_id AND c.version_no = v.version_no
-                   AND c.ordinal = 0
                  WHERE {' AND '.join(where)}
+              GROUP BY d.document_id, v.version_no
               ORDER BY v.created_at DESC, d.document_id, v.version_no DESC
                  LIMIT ?""",
             params,
@@ -634,6 +636,7 @@ class KnowledgeRepository:
             item["is_current"] = int(item["version_no"]) == int(item["current_version"])
             item["temporal_status"] = "current" if item["is_current"] else "historical"
             item["excerpt"] = str(item.get("excerpt") or "")[:1200]
+            item["comparison_text"] = str(item.get("comparison_text") or item["excerpt"])[:16000]
             item["metadata"] = version_metadata
             events.append(item)
         return events

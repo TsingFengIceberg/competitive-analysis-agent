@@ -4165,6 +4165,9 @@ def _run_graph_sync(thread_id: str) -> None:
 
         state = _store[thread_id]["state"]
         terminal_error = str(state.get("error") or "").strip()
+        if not terminal_error and not state.get("report_data"):
+            terminal_error = "FATAL: 分析流程结束但未生成报告"
+            state["error"] = terminal_error
         if terminal_error:
             failure_message = terminal_error.removeprefix("FATAL:").strip() or "分析未生成有效结果"
             _add_token_entry(thread_id, "初始分析")

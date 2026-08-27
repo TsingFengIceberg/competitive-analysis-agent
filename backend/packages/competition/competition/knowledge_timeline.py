@@ -8,14 +8,19 @@ from typing import Any
 
 from competition.knowledge_types import AUTHORITY_PRIORS
 
-_NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?\s*(?:%|％|美元|元|万元|万|亿|k|m|b)?", re.I)
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b")
+_NUMBER_RE = re.compile(
+    r"(?<![\w])[-+]?\d+(?:[.,]\d+)?[ \t]*(?:%|％|美元|万元|元|万|亿|[kmb](?![a-z]))?",
+    re.I,
+)
 
 
 def _numbers(text: str) -> tuple[str, ...]:
+    comparable = _ISO_DATE_RE.sub(" ", text or "")
     return tuple(
         dict.fromkeys(
             match.casefold().replace(" ", "").replace("％", "%")
-            for match in _NUMBER_RE.findall(text or "")
+            for match in _NUMBER_RE.findall(comparable)
         )
     )
 
@@ -49,12 +54,13 @@ def build_knowledge_timeline(events: list[dict[str, Any]]) -> dict[str, Any]:
     timeline: list[dict[str, Any]] = []
     for event in ordered:
         item = dict(event)
+        comparison_text = str(item.pop("comparison_text", "") or item.get("excerpt") or "")
         previous = previous_by_document.get(str(item.get("document_id")))
         item["change_type"] = "version_added" if previous is None else "version_changed"
         item["previous_version_no"] = previous.get("version_no") if previous else None
         item["previous_content_hash"] = previous.get("content_hash") if previous else None
         item["changed"] = previous is None or previous.get("content_hash") != item.get("content_hash")
-        item["numeric_values"] = list(_numbers(str(item.get("excerpt") or "")))
+        item["numeric_values"] = list(_numbers(comparison_text))
         previous_by_document[str(item.get("document_id"))] = item
         timeline.append(item)
 

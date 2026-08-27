@@ -606,6 +606,50 @@ class TestStream:
         assert getattr(executor_module._tl, "progress_callback", None) is None
         competition_router._store.pop(thread_id, None)
 
+    def test_initial_graph_without_report_is_persisted_as_failed(self, monkeypatch):
+        import app.competition_router as competition_router
+        import competition.executor as executor_module
+
+        thread_id = "comp-test-initial-missing-report"
+        events = []
+        persisted = []
+        monkeypatch.setitem(competition_router._store, thread_id, {
+            "status": "running",
+            "state": {
+                "messages": [],
+                "user_request": "test",
+                "target_products": ["A"],
+                "collected_data": [{"product": "A"}],
+            },
+            "query": "test",
+            "products": ["A"],
+            "generation_id": "generation-missing-report",
+        })
+        monkeypatch.setattr(competition_router, "_emit_event", lambda tid, event, payload, **kwargs: events.append((event, payload)))
+        monkeypatch.setattr(competition_router, "_add_token_entry", lambda *_args: None)
+        monkeypatch.setattr(competition_router, "_current_db_version", lambda *_args: None)
+        monkeypatch.setattr("competition.db.save_phase", lambda **kwargs: None)
+        monkeypatch.setattr("competition.db.upsert_analysis", lambda **kwargs: persisted.append(kwargs))
+
+        class FakeGraph:
+            def stream(self, initial_state, _config, stream_mode):
+                assert stream_mode == ["values"]
+                yield {**dict(initial_state), "analysis_result": {"summary": "partial"}}
+
+        monkeypatch.setattr(competition_router, "_replay_saver", object())
+        monkeypatch.setattr("competition.graph.build_competition_graph", lambda **kwargs: FakeGraph())
+        competition_router._run_graph_sync(thread_id)
+
+        assert competition_router._store[thread_id]["status"] == "failed"
+        assert competition_router._store[thread_id]["state"]["run_status"] == "failed"
+        assert any(event == "error" and payload["status"] == "failed" for event, payload in events)
+        assert not any(event == "end" and payload.get("status") == "completed" for event, payload in events)
+        assert any(record["status"] == "failed" for record in persisted)
+        assert getattr(executor_module._tl, "stream_callback", None) is None
+        assert getattr(executor_module._tl, "cancel_checker", None) is None
+        assert getattr(executor_module._tl, "progress_callback", None) is None
+        competition_router._store.pop(thread_id, None)
+
 
 class TestHistory:
     @pytest.mark.asyncio

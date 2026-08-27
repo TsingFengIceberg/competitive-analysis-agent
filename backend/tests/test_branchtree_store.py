@@ -12,6 +12,15 @@ def new_store() -> BranchSnapshotStore:
     return BranchSnapshotStore(":memory:")
 
 
+def test_store_creates_missing_database_parent(tmp_path):
+    store = BranchSnapshotStore(tmp_path / "nested" / "versions.db")
+
+    version = store.insert("thread-1", None, "checkpoint-1", "initial")
+
+    assert version == 1
+    assert (tmp_path / "nested" / "versions.db").is_file()
+
+
 # ── Tests ────────────────────────────────────────────────────────
 
 

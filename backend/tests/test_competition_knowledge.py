@@ -250,6 +250,30 @@ def test_ingestion_versioning_retrieval_and_user_isolation(tmp_path: Path):
     assert [event["version_no"] for event in timeline["events"]] == [2, 1]
 
 
+def test_timeline_detects_conflicts_outside_the_first_chunk(tmp_path: Path):
+    service = build_service(tmp_path)
+    sources = [
+        ("official.md", "primary", b"# Pricing\n\nDisclaimer without a number.\n\n## Current price\n\nCursor Pro costs $20 monthly."),
+        ("review.md", "third_party", b"# Pricing\n\nIndependent summary without a number.\n\n## Reported price\n\nCursor Pro costs $25 monthly."),
+    ]
+    for filename, authority, content in sources:
+        registered = service.register_bytes(
+            user_id="user-a",
+            filename=filename,
+            data=content,
+            product="Cursor",
+            dimension="pricing",
+            authority_tier=authority,
+        )
+        assert service.process_job(registered["job"]["job_id"])["status"] == "completed"
+
+    timeline = service.timeline("user-a", product="Cursor", dimension="pricing")
+
+    assert timeline["summary"]["conflict_count"] == 1
+    assert timeline["conflicts"][0]["resolution"]["strategy"] == "higher_authority"
+    assert all("comparison_text" not in event for event in timeline["events"])
+
+
 def test_failed_replacement_keeps_previous_version_active(tmp_path: Path):
     service = build_service(tmp_path)
     first = service.register_bytes(
@@ -545,9 +569,29 @@ def test_hybrid_qdrant_recall_respects_user_and_scope_filters():
             as_of="2026-08-01T00:00:00+00:00",
         ),
     )
+    index.replace_document(
+        {
+            "document_id": "doc-cursor-old-source",
+            "product": "Cursor",
+            "dimension": "pricing",
+            "authority_tier": "primary",
+            "published_at": "2025-01-01T00:00:00+00:00",
+        },
+        [chunk("cursor-old-source", "user-a", "Cursor old pricing source")],
+    )
+    recent = index.search_ids(
+        "Cursor pricing",
+        user_id="user-a",
+        filters=RetrievalFilters(
+            products=("Cursor",),
+            dimensions=("pricing",),
+            published_after="2026-01-01T00:00:00+00:00",
+        ),
+    )
     assert [chunk_id for chunk_id, _ in current] == ["cursor-v2"]
     assert [chunk_id for chunk_id, _ in historical] == ["cursor"]
     assert [chunk_id for chunk_id, _ in as_of] == ["cursor"]
+    assert [chunk_id for chunk_id, _ in recent] == ["cursor-v2"]
     index.close()
 
 

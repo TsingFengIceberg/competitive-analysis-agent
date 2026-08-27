@@ -476,7 +476,17 @@ class KnowledgeIndex:
         if before is not None:
             time_range["lte"] = before
         if time_range:
-            must.append(models.FieldCondition(key="published_ts", range=models.Range(**time_range)))
+            # A missing publication date means freshness is unknown, not that
+            # the evidence is outside the requested range. Keep those records
+            # available so the quality layer can surface the uncertainty.
+            must.append(
+                models.Filter(
+                    should=[
+                        models.FieldCondition(key="published_ts", range=models.Range(**time_range)),
+                        models.IsEmptyCondition(is_empty=models.PayloadField(key="published_ts")),
+                    ]
+                )
+            )
         return models.Filter(must=must, must_not=must_not or None, should=should or None)
 
     def search_ids(

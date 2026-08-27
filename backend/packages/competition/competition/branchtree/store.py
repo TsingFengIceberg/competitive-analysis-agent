@@ -66,6 +66,8 @@ class BranchSnapshotStore:
             except sqlite3.ProgrammingError:
                 # Connection from another thread — recreate
                 self._conn = None
+        if str(self._db_path) != ":memory:":
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
