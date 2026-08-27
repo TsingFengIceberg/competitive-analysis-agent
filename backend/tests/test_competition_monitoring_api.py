@@ -195,6 +195,49 @@ def test_observation_brief_uses_complete_current_contract():
     assert sum(item.weight for item in validated.dimensions) == pytest.approx(1.0)
 
 
+def test_material_observation_changes_queue_governed_knowledge(monkeypatch):
+    import app.competition_router as competition_router
+    import competition.knowledge_service as knowledge_service
+
+    captured: list[dict] = []
+
+    class FakeService:
+        def queue_governed_intelligence_history(self, **values):
+            captured.append(values)
+            return {
+                "job_id": "kjob-auto-1",
+                "operation": "import_history",
+                "status": "completed",
+                "metadata": {"governance": {"approval_status": "approved"}},
+            }
+
+    monkeypatch.setattr(
+        competition_router,
+        "_load_intelligence_items",
+        lambda keys: [{"item_key": key, "product": "Cursor"} for key in keys],
+    )
+    monkeypatch.setattr(knowledge_service, "get_knowledge_service", lambda: FakeService())
+
+    result = competition_router._queue_observation_knowledge(
+        {"name": "Daily AI tools", "user_id": "user-1"},
+        {
+            "change_events": [
+                {"item_key": "material-1", "material": True},
+                {"item_key": "page-only", "material": False},
+                {"item_key": "material-1", "material": True},
+            ]
+        },
+    )
+
+    assert result["requested"] == 1
+    assert result["queued"] == 1
+    assert result["approved"] == 1
+    assert result["quarantined"] == 0
+    assert captured[0]["user_id"] == "user-1"
+    assert captured[0]["item"]["item_key"] == "material-1"
+    assert "Daily AI tools" in captured[0]["title"]
+
+
 def test_schedule_repository_filters_run_history_by_owner():
     conn = init_db(":memory:")
     repository = ScheduleRepository(conn=conn)

@@ -136,6 +136,17 @@ export interface KnowledgeDocument {
   space_role?: KnowledgeSpaceRole;
   approval_status: "pending" | "approved" | "rejected";
   retention_until?: string | null;
+  metadata?: {
+    auto_ingestion?: {
+      source_kind?: string;
+      quality_score?: number;
+      approval_status?: "pending" | "approved";
+      quarantined?: boolean;
+      reasons?: string[];
+      trigger?: string;
+    };
+    lineage?: Record<string, string | number | null>;
+  };
 }
 
 export type KnowledgeSpaceRole = "owner" | "editor" | "viewer";
@@ -214,6 +225,7 @@ export interface KnowledgeJob {
   error?: string | null;
   created_at: string;
   finished_at?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface KnowledgeHit {

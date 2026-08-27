@@ -21,6 +21,8 @@ from competition.knowledge_governance import (
     REVIEW_ROLES,
     SPACE_ROLES,
     WRITE_ROLES,
+    assess_intelligence_item,
+    assess_report,
     retention_deadline,
 )
 from competition.knowledge_index import KnowledgeIndex, merge_scores
@@ -147,6 +149,7 @@ class KnowledgeService:
         observed_at: str | None = None,
         metadata: dict[str, Any] | None = None,
         space_id: str | None = None,
+        approval_status: str | None = None,
     ) -> dict[str, Any]:
         if not data:
             raise ValueError("Document is empty")
@@ -158,6 +161,8 @@ class KnowledgeService:
             raise ValueError(f"Unsupported document type: {suffix or 'no extension'}")
         if authority_tier not in {"primary", "structured_fact", "change_event", "third_party", "report"}:
             raise ValueError(f"Unsupported authority tier: {authority_tier}")
+        if approval_status not in {None, "approved", "pending"}:
+            raise ValueError("Approval status must be approved or pending")
         digest = hashlib.sha256(data).hexdigest()
         space = self._resolve_space(user_id, space_id, roles=WRITE_ROLES)
         source_identity = _source_key(
@@ -201,7 +206,7 @@ class KnowledgeService:
                 "observed_at": observed_at or _now(),
                 "metadata": metadata or {},
                 "space_id": space["space_id"],
-                "approval_status": "pending" if space.get("require_approval") else "approved",
+                "approval_status": "pending" if space.get("require_approval") else (approval_status or "approved"),
                 "retention_until": retention_deadline(int(space.get("retention_days") or 0)),
             }
             values = {
@@ -457,6 +462,8 @@ class KnowledgeService:
         title: str,
         authority_tier: str,
         space_id: str | None = None,
+        approval_status: str | None = None,
+        governance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Queue one observation fact's complete immutable version series."""
         with self._repo() as repository:
@@ -469,8 +476,88 @@ class KnowledgeService:
                     "title": title,
                     "authority_tier": authority_tier,
                     "space_id": self._resolve_space(user_id, space_id, roles=WRITE_ROLES)["space_id"],
+                    "approval_status": approval_status,
+                    "governance": governance or {},
                 },
             )
+
+    def queue_governed_intelligence_history(
+        self,
+        *,
+        user_id: str,
+        item: dict[str, Any],
+        title: str,
+        space_id: str | None = None,
+        trigger: str = "observation",
+    ) -> dict[str, Any]:
+        """Queue an observed fact with source-quality admission metadata."""
+        from competition.db import get_credibility, init_db
+
+        conn = init_db(self.db_path)
+        try:
+            credibility = get_credibility(str(item.get("source_domain") or ""), conn)
+        finally:
+            conn.close()
+        governance = assess_intelligence_item(item, source_credibility=credibility)
+        governance["trigger"] = trigger
+        return self.queue_intelligence_history(
+            user_id=user_id,
+            item=item,
+            title=title,
+            authority_tier="structured_fact",
+            space_id=space_id,
+            approval_status=str(governance["approval_status"]),
+            governance=governance,
+        )
+
+    def register_report_snapshot(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        version: int,
+        report_data: dict[str, Any],
+        analysis_brief: dict[str, Any] | None = None,
+        generation_id: str | None = None,
+        space_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Register one immutable analysis report version under governed approval."""
+        import json
+
+        governance = assess_report(report_data)
+        products = [str(value) for value in report_data.get("products") or [] if str(value).strip()]
+        title = str(report_data.get("title") or f"Analysis report {thread_id}")
+        payload = {
+            "thread_id": thread_id,
+            "report_version": version,
+            "report": report_data,
+            "analysis_brief": analysis_brief or {},
+        }
+        generated_at = str(report_data.get("generated_at") or _now())
+        return self.register_bytes(
+            user_id=user_id,
+            filename=f"{thread_id}.json",
+            data=json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode(),
+            title=title,
+            media_type="application/json",
+            source_type="analysis_report",
+            source_uri=f"analysis://{thread_id}",
+            product=" / ".join(products),
+            dimension="report",
+            authority_tier="report",
+            published_at=generated_at,
+            observed_at=_now(),
+            metadata={
+                "auto_ingestion": governance,
+                "lineage": {
+                    "thread_id": thread_id,
+                    "report_version": version,
+                    "generation_id": generation_id,
+                },
+            },
+            space_id=space_id,
+            approval_status=str(governance["approval_status"]),
+        )
 
     def process_intelligence_history_job(self, job_id: str) -> dict[str, Any]:
         """Import observation versions serially so validity intervals remain ordered."""
@@ -566,8 +653,14 @@ class KnowledgeService:
                     "intelligence_version": version.get("version") or index + 1,
                     "intelligence_content_hash": content_hash,
                     "original_source_url": payload.get("source_url") or item.get("source_url"),
+                    "auto_ingestion": metadata.get("governance") or {},
+                    "lineage": {
+                        "intelligence_item_key": item["item_key"],
+                        "intelligence_version": version.get("version") or index + 1,
+                    },
                 },
                 space_id=str(metadata.get("space_id") or "") or None,
+                approval_status=metadata.get("approval_status"),
             )
             document_id = (registration.get("document") or {}).get("document_id") or document_id
             child = registration.get("job") or {}
@@ -598,6 +691,7 @@ class KnowledgeService:
                 error="Some observation versions failed to import" if failures else None,
                 finished_at=_now(),
                 metadata={
+                    **metadata,
                     "item_key": item.get("item_key"),
                     "versions_requested": len(versions),
                     "versions_imported": imported,
@@ -608,6 +702,33 @@ class KnowledgeService:
             result = repository.get_job(job_id)
             assert result is not None
             return result
+
+    def retry_job(self, job_id: str, user_id: str) -> dict[str, Any]:
+        """Create an auditable retry without mutating the failed job."""
+        with self._repo() as repository:
+            original = repository.get_job(job_id, user_id)
+            if original is None:
+                raise KeyError(f"Knowledge job not found: {job_id}")
+            if original.get("status") != "failed":
+                raise ValueError("Only failed knowledge jobs can be retried")
+            operation = str(original.get("operation") or "")
+            if operation not in {"ingest", "reindex", "rebuild", "import_history"}:
+                raise ValueError(f"Unsupported retry operation: {operation}")
+            document_id = original.get("document_id")
+            if document_id:
+                document = repository.get_document(str(document_id), user_id)
+                if document is None or document.get("space_role") not in WRITE_ROLES:
+                    raise PermissionError("Knowledge-space write permission is required")
+            metadata = dict(original.get("metadata") or {})
+            metadata["retry_of"] = job_id
+            metadata["retry_attempt"] = int(metadata.get("retry_attempt") or 0) + 1
+            return repository.create_job(
+                job_id=f"kjob-{uuid.uuid4().hex}",
+                user_id=user_id,
+                document_id=document_id,
+                operation=operation,
+                metadata=metadata,
+            )
 
     def process_rebuild_job(self, job_id: str) -> dict[str, Any]:
         with self._repo() as repository:
@@ -625,7 +746,7 @@ class KnowledgeService:
                     progress=100,
                     error="Some documents could not be rebuilt" if result["failures"] else None,
                     finished_at=_now(),
-                    metadata=result,
+                    metadata={**(job.get("metadata") or {}), **result},
                 )
                 completed = repository.get_job(job_id)
                 assert completed is not None

@@ -75,7 +75,7 @@ The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixe
 
 ### Local knowledge base and basic RAG
 
-The **Local Knowledge Base** workspace supports file uploads, imports from a restricted Inbox path, and explicit promotion of selected monitoring facts. TXT, Markdown, HTML, CSV, and JSON use lightweight parsers; PDF, Office documents, and images are processed locally by Docling and RapidOCR. Original files, normalized Markdown, document versions, structured chunks, and ingestion jobs are stored separately. Identical content does not create another version, and a failed replacement keeps the previous indexed version usable.
+The **Local Knowledge Base** workspace supports file uploads, imports from a restricted Inbox path, and promotion of selected monitoring facts. Material changes found by continuous monitoring and newly generated analysis-report versions automatically enter the knowledge-governance workflow. Content confidence, source credibility, report quality gates, and groundedness determine automatic admission or review quarantine. Pending content keeps complete lineage but is not retrievable by default, and the UI can create a traceable retry linked to a failed job. TXT, Markdown, HTML, CSV, and JSON use lightweight parsers; PDF, Office documents, and images are processed locally by Docling and RapidOCR. Original files, normalized Markdown, document versions, structured chunks, and ingestion jobs are stored separately. Identical content does not create another version, and a failed replacement keeps the previous indexed version usable.
 
 Retrieval combines BGE-M3 dense vectors and Chinese-aware FastEmbed BM25 sparse vectors through Qdrant RRF fusion, followed by bge-reranker-v2-m3. Filters cover user, knowledge space, product, dimension, market, authority tier, source type, publication time, and current, historical, all-version, or as-of temporal modes. The query planner keeps focused fact lookups on a low-cost direct path and decomposes comparative, temporal, or multi-dimensional requests into batched first-hop queries plus an evidence-bridging hop before fusing repeated hits. Old versions remain in SQLite and Qdrant, and rebuilding restores every successfully indexed version. Promoting monitoring facts imports their complete version sequence using the original observation times.
 
@@ -405,6 +405,7 @@ competitive-analysis-agent/
 | GET / DELETE | `/api/competition/knowledge/documents/{document_id}` | Inspect versions/chunks or delete a document |
 | POST | `/api/competition/knowledge/documents/{document_id}/reindex` | Reparse and reindex the current usable version |
 | GET | `/api/competition/knowledge/jobs`, `/api/competition/knowledge/jobs/{job_id}` | Inspect asynchronous ingestion and rebuild jobs |
+| POST | `/api/competition/knowledge/jobs/{job_id}/retry` | Create a traceable retry for a failed knowledge-processing job |
 | POST | `/api/competition/knowledge/search` | Run filtered hybrid retrieval and reranking |
 | GET | `/api/competition/knowledge/chunks/{chunk_id}` | Read an authorized original evidence chunk |
 | POST | `/api/competition/knowledge/rebuild` | Rebuild the current user's Qdrant index from SQLite |

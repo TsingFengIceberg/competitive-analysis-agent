@@ -1169,6 +1169,35 @@ def _queue_knowledge_job(result: dict) -> dict:
     return result
 
 
+def _queue_report_snapshot_knowledge(thread_id: str, version: int | None) -> dict | None:
+    """Deposit a completed report version without making report completion depend on RAG."""
+    if not version:
+        return None
+    entry = _store.get(thread_id) or {}
+    state = entry.get("state") or {}
+    report = state.get("report_data") or {}
+    if hasattr(report, "model_dump"):
+        report = report.model_dump()
+    if not isinstance(report, dict) or not report:
+        return None
+    try:
+        from competition.knowledge_service import get_knowledge_service
+
+        result = get_knowledge_service().register_report_snapshot(
+            user_id=_thread_owners.get(thread_id, "default"),
+            thread_id=thread_id,
+            version=version,
+            report_data=report,
+            analysis_brief=state.get("analysis_brief") or entry.get("analysis_brief"),
+            generation_id=entry.get("generation_id") or state.get("generation_id"),
+        )
+        _queue_knowledge_job(result)
+        return result
+    except Exception:
+        logger.exception("Automatic report knowledge ingestion failed for %s v%d", thread_id[:12], version)
+        return None
+
+
 def stop_knowledge_runtime() -> None:
     """Stop accepting ingestion work while allowing an active atomic update to finish."""
     global _knowledge_executor
@@ -1375,6 +1404,25 @@ async def get_knowledge_job(job_id: str, fastapi_request: Request) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="Knowledge job not found")
     return job
+
+
+@router.post("/knowledge/jobs/{job_id}/retry", status_code=202)
+async def retry_knowledge_job(job_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        job = await asyncio.to_thread(
+            get_knowledge_service().retry_job,
+            job_id,
+            _get_user_id(fastapi_request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _queue_knowledge_job(job)
 
 
 @router.post("/knowledge/search")
@@ -2227,6 +2275,7 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest, fastapi_re
         comment="人工修订报告章节",
         generation_id=generation_id,
     )
+    _queue_report_snapshot_knowledge(thread_id, new_version)
 
     return SectionUpdateResponse(
         thread_id=thread_id,
@@ -2642,6 +2691,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 comment=state.get("hitl_decision", {}).get("comment", ""),
                 generation_id=generation_id,
             )
+            _queue_report_snapshot_knowledge(thread_id, version)
             logger.info("Saved post-%s report v%d for %s",
                         action, version or _current_db_version(thread_id), thread_id[:12])
     except _ReanalysisCancelled:
@@ -3094,11 +3144,58 @@ def _run_scheduled_collection(schedule: dict) -> dict:
     result = collector_node(state)
     persistence = (result.get("collection_summary") or {}).get("intelligence_persistence") or {}
     material = int(persistence.get("material_changes", 0) or 0)
+    knowledge_ingestion = _queue_observation_knowledge(schedule, persistence) if material else {
+        "requested": 0, "queued": 0, "approved": 0, "quarantined": 0, "jobs": [],
+    }
     return {
         **persistence,
+        "knowledge_ingestion": knowledge_ingestion,
         "status": "completed" if material else "skipped",
         "skip_reason": None if material else "no_material_change",
         "collection_summary": result.get("collection_summary") or {},
+    }
+
+
+def _queue_observation_knowledge(schedule: dict, persistence: dict) -> dict:
+    """Queue only materially changed observation facts for governed ingestion."""
+    material_keys = list(dict.fromkeys(
+        str(event.get("item_key") or "")
+        for event in persistence.get("change_events") or []
+        if event.get("material") and event.get("item_key")
+    ))
+    if not material_keys:
+        return {"requested": 0, "queued": 0, "approved": 0, "quarantined": 0, "jobs": []}
+    items = _load_intelligence_items(material_keys)
+    from competition.knowledge_service import get_knowledge_service
+
+    service = get_knowledge_service()
+    jobs: list[dict] = []
+    approved = 0
+    quarantined = 0
+    for item in items:
+        try:
+            result = service.queue_governed_intelligence_history(
+                user_id=str(schedule.get("user_id") or "default"),
+                item=item,
+                title=f"竞品观察：{schedule.get('name') or '未命名观察'}",
+            )
+            job = result.get("job") or result
+            governance = (job.get("metadata") or {}).get("governance") or {}
+            approved += int(governance.get("approval_status") == "approved")
+            quarantined += int(governance.get("approval_status") != "approved")
+            jobs.append(_queue_knowledge_job(result).get("job") or result)
+        except Exception as exc:
+            logger.exception("Automatic observation knowledge ingestion failed for %s", item.get("item_key"))
+            jobs.append({"status": "failed", "error": str(exc)[:500], "item_key": item.get("item_key")})
+    return {
+        "requested": len(material_keys),
+        "queued": sum(1 for job in jobs if job.get("status") in {"queued", "running", "completed"}),
+        "approved": approved,
+        "quarantined": quarantined,
+        "jobs": [
+            {key: job.get(key) for key in ("job_id", "status", "error", "item_key") if job.get(key) is not None}
+            for job in jobs
+        ],
     }
 
 
@@ -4227,6 +4324,7 @@ def _run_graph_sync(thread_id: str) -> None:
                 report_data=rd,
                 generation_id=_store[thread_id].get("generation_id") or state.get("generation_id"),
             )
+            _queue_report_snapshot_knowledge(thread_id, version)
             logger.info("Saved initial report v%d for %s", version or 0, thread_id[:12])
 
         logger.info("Analysis %s completed", thread_id)

@@ -84,6 +84,7 @@ async def test_human_edit_creates_child_version(monkeypatch, tmp_path):
     store = BranchSnapshotStore(tmp_path / "versions.db")
     monkeypatch.setattr(router, "_history_store", store)
     monkeypatch.setattr(competition_db, "upsert_analysis", lambda **_kwargs: None)
+    monkeypatch.setattr(router, "_queue_report_snapshot_knowledge", lambda *_args: None)
     thread_id = "human-edit-version-test"
     router._store[thread_id] = _entry({"title": "Report", "sections": [{"id": "s1", "content": "old"}]})
     router._persist_report_version(thread_id, "initial", generation_id="gen-1")
@@ -117,3 +118,30 @@ def test_legacy_metadata_is_classified_without_fabrication(monkeypatch, tmp_path
     assert history[0]["snapshot_status"] == "complete"
     assert history[1]["snapshot_status"] == "unavailable"
     store.close()
+
+
+def test_completed_report_version_is_queued_for_governed_knowledge(monkeypatch):
+    import app.competition_router as router
+    import competition.knowledge_service as knowledge_service
+
+    captured: list[dict] = []
+
+    class FakeService:
+        def register_report_snapshot(self, **values):
+            captured.append(values)
+            return {"job_id": "kjob-report-1", "operation": "ingest", "status": "completed"}
+
+    thread_id = "report-auto-ingestion-test"
+    router._store[thread_id] = _entry({"title": "Alpha vs Beta", "products": ["Alpha", "Beta"]})
+    router._thread_owners[thread_id] = "user-report"
+    monkeypatch.setattr(knowledge_service, "get_knowledge_service", lambda: FakeService())
+
+    result = router._queue_report_snapshot_knowledge(thread_id, 3)
+
+    assert result is not None
+    assert captured[0]["user_id"] == "user-report"
+    assert captured[0]["thread_id"] == thread_id
+    assert captured[0]["version"] == 3
+    assert captured[0]["report_data"]["title"] == "Alpha vs Beta"
+    router._thread_owners.pop(thread_id, None)
+    router._store.pop(thread_id, None)

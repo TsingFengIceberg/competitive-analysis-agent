@@ -13,6 +13,7 @@ import {
   History,
   Loader2,
   Plus,
+  RefreshCcw,
   RefreshCw,
   RotateCw,
   Search,
@@ -213,6 +214,24 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function governanceReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    quality_gate_not_passed: "报告质量门未通过",
+    blocking_quality_issues: "仍有阻断级质量问题",
+    overall_quality_below_threshold: "报告综合质量不足",
+    groundedness_below_threshold: "结论证据支持率不足",
+    quality_score_below_auto_approval: "综合质量分未达到自动准入线",
+    low_confidence: "内容置信度偏低",
+    low_source_credibility: "来源可信度偏低",
+    missing_product: "缺少竞品信息",
+    missing_dimension: "缺少分析维度",
+    missing_label: "缺少事实名称",
+    missing_value: "缺少事实内容",
+    missing_source_url: "缺少原始来源",
+  };
+  return labels[reason] ?? reason;
 }
 
 export default function KnowledgePage() {
@@ -1473,6 +1492,23 @@ export default function KnowledgePage() {
                         {job.operation} · {job.document_id || "全部索引"}
                       </span>
                       <span className="tabular-nums">{job.progress}%</span>
+                      {job.status === "failed" && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          title="重试失败任务"
+                          aria-label="重试失败任务"
+                          disabled={busy}
+                          onClick={() =>
+                            void runAction(
+                              `${API}/knowledge/jobs/${job.job_id}/retry`,
+                              "已创建重试任务",
+                            )
+                          }
+                        >
+                          <RefreshCcw className="size-3.5" />
+                        </Button>
+                      )}
                       {job.error && (
                         <span
                           className="text-destructive max-w-52 truncate"
@@ -1572,6 +1608,43 @@ export default function KnowledgePage() {
           </SheetHeader>
           {detail && (
             <div className="space-y-5 px-4 pb-6">
+              {detail.metadata?.auto_ingestion && (
+                <section className="bg-muted/40 border-y px-1 py-3 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold">自动沉淀治理</h3>
+                    <StatusBadge
+                      tone={
+                        detail.metadata.auto_ingestion.quarantined
+                          ? "warning"
+                          : "success"
+                      }
+                      label={
+                        detail.metadata.auto_ingestion.quarantined
+                          ? "隔离待审"
+                          : "质量门通过"
+                      }
+                    />
+                  </div>
+                  <div className="text-muted-foreground mt-2">
+                    质量分{" "}
+                    {Math.round(
+                      (detail.metadata.auto_ingestion.quality_score ?? 0) * 100,
+                    )}
+                    %
+                    {detail.metadata.auto_ingestion.reasons?.length
+                      ? ` · ${detail.metadata.auto_ingestion.reasons.map(governanceReasonLabel).join("、")}`
+                      : " · 已满足自动准入条件"}
+                  </div>
+                  {detail.metadata.lineage && (
+                    <div className="text-muted-foreground mt-1 break-all">
+                      来源追溯：
+                      {Object.entries(detail.metadata.lineage)
+                        .map(([key, value]) => `${key}=${value ?? "-"}`)
+                        .join(" · ")}
+                    </div>
+                  )}
+                </section>
+              )}
               <div className="flex flex-wrap gap-2">
                 {detail.approval_status === "pending" &&
                   detail.space_role === "owner" && (

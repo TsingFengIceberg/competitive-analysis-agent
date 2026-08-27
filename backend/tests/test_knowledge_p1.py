@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from test_competition_knowledge import build_service
 
+from competition.knowledge_governance import assess_intelligence_item, assess_report
 from competition.knowledge_query import plan_retrieval_query
 from competition.knowledge_repo import KnowledgeRepository
 from competition.knowledge_types import RetrievalFilters
@@ -205,3 +207,137 @@ def test_real_rag_dataset_has_traceable_public_snapshots():
     assert all(item["source_url"].startswith("https://") for item in dataset["documents"])
     assert all(item.get("captured_at") for item in dataset["documents"])
     assert {item["expected_route"] for item in dataset["queries"]} == {"direct", "multi_hop"}
+
+
+def test_auto_admission_policy_approves_strong_evidence_and_quarantines_uncertain_content():
+    strong = assess_intelligence_item(
+        {
+            "product": "Cursor",
+            "dimension": "pricing",
+            "label": "Team price",
+            "value": "$40",
+            "source_url": "https://cursor.com/pricing",
+            "confidence": 0.9,
+            "credibility_tier": "official",
+        },
+        source_credibility=0.8,
+    )
+    assert strong["approval_status"] == "approved"
+    assert strong["quarantined"] is False
+
+    uncertain = assess_intelligence_item(
+        {
+            "product": "Cursor",
+            "dimension": "pricing",
+            "label": "Rumored price",
+            "value": "$99",
+            "source_url": "",
+            "confidence": 0.3,
+            "credibility_tier": "secondary",
+        },
+        source_credibility=0.2,
+    )
+    assert uncertain["approval_status"] == "pending"
+    assert uncertain["quarantined"] is True
+    assert {"missing_source_url", "low_confidence", "low_source_credibility"} <= set(uncertain["reasons"])
+
+
+def test_report_quality_policy_requires_passed_grounded_report():
+    approved = assess_report({
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
+    })
+    assert approved["approval_status"] == "approved"
+
+    pending = assess_report({
+        "quality_gate": {"status": "warning", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.8},
+        "claim_verification": {"groundedness": 0.4, "citation_precision": 0.9},
+    })
+    assert pending["approval_status"] == "pending"
+    assert "quality_gate_not_passed" in pending["reasons"]
+    assert "groundedness_below_threshold" in pending["reasons"]
+
+
+def test_report_snapshots_are_versioned_and_low_quality_versions_are_hidden(tmp_path):
+    service = build_service(tmp_path)
+    good = {
+        "title": "Cursor vs Codex",
+        "generated_at": "2026-08-27T00:00:00+00:00",
+        "products": ["Cursor", "Codex"],
+        "sections": [{"id": "summary", "content": "Cursor and Codex differ in price."}],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
+    }
+    first = service.register_report_snapshot(
+        user_id="user-a", thread_id="comp-1", version=1, report_data=good,
+    )
+    assert first["document"]["approval_status"] == "approved"
+    assert service.process_job(first["job"]["job_id"])["status"] == "completed"
+
+    low_quality = {
+        **good,
+        "sections": [{"id": "summary", "content": "An uncertain rewrite."}],
+        "quality_gate": {"status": "blocked", "blocking_count": 1},
+        "quality_summary": {"overall_quality_score": 0.4},
+        "claim_verification": {"groundedness": 0.2, "citation_precision": 0.2},
+    }
+    second = service.register_report_snapshot(
+        user_id="user-a", thread_id="comp-1", version=2, report_data=low_quality,
+    )
+    assert second["document"]["document_id"] == first["document"]["document_id"]
+    assert service.process_job(second["job"]["job_id"])["status"] == "completed"
+    detail = service.document_detail(first["document"]["document_id"], "user-a")
+    assert detail is not None
+    assert detail["current_version"] == 2
+    assert detail["approval_status"] == "pending"
+    assert detail["metadata"]["lineage"]["report_version"] == 2
+    assert service.search("uncertain rewrite", user_id="user-a") == []
+
+
+def test_space_review_policy_overrides_automatic_report_approval(tmp_path):
+    service = build_service(tmp_path)
+    space = service.create_space("owner", name="Reviewed reports", require_approval=True)
+    result = service.register_report_snapshot(
+        user_id="owner",
+        thread_id="comp-reviewed",
+        version=1,
+        report_data={
+            "title": "Reviewed report",
+            "products": ["Cursor", "Codex"],
+            "quality_gate": {"status": "pass", "blocking_count": 0},
+            "quality_summary": {"overall_quality_score": 0.95},
+            "claim_verification": {"groundedness": 0.95, "citation_precision": 0.95},
+        },
+        space_id=space["space_id"],
+    )
+    assert result["document"]["approval_status"] == "pending"
+
+
+def test_failed_job_retry_is_new_and_auditable(tmp_path):
+    service = build_service(tmp_path)
+    original = service.queue_rebuild("user-a")
+    with KnowledgeRepository(db_path=service.db_path) as repository:
+        repository.update_job(original["job_id"], status="failed", error="temporary index error")
+
+    retry = service.retry_job(original["job_id"], "user-a")
+    assert retry["job_id"] != original["job_id"]
+    assert retry["status"] == "queued"
+    assert retry["operation"] == "rebuild"
+    assert retry["metadata"]["retry_of"] == original["job_id"]
+    assert retry["metadata"]["retry_attempt"] == 1
+    assert service.get_job(original["job_id"], "user-a")["status"] == "failed"
+    with pytest.raises(ValueError, match="Only failed"):
+        service.retry_job(retry["job_id"], "user-a")
+    completed = service.process_rebuild_job(retry["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["metadata"]["retry_of"] == original["job_id"]
+
+
+def test_p1_auto_ingestion_and_retry_api_contracts_are_registered():
+    from app.competition_router import router
+
+    contracts = {(route.path, method) for route in router.routes for method in route.methods or []}
+    assert ("/api/competition/knowledge/jobs/{job_id}/retry", "POST") in contracts

@@ -79,7 +79,7 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 ### 本地知识库与基础 RAG
 
-侧边栏的“本地知识库”支持上传文件、导入受限 Inbox 路径，以及从持续观察情报池显式选择事实沉淀。TXT、Markdown、HTML、CSV、JSON 直接解析，PDF、Office 文档和图片由 Docling + RapidOCR 在本地解析；原文件、规范化 Markdown、文档版本、结构化分块和处理任务分别保存，重复内容不会生成新版本，新版本索引失败时继续保留旧版本可用。
+侧边栏的“本地知识库”支持上传文件、导入受限 Inbox 路径，以及从持续观察情报池选择事实沉淀。持续观察发现的实质变化和新生成的分析报告版本会自动进入知识治理流程；系统按内容置信度、来源可信度、报告质量门与结论有据率决定自动准入或隔离待审。待审内容会保留完整来源追溯，但默认不可检索，失败任务可在界面创建保留原任务关系的新重试。TXT、Markdown、HTML、CSV、JSON 直接解析，PDF、Office 文档和图片由 Docling + RapidOCR 在本地解析；原文件、规范化 Markdown、文档版本、结构化分块和处理任务分别保存，重复内容不会生成新版本，新版本索引失败时继续保留旧版本可用。
 
 检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、知识空间、竞品、维度、市场、来源权威等级、发布时间以及当前/历史/全部/指定时间点版本过滤。查询规划器会让单一事实问题走低成本直查，将比较、时序和多维问题拆成多查询首跳与证据桥接跳，再对重复命中做融合。旧版本继续保存在 SQLite 和 Qdrant 中，索引重建会恢复全部成功版本；从持续观察导入事实时会按原始观察时间依次沉淀完整版本序列。
 
@@ -763,6 +763,7 @@ competitive-analysis-agent/
 | GET / DELETE | `/api/competition/knowledge/documents/{document_id}` | 查看版本与分块详情，或删除资料 |
 | POST | `/api/competition/knowledge/documents/{document_id}/reindex` | 重新解析并索引当前可用版本 |
 | GET | `/api/competition/knowledge/jobs`、`/api/competition/knowledge/jobs/{job_id}` | 查询异步导入与重建任务状态 |
+| POST | `/api/competition/knowledge/jobs/{job_id}/retry` | 为失败的知识处理任务创建可追溯重试 |
 | POST | `/api/competition/knowledge/search` | 执行带元数据过滤的混合检索与重排 |
 | GET | `/api/competition/knowledge/chunks/{chunk_id}` | 获取用户有权访问的证据原文分块 |
 | POST | `/api/competition/knowledge/rebuild` | 从 SQLite 业务数据重建当前用户的 Qdrant 索引 |
