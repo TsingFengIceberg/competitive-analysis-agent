@@ -2077,7 +2077,13 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     return AnalyzeResponse(thread_id=thread_id, status="running", analysis_brief=confirmed.model_dump())
 
 
-def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, user_id: str = "default") -> None:
+def _start_analysis_worker(
+    thread_id: str,
+    query: str,
+    analysis_brief: dict,
+    user_id: str = "default",
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
     """Submit exactly one resolver/graph worker after the DB claim."""
     entry = _store.get(thread_id)
     if entry is not None:
@@ -2087,7 +2093,8 @@ def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, use
         entry["state"]["user_id"] = user_id
         entry["state"]["target_products"] = analysis_brief.get("target_products", [])
     try:
-        asyncio.get_event_loop().run_in_executor(
+        loop = event_loop or asyncio.get_event_loop()
+        loop.run_in_executor(
             None, _resolve_and_run_graph, thread_id, query,
             analysis_brief.get("target_products", []), user_id, analysis_brief,
         )
@@ -2097,6 +2104,136 @@ def _start_analysis_worker(thread_id: str, query: str, analysis_brief: dict, use
         if entry is not None:
             entry["status"] = "awaiting_confirmation"
         raise HTTPException(status_code=503, detail="Analysis worker could not be started") from exc
+
+
+def start_analysis_for_a2a(
+    query: str,
+    target_products: list[str] | None = None,
+    *,
+    user_id: str = "default",
+    context_report: dict | None = None,
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> dict:
+    """Create an internal analysis thread for the standalone A2A adapter."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from competition.brief import brief_from_request_with_optional_model
+    from competition.db import (
+        claim_analysis_start,
+        init_db,
+        upsert_analysis,
+    )
+    from competition.db import (
+        list_history as _db_list_history,
+    )
+
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("A2A message must contain text")
+    products = [str(item).strip() for item in (target_products or []) if str(item).strip()]
+    brief = brief_from_request_with_optional_model(query, products, "general", "pm")
+    thread_id = f"comp-a2a-{uuid.uuid4().hex[:12]}"
+    _associate_thread(thread_id, user_id)
+    conn = init_db()
+    title = f"新建分析 {len(_db_list_history(conn, limit=1000)) + 1}"
+    conn.close()
+    entry = {
+        "status": "awaiting_confirmation",
+        "state": {
+            "messages": [], "thread_id": thread_id, "user_id": user_id,
+            "user_request": query, "target_products": brief.target_products,
+            "analysis_brief": brief.model_dump(), "persona": "pm", "industry": "general",
+            "collected_data": [], "context_report": context_report,
+        },
+        "created_at": datetime.now(UTC).isoformat(), "query": query,
+        "products": brief.target_products, "title": title,
+    }
+    _store[thread_id] = entry
+    upsert_analysis(
+        thread_id=thread_id, status="awaiting_confirmation", user_id=user_id,
+        query=query, products=brief.target_products, industry="general", persona="pm",
+        title=title, analysis_brief=brief.model_dump(),
+    )
+    if brief.readiness != "ready":
+        return {"thread_id": thread_id, "status": "awaiting_confirmation", "analysis_brief": brief.model_dump()}
+    confirmed = brief.model_copy(update={"confirmation_source": "a2a"})
+    result = claim_analysis_start(thread_id, confirmed.revision, confirmed.model_dump(), confirmation_source="a2a")
+    if result.get("result") != "claimed":
+        raise RuntimeError("Unable to claim analysis start")
+    _start_analysis_worker(thread_id, query, confirmed.model_dump(), user_id, event_loop=event_loop)
+    return {"thread_id": thread_id, "status": "running", "analysis_brief": confirmed.model_dump()}
+
+
+def continue_analysis_for_a2a(
+    thread_id: str,
+    message: str,
+    *,
+    user_id: str = "default",
+    brief: dict | None = None,
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> dict:
+    """Continue an A2A task after an Analysis Brief/input-required pause."""
+    from competition.brief import validate_confirmation_brief
+    from competition.db import claim_analysis_start
+
+    entry = _store.get(thread_id) or _restore_state_from_db(thread_id)
+    if not entry:
+        raise ValueError("Analysis thread not found")
+    owner = _thread_owners.get(thread_id) or entry.get("state", {}).get("user_id") or "default"
+    if owner != user_id and user_id != "default":
+        raise PermissionError("Analysis thread belongs to another caller")
+    current = entry.get("state", {}).get("analysis_brief") or {}
+    effective = brief or current
+    if not effective:
+        raise ValueError("A2A continuation requires an analysis brief")
+    confirmed = validate_confirmation_brief(effective).model_copy(update={"confirmation_source": "a2a"})
+    result = claim_analysis_start(thread_id, confirmed.revision, confirmed.model_dump(), confirmation_source="a2a")
+    if result.get("result") != "claimed":
+        status = entry.get("status") or "running"
+        return {"thread_id": thread_id, "status": status, "analysis_brief": confirmed.model_dump()}
+    query = entry.get("query") or entry.get("state", {}).get("user_request") or message
+    _start_analysis_worker(thread_id, query, confirmed.model_dump(), user_id, event_loop=event_loop)
+    return {"thread_id": thread_id, "status": "running", "analysis_brief": confirmed.model_dump()}
+
+
+def get_analysis_for_a2a(thread_id: str, *, user_id: str = "default") -> dict | None:
+    """Return a sanitized internal snapshot for the A2A task adapter."""
+    entry = _store.get(thread_id) or _restore_state_from_db(thread_id)
+    if not entry:
+        return None
+    owner = _thread_owners.get(thread_id) or entry.get("state", {}).get("user_id") or "default"
+    if owner != user_id and user_id != "default":
+        raise PermissionError("Analysis thread belongs to another caller")
+    state = entry.get("state", {})
+    report = state.get("report_data")
+    if hasattr(report, "model_dump"):
+        report = report.model_dump()
+    return {
+        "thread_id": thread_id,
+        "status": entry.get("status") or state.get("run_status") or "unknown",
+        "progress": state.get("progress") or state.get("current_node") or "",
+        "current_node": state.get("current_node") or "",
+        "error": str(state.get("error") or "")[:500],
+        "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
+        "report_data": report,
+        "analysis_result": state.get("analysis_result"),
+        "collected_data": state.get("collected_data") or [],
+        "metrics": report.get("metrics") if isinstance(report, dict) else {},
+    }
+
+
+def cancel_analysis_for_a2a(thread_id: str, *, user_id: str = "default") -> bool:
+    """Request cooperative cancellation for an internal analysis thread."""
+    snapshot = get_analysis_for_a2a(thread_id, user_id=user_id)
+    if snapshot is None:
+        return False
+    _cancel_flags[thread_id] = True
+    entry = _store.get(thread_id)
+    if entry:
+        entry["status"] = "interrupted"
+        entry.setdefault("state", {})["error"] = "Analysis cancelled by A2A caller"
+    return True
 
 
 @router.post("/{thread_id}/confirm", response_model=AnalyzeResponse)

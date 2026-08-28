@@ -229,6 +229,39 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             cancelled_at TEXT,
             UNIQUE(user_id, idempotency_key)
         );
+
+        CREATE TABLE IF NOT EXISTS a2a_tasks (
+            task_id TEXT PRIMARY KEY,
+            context_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT 'anonymous',
+            tenant_id TEXT NOT NULL DEFAULT '',
+            internal_thread_id TEXT,
+            status_json TEXT NOT NULL DEFAULT '{}',
+            history_json TEXT NOT NULL DEFAULT '[]',
+            artifacts_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            lease_until TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_a2a_tasks_owner ON a2a_tasks(owner_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_a2a_tasks_context ON a2a_tasks(owner_id, context_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS a2a_task_events (
+            task_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, sequence),
+            FOREIGN KEY (task_id) REFERENCES a2a_tasks(task_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_a2a_task_events_created ON a2a_task_events(task_id, sequence);
         CREATE INDEX IF NOT EXISTS idx_background_tasks_claim ON background_tasks(status, available_at, lease_until);
         CREATE INDEX IF NOT EXISTS idx_background_tasks_user ON background_tasks(user_id, created_at DESC);
 
@@ -635,6 +668,18 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     for col, default in [("provider_bases", "'{}'"), ("config_groups", "'[]'")]:
         try:
             conn.execute(f"ALTER TABLE user_settings ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
+    # A2A execution leases and retry counters are additive so existing local
+    # databases keep all task history when upgrading the provider.
+    for col, definition in (
+        ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+        ("lease_until", "TEXT"),
+        ("last_error", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE a2a_tasks ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
     conn.commit()

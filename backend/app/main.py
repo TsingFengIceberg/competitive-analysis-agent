@@ -257,6 +257,12 @@ def create_app() -> FastAPI:
 
     app.include_router(competition_router)
 
+    # A2A is an independent protocol adapter around the same black-box
+    # competition workflow. It does not replace the existing REST/SSE routes.
+    from app.a2a import install_a2a_provider
+
+    install_a2a_provider(app)
+
     @app.on_event("startup")
     async def start_background_services():
         start_knowledge_runtime()
@@ -269,9 +275,15 @@ def create_app() -> FastAPI:
                 logger.warning("Invalid CI_AGENT_OBSERVATION_POLL_SECONDS; using 30 seconds")
                 poll_seconds = 30
             start_observation_runtime(poll_seconds)
+        a2a_handler = getattr(app.state, "a2a_handler", None)
+        if a2a_handler is not None:
+            await a2a_handler.start()
 
     @app.on_event("shutdown")
     async def stop_background_services():
+        a2a_handler = getattr(app.state, "a2a_handler", None)
+        if a2a_handler is not None:
+            await a2a_handler.stop()
         stop_task_runtime()
         stop_observation_runtime()
         stop_knowledge_runtime()

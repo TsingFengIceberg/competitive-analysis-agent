@@ -726,6 +726,49 @@ competitive-analysis-agent/
 
 ---
 
+## 独立 A2A Provider
+
+项目提供基于官方 `a2a-sdk==1.1.2`（A2A 协议 `1.0`）的独立 Provider。SDK 版本固定是为了让 AgentCard、JSON-RPC、Task、Artifact 和 SSE 序列化保持可复现；Provider 不依赖任何特定客户端或 Hub。
+
+默认端点如下：
+
+| 能力 | 地址 |
+|------|------|
+| AgentCard | `GET /.well-known/agent-card.json` |
+| JSON-RPC | `POST /a2a` |
+| 标准 REST 绑定 | `/a2a/message:send`、`/a2a/message:stream`、`/a2a/tasks/{id}`、`/a2a/tasks/{id}:cancel` |
+
+启动后可发现 AgentCard：
+
+```bash
+curl http://localhost:8001/.well-known/agent-card.json
+```
+
+生产环境默认要求 Bearer/API key。设置 `CI_AGENT_A2A_API_KEY` 后，客户端使用 `Authorization: Bearer <key>`，并可用 `X-A2A-Client-ID` 与 `X-A2A-Tenant` 划分调用方和租户。仅本地调试时才显式设置 `CI_AGENT_A2A_AUTH_REQUIRED=false`。A2A Task、上下文映射、状态事件和报告 Artifact 持久化在 SQLite，和内部 `thread_id` 分离。
+
+可通过 `CI_AGENT_A2A_ENABLED` 开关 Provider；`CI_AGENT_A2A_MAX_CONCURRENCY`、`CI_AGENT_A2A_RATE_LIMIT_PER_MINUTE` 和 `CI_AGENT_A2A_MAX_REQUEST_BYTES` 控制并发、速率与请求大小；`CI_AGENT_A2A_TASK_TIMEOUT_SECONDS`、`CI_AGENT_A2A_MAX_ATTEMPTS` 和 `CI_AGENT_A2A_LEASE_SECONDS` 控制任务超时、有限重试与跨进程执行租约。服务重启后会从 SQLite 恢复仍处于 submitted/working 的任务，已完成、失败、取消或等待输入的任务不会被重复启动。
+
+发送文本请求（标准 JSON-RPC 方法名由 SDK 定义）：
+
+```bash
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -H 'X-A2A-Client-ID: cli-demo' -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"比较 Cursor 和 GitHub Copilot，重点关注团队采用成本"}]}}}'
+```
+
+响应中的 `result.task.id` 是外部 A2A Task ID。使用 `GetTask` 查询，使用 `SendStreamingMessage` 订阅标准 SSE；流断开后可重复调用 `GetTask` 或 `SubscribeToTask` 恢复。若任务状态为 `TASK_STATE_INPUT_REQUIRED`，带同一个 `taskId`、`contextId` 发送下一条 Message（可在 DataPart 中传入 `{"brief": {...}}`）继续执行。取消使用 `CancelTask`，完成后报告以 `application/json` Artifact 返回。
+
+```bash
+curl -N -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"2","method":"SendStreamingMessage","params":{"message":{"messageId":"m-2","taskId":"<task-id>","contextId":"<context-id>","role":"ROLE_USER","parts":[{"text":"确认分析范围并继续"}]}}}'
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"3","method":"GetTask","params":{"id":"<task-id>"}}'
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"4","method":"CancelTask","params":{"id":"<task-id>"}}'
+```
+
+运行 A2A 回归测试：
+
+```bash
+cd backend
+uv run --locked pytest tests/test_a2a_provider.py
+```
+
 ## API 接口
 
 | 方法 | 路径 | 说明 |

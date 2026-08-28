@@ -368,6 +368,49 @@ competitive-analysis-agent/
 | R14 | BranchTree, checkpoints, and source credibility | `branchtree/` + `db.py` |
 | R15 | Quantified coverage, validation, and improvement | Writer metrics + schemas |
 
+## Standalone A2A Provider
+
+The project exposes an independent Provider using the official `a2a-sdk==1.1.2` (A2A protocol `1.0`). The SDK version is pinned so AgentCard, JSON-RPC, Task, Artifact, and SSE serialization remain reproducible; the Provider has no dependency on a particular client or Hub.
+
+Default endpoints:
+
+| Capability | Address |
+|------------|---------|
+| AgentCard | `GET /.well-known/agent-card.json` |
+| JSON-RPC | `POST /a2a` |
+| Standard REST binding | `/a2a/message:send`, `/a2a/message:stream`, `/a2a/tasks/{id}`, `/a2a/tasks/{id}:cancel` |
+
+Discover the AgentCard after startup:
+
+```bash
+curl http://localhost:8001/.well-known/agent-card.json
+```
+
+Bearer/API-key authentication is required by default in production. Set `CI_AGENT_A2A_API_KEY` and send it as `Authorization: Bearer <key>`; `X-A2A-Client-ID` and `X-A2A-Tenant` provide caller and tenant boundaries. Only local debugging should explicitly set `CI_AGENT_A2A_AUTH_REQUIRED=false`. A2A tasks, context mappings, status events, and report artifacts are persisted in SQLite and remain separate from internal `thread_id` values.
+
+Use `CI_AGENT_A2A_ENABLED` to toggle the Provider. `CI_AGENT_A2A_MAX_CONCURRENCY`, `CI_AGENT_A2A_RATE_LIMIT_PER_MINUTE`, and `CI_AGENT_A2A_MAX_REQUEST_BYTES` control concurrency, rate, and request size; `CI_AGENT_A2A_TASK_TIMEOUT_SECONDS`, `CI_AGENT_A2A_MAX_ATTEMPTS`, and `CI_AGENT_A2A_LEASE_SECONDS` control task timeouts, bounded retries, and cross-process execution leases. After a restart, submitted/working tasks are recovered from SQLite; completed, failed, canceled, or input-required tasks are not started again.
+
+Send a text request (the JSON-RPC method names are defined by the SDK):
+
+```bash
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -H 'X-A2A-Client-ID: cli-demo' -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"Compare Cursor and GitHub Copilot, focusing on team adoption cost"}]}}}'
+```
+
+The `result.task.id` value is the external A2A Task ID. Use `GetTask` to poll and `SendStreamingMessage` for standard SSE. After a disconnect, call `GetTask` or `SubscribeToTask` to recover. When a task is `TASK_STATE_INPUT_REQUIRED`, send another Message with the same `taskId` and `contextId` (a DataPart may carry `{"brief": {...}}`) to continue. Use `CancelTask` to stop work; the final report is returned as an `application/json` Artifact.
+
+```bash
+curl -N -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"2","method":"SendStreamingMessage","params":{"message":{"messageId":"m-2","taskId":"<task-id>","contextId":"<context-id>","role":"ROLE_USER","parts":[{"text":"Confirm the analysis brief and continue"}]}}}'
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"3","method":"GetTask","params":{"id":"<task-id>"}}'
+curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"4","method":"CancelTask","params":{"id":"<task-id>"}}'
+```
+
+Run the A2A regression tests:
+
+```bash
+cd backend
+uv run --locked pytest tests/test_a2a_provider.py
+```
+
 ## API
 
 | Method | Path | Description |
