@@ -228,6 +228,69 @@ export interface KnowledgeInsight {
   metadata: { requires_human_review?: boolean };
 }
 
+export interface KnowledgeGraphEntity {
+  entity_id: string;
+  canonical_name: string;
+  entity_type:
+    | "product"
+    | "capability"
+    | "price"
+    | "integration"
+    | "audience"
+    | "market_event"
+    | "source"
+    | "report"
+    | "topic";
+  space_id: string;
+}
+
+export interface KnowledgeGraphEvidence {
+  evidence_id: string;
+  document_id: string;
+  version_no: number;
+  chunk_id?: string | null;
+  event_id?: string | null;
+  source_uri: string;
+  authority_tier: KnowledgeAuthority;
+  stance: "supporting" | "contradicting";
+  observed_at: string;
+  title: string;
+  document_source_type: string;
+}
+
+export interface KnowledgeGraphRelation {
+  relation_id: string;
+  space_id: string;
+  source_entity_id: string;
+  source_name: string;
+  source_type: KnowledgeGraphEntity["entity_type"];
+  target_entity_id: string;
+  target_name: string;
+  target_type: KnowledgeGraphEntity["entity_type"];
+  relation_type: string;
+  dimension: string;
+  statement: string;
+  confidence: number;
+  status: "observed" | "corroborated" | "conflict";
+  valid_from?: string | null;
+  valid_to?: string | null;
+  evidence_count: number;
+  citation_eligible: boolean;
+  evidence: KnowledgeGraphEvidence[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphEntity[];
+  relations: KnowledgeGraphRelation[];
+  stats: {
+    node_count: number;
+    relation_count: number;
+    citable_count: number;
+    conflict_count: number;
+  };
+}
+
 export interface KnowledgeJob {
   job_id: string;
   document_id?: string | null;

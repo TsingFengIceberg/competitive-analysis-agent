@@ -31,6 +31,11 @@ class EvaluationThresholds:
     memory_recall_at_k: float = 0.8
     memory_isolation_rate: float = 1.0
     current_thread_exclusion_rate: float = 1.0
+    graph_route_accuracy: float = 0.9
+    relation_recall_at_k: float = 0.8
+    relation_traceability_rate: float = 1.0
+    temporal_relation_accuracy: float = 1.0
+    unsupported_relation_rate: float = 0.0
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -105,10 +110,7 @@ def compute_verification_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
     predicted_supports = 0
     correct_supports = 0
     numeric_cases = [case for case in cases if case.get("expected_numeric_consistency") is not None]
-    numeric_correct = sum(
-        case.get("actual_numeric_consistency") == case.get("expected_numeric_consistency")
-        for case in numeric_cases
-    )
+    numeric_correct = sum(case.get("actual_numeric_consistency") == case.get("expected_numeric_consistency") for case in numeric_cases)
     for case in cases:
         expected = set(case.get("expected_supporting") or [])
         actual = list(case.get("actual_supporting") or [])
@@ -165,15 +167,17 @@ def evaluate_governance_cases(definitions: list[dict[str, Any]]) -> list[dict[st
                 dict(item.get("payload") or {}),
                 source_credibility=float(item.get("source_credibility", 0.5)),
             )
-        cases.append({
-            "id": item.get("id"),
-            "kind": kind,
-            "expected_status": item.get("expected_status"),
-            "actual_status": result.get("approval_status"),
-            "expected_quarantined": item.get("expected_status") == "pending",
-            "actual_quarantined": bool(result.get("quarantined")),
-            "result": result,
-        })
+        cases.append(
+            {
+                "id": item.get("id"),
+                "kind": kind,
+                "expected_status": item.get("expected_status"),
+                "actual_status": result.get("approval_status"),
+                "expected_quarantined": item.get("expected_status") == "pending",
+                "actual_quarantined": bool(result.get("quarantined")),
+                "result": result,
+            }
+        )
     return cases
 
 
@@ -217,15 +221,17 @@ def evaluate_memory_cases(
         ranked = [labels.get(str(entry.get("knowledge_document_id") or ""), str(entry.get("knowledge_document_id") or "")) for entry in memory]
         forbidden = set(item.get("forbidden") or [])
         returned_threads = {str(entry.get("report_thread_id") or "") for entry in memory}
-        cases.append({
-            "id": item.get("id"),
-            "relevant": list(item.get("relevant") or []),
-            "ranked": ranked,
-            "memory_count": len(memory),
-            "citation_leak_count": sum(bool(entry.get("citation_eligible")) for entry in memory),
-            "evidence_report_leak_count": sum(entry.get("source_authority") == "report" for entry in evidence),
-            "forbidden_returned": sorted(forbidden.intersection(returned_threads)),
-        })
+        cases.append(
+            {
+                "id": item.get("id"),
+                "relevant": list(item.get("relevant") or []),
+                "ranked": ranked,
+                "memory_count": len(memory),
+                "citation_leak_count": sum(bool(entry.get("citation_eligible")) for entry in memory),
+                "evidence_report_leak_count": sum(entry.get("source_authority") == "report" for entry in evidence),
+                "forbidden_returned": sorted(forbidden.intersection(returned_threads)),
+            }
+        )
     return cases
 
 
@@ -251,6 +257,102 @@ def compute_memory_metrics(cases: list[dict[str, Any]], *, k: int = 5) -> dict[s
         f"memory_recall_at_{k}": round(statistics.fmean(recalls), 6),
         "memory_isolation_rate": round(isolated / len(cases), 6),
         "current_thread_exclusion_rate": round(excluded / len(cases), 6),
+    }
+
+
+def _relation_label(item: dict[str, Any]) -> str:
+    source = item.get("source_entity") or item.get("source_name") or ""
+    target = item.get("target_entity") or item.get("target_name") or ""
+    return f"{source}|{item.get('relation_type') or ''}|{target}"
+
+
+def evaluate_graph_cases(
+    service: Any,
+    definitions: list[dict[str, Any]],
+    *,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """Exercise production GraphRAG routing, paths, evidence, and time filters."""
+    cases: list[dict[str, Any]] = []
+    for item in definitions:
+        state = {
+            "user_id": user_id,
+            "thread_id": item.get("current_thread_id") or "eval-graph-current",
+            "user_request": item["query"],
+            "target_products": list(item.get("products") or []),
+            "analysis_brief": {
+                "objective": item["query"],
+                "target_products": list(item.get("products") or []),
+                "effective_dimensions": [{"id": value} for value in item.get("dimensions") or ["features"]],
+            },
+        }
+        evidence = service.retrieve_for_analysis(state, limit=20)
+        context, plan = service.retrieve_relationship_context(state, evidence, limit=int(item.get("k") or 5))
+        snapshot = service.graph(user_id, temporal_mode="all", limit=2000)
+        current = service.graph(user_id, temporal_mode="current", limit=2000)
+        historical = service.graph(user_id, temporal_mode="historical", limit=2000)
+        expected_current = set(item.get("expected_current") or [])
+        expected_historical = set(item.get("expected_historical") or [])
+        current_labels = {_relation_label(value) for value in current["relations"]}
+        historical_labels = {_relation_label(value) for value in historical["relations"]}
+        cases.append(
+            {
+                "id": item.get("id"),
+                "expected_route": item.get("expected_route"),
+                "actual_route": plan.get("route"),
+                "relevant": list(item.get("relevant") or []),
+                "ranked": [_relation_label(value) for value in context],
+                "returned_count": len(context),
+                "traceable_count": sum(bool(value.get("source_data_point_ids")) for value in context if value.get("citation_eligible")),
+                "citable_count": sum(bool(value.get("citation_eligible")) for value in context),
+                "unsupported_relation_count": sum(not value.get("evidence") for value in snapshot["relations"]),
+                "persisted_relation_count": len(snapshot["relations"]),
+                "temporal_correct": (
+                    expected_current <= current_labels
+                    and expected_historical <= historical_labels
+                    and all(not value.get("valid_to") or not value.get("valid_from") or str(value["valid_from"]) <= str(value["valid_to"]) for value in snapshot["relations"])
+                ),
+            }
+        )
+    return cases
+
+
+def compute_graph_metrics(cases: list[dict[str, Any]], *, k: int = 5) -> dict[str, Any]:
+    if not cases:
+        return {
+            "case_count": 0,
+            "graph_route_accuracy": 1.0,
+            f"relation_recall_at_{k}": 1.0,
+            "relation_traceability_rate": 1.0,
+            "temporal_relation_accuracy": 1.0,
+            "unsupported_relation_rate": 0.0,
+        }
+    recalls: list[float] = []
+    citable = 0
+    traceable = 0
+    unsupported = 0
+    persisted = 0
+    for case in cases:
+        relevant = set(case.get("relevant") or [])
+        ranked = set((case.get("ranked") or [])[:k])
+        recalls.append(len(relevant.intersection(ranked)) / len(relevant) if relevant else 1.0)
+        citable += int(case.get("citable_count") or 0)
+        traceable += int(case.get("traceable_count") or 0)
+        unsupported += int(case.get("unsupported_relation_count") or 0)
+        persisted += int(case.get("persisted_relation_count") or 0)
+    return {
+        "case_count": len(cases),
+        "graph_route_accuracy": round(
+            sum(case.get("actual_route") == case.get("expected_route") for case in cases) / len(cases),
+            6,
+        ),
+        f"relation_recall_at_{k}": round(statistics.fmean(recalls), 6),
+        "relation_traceability_rate": round(traceable / citable if citable else 1.0, 6),
+        "temporal_relation_accuracy": round(
+            sum(bool(case.get("temporal_correct")) for case in cases) / len(cases),
+            6,
+        ),
+        "unsupported_relation_rate": round(unsupported / persisted if persisted else 0.0, 6),
     }
 
 
@@ -312,6 +414,20 @@ def check_thresholds(metrics: dict[str, Any], thresholds: EvaluationThresholds, 
             actual = float(memory.get(name) or 0.0)
             if actual < minimum:
                 failures.append(f"memory.{name}={actual:.4f} is below {minimum:.4f}")
+    graph = metrics.get("graph") or {}
+    if graph:
+        for name, minimum in {
+            "graph_route_accuracy": thresholds.graph_route_accuracy,
+            f"relation_recall_at_{k}": thresholds.relation_recall_at_k,
+            "relation_traceability_rate": thresholds.relation_traceability_rate,
+            "temporal_relation_accuracy": thresholds.temporal_relation_accuracy,
+        }.items():
+            actual = float(graph.get(name) or 0.0)
+            if actual < minimum:
+                failures.append(f"graph.{name}={actual:.4f} is below {minimum:.4f}")
+        unsupported = float(graph.get("unsupported_relation_rate") or 0.0)
+        if unsupported > thresholds.unsupported_relation_rate:
+            failures.append(f"graph.unsupported_relation_rate={unsupported:.4f} exceeds {thresholds.unsupported_relation_rate:.4f}")
     return failures
 
 
@@ -338,9 +454,7 @@ def evaluate_queries(
         started = time.perf_counter()
         plan = None
         if item.get("expected_route"):
-            hits, plan = service.search_planned(
-                str(item["query"]), user_id=user_id, filters=filters, limit=k
-            )
+            hits, plan = service.search_planned(str(item["query"]), user_id=user_id, filters=filters, limit=k)
         else:
             hits = service.search(str(item["query"]), user_id=user_id, filters=filters, limit=k)
         elapsed_ms = (time.perf_counter() - started) * 1000

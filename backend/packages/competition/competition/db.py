@@ -488,6 +488,48 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             metadata_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_insights_space ON knowledge_insights(space_id, insight_type, generated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_relations (
+            relation_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            source_entity_id TEXT NOT NULL,
+            target_entity_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            dimension TEXT NOT NULL DEFAULT 'general',
+            statement TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5,
+            status TEXT NOT NULL DEFAULT 'observed',
+            valid_from TEXT,
+            valid_to TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            citation_eligible INTEGER NOT NULL DEFAULT 1,
+            cluster_key TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(space_id, cluster_key),
+            FOREIGN KEY (source_entity_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE,
+            FOREIGN KEY (target_entity_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relations_source ON knowledge_relations(space_id, source_entity_id, relation_type, valid_from DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relations_target ON knowledge_relations(space_id, target_entity_id, relation_type, valid_from DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_relation_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            relation_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            version_no INTEGER NOT NULL,
+            chunk_id TEXT,
+            event_id TEXT,
+            source_uri TEXT NOT NULL DEFAULT '',
+            authority_tier TEXT NOT NULL DEFAULT 'third_party',
+            stance TEXT NOT NULL DEFAULT 'supporting',
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY (relation_id) REFERENCES knowledge_relations(relation_id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relation_evidence_relation ON knowledge_relation_evidence(relation_id, observed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relation_evidence_document ON knowledge_relation_evidence(document_id, version_no);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)

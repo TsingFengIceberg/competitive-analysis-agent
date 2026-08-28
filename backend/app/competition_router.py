@@ -1706,6 +1706,47 @@ async def refresh_knowledge_insights(space_id: str, fastapi_request: Request) ->
     return {"insights": insights}
 
 
+@router.get("/knowledge/graph")
+async def get_knowledge_graph(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    entity_id: str | None = None,
+    relation_type: str | None = None,
+    temporal_mode: str = Query(default="current", pattern=r"^(current|historical|all|as_of)$"),
+    as_of: str | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        return await asyncio.to_thread(
+            get_knowledge_service().graph,
+            _get_user_id(fastapi_request),
+            space_id=space_id,
+            entity_id=entity_id,
+            relation_type=relation_type,
+            temporal_mode=temporal_mode,
+            as_of=as_of,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/knowledge/graph/rebuild")
+async def rebuild_knowledge_graph(space_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        return await asyncio.to_thread(
+            get_knowledge_service().rebuild_graph,
+            _get_user_id(fastapi_request),
+            space_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @router.get("/knowledge/chunks/{chunk_id}")
 async def get_knowledge_chunk(chunk_id: str, fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service

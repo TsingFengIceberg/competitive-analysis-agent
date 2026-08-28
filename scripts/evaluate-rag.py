@@ -18,11 +18,13 @@ from competition.knowledge_eval import (
     EvaluationThresholds,
     check_thresholds,
     compute_governance_metrics,
+    compute_graph_metrics,
     compute_memory_metrics,
     compute_planning_metrics,
     compute_retrieval_metrics,
     compute_verification_metrics,
     evaluate_governance_cases,
+    evaluate_graph_cases,
     evaluate_memory_cases,
     evaluate_queries,
     evaluate_verification_cases,
@@ -68,6 +70,13 @@ def validate_dataset(dataset: dict, path: Path) -> None:
         raise ValueError(f"{path}: memory documents must have unique non-empty thread IDs")
     memory_ids = set(memory_id_values)
     memory_threads = set(memory_thread_values)
+    graph_document_ids = [
+        str(item.get("id") or "") for item in dataset.get("graph_documents") or []
+    ]
+    if any(not value for value in graph_document_ids) or len(graph_document_ids) != len(
+        set(graph_document_ids)
+    ):
+        raise ValueError(f"{path}: graph documents must have unique non-empty IDs")
     for query in dataset.get("queries") or []:
         unknown = set(query.get("relevant") or []) - known
         if unknown:
@@ -91,6 +100,15 @@ def validate_dataset(dataset: dict, path: Path) -> None:
         current_thread = str(case.get("current_thread_id") or "")
         if not current_thread or current_thread not in set(case.get("forbidden") or []):
             raise ValueError(f"{path}: memory case {case.get('id')} must forbid its non-empty current_thread_id")
+    for case in dataset.get("graph_cases") or []:
+        if case.get("expected_route") not in {"vector_only", "hybrid_graph"}:
+            raise ValueError(
+                f"{path}: graph case {case.get('id')} has an invalid expected route"
+            )
+        if any("|" not in str(value) for value in case.get("relevant") or []):
+            raise ValueError(
+                f"{path}: graph case {case.get('id')} has malformed relation labels"
+            )
     if (dataset.get("curation") or {}).get("review_status") == "human_curated":
         for document in documents:
             if not str(document.get("source_url") or "").startswith(("http://", "https://")):
@@ -148,6 +166,26 @@ def main() -> int:
             if job["status"] != "completed":
                 raise RuntimeError(f"Failed to index evaluation report {report['id']}: {job.get('error')}")
             memory_labels[registration["document"]["document_id"]] = report["id"]
+        for graph_document in dataset.get("graph_documents") or []:
+            for version in graph_document.get("versions") or []:
+                registration = service.register_bytes(
+                    user_id=user_id,
+                    filename=graph_document["filename"],
+                    data=str(version["text"]).encode(),
+                    title=graph_document.get("title") or graph_document["filename"],
+                    source_type=graph_document.get("source_type") or "upload",
+                    source_uri=graph_document["source_url"],
+                    product=graph_document["product"],
+                    dimension=graph_document["dimension"],
+                    authority_tier=graph_document.get("authority_tier") or "primary",
+                    published_at=version.get("published_at"),
+                    observed_at=version.get("observed_at"),
+                )
+                job = service.process_job(registration["job"]["job_id"])
+                if job["status"] != "completed":
+                    raise RuntimeError(
+                        f"Failed to index graph evaluation document {graph_document['id']}: {job.get('error')}"
+                    )
         cases = evaluate_queries(
             service,
             dataset.get("queries", []),
@@ -168,11 +206,17 @@ def main() -> int:
             user_id=user_id,
             document_labels=memory_labels,
         )
+        graph_cases = evaluate_graph_cases(
+            service,
+            dataset.get("graph_cases", []),
+            user_id=user_id,
+        )
         metrics = compute_retrieval_metrics(cases, k=k)
         metrics["planning"] = compute_planning_metrics(cases)
         metrics["verification"] = compute_verification_metrics(verification_cases)
         metrics["governance"] = compute_governance_metrics(governance_cases)
         metrics["memory"] = compute_memory_metrics(memory_cases, k=k)
+        metrics["graph"] = compute_graph_metrics(graph_cases, k=k)
         configured = dataset.get("thresholds") or {}
         thresholds = EvaluationThresholds(
             recall_at_k=float(configured.get("recall_at_k", 0.8)),
@@ -193,6 +237,11 @@ def main() -> int:
             memory_recall_at_k=float(configured.get("memory_recall_at_k", 0.8)),
             memory_isolation_rate=float(configured.get("memory_isolation_rate", 1.0)),
             current_thread_exclusion_rate=float(configured.get("current_thread_exclusion_rate", 1.0)),
+            graph_route_accuracy=float(configured.get("graph_route_accuracy", 0.9)),
+            relation_recall_at_k=float(configured.get("relation_recall_at_k", 0.8)),
+            relation_traceability_rate=float(configured.get("relation_traceability_rate", 1.0)),
+            temporal_relation_accuracy=float(configured.get("temporal_relation_accuracy", 1.0)),
+            unsupported_relation_rate=float(configured.get("unsupported_relation_rate", 0.0)),
         )
         failures = check_thresholds(metrics, thresholds, k=k)
         report = {
@@ -206,6 +255,7 @@ def main() -> int:
             "verification_cases": verification_cases,
             "governance_cases": governance_cases,
             "memory_cases": memory_cases,
+            "graph_cases": graph_cases,
         }
         output = args.output or (PROJECT_ROOT / ".ci-agent/evaluations" / f"rag-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json")
         output.parent.mkdir(parents=True, exist_ok=True)

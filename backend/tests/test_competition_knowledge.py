@@ -615,7 +615,7 @@ def test_collector_merges_local_knowledge_without_repersisting_it(monkeypatch: p
     monkeypatch.setattr(
         collector,
         "_retrieve_local_knowledge",
-        lambda state: ([local], {"status": "available", "hit_count": 1}, [], []),
+        lambda state: ([local], {"status": "available", "hit_count": 1}, [], [], []),
     )
     monkeypatch.setattr(collector, "_run_searches", lambda state: "")
     monkeypatch.setattr(collector, "_execute_collector", lambda task, state: ("[]", 0))
@@ -637,6 +637,7 @@ def test_collector_merges_local_knowledge_without_repersisting_it(monkeypatch: p
     )
     assert result["collected_data"][0]["knowledge_chunk_id"] == "kch-1"
     assert result["analysis_memory"] == []
+    assert result["relationship_context"] == []
     assert result["long_term_insights"] == []
     assert result["collection_summary"]["rag_retrieval"]["status"] == "available"
     assert persisted == [[]]
@@ -666,6 +667,7 @@ def test_collector_keeps_historical_report_memory_separate_from_evidence(monkeyp
             },
             [],
             [memory],
+            [],
         ),
     )
     monkeypatch.setattr(collector, "_run_searches", lambda state: "")
@@ -688,6 +690,7 @@ def test_collector_keeps_historical_report_memory_separate_from_evidence(monkeyp
 
     assert result["collected_data"] == []
     assert result["analysis_memory"] == [memory]
+    assert result["relationship_context"] == []
     assert result["collection_summary"]["rag_retrieval"]["analysis_memory_count"] == 1
 
 

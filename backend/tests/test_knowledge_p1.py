@@ -10,6 +10,7 @@ from competition.knowledge_eval import (
     EvaluationThresholds,
     check_thresholds,
     compute_governance_metrics,
+    compute_graph_metrics,
     compute_memory_metrics,
     evaluate_governance_cases,
 )
@@ -78,11 +79,14 @@ def test_space_approval_permissions_and_shared_retrieval(tmp_path):
     assert detail["approval_status"] == "pending"
     assert detail["retention_until"]
     assert service.document_detail(document_id, "viewer") is None
-    assert service.search(
-        "Cursor Teams price",
-        user_id="viewer",
-        filters=RetrievalFilters(space_ids=(space["space_id"],)),
-    ) == []
+    assert (
+        service.search(
+            "Cursor Teams price",
+            user_id="viewer",
+            filters=RetrievalFilters(space_ids=(space["space_id"],)),
+        )
+        == []
+    )
 
     approved = service.review_document("owner", document_id, "approved")
     assert approved["approval_status"] == "approved"
@@ -257,18 +261,22 @@ def test_auto_admission_policy_approves_strong_evidence_and_quarantines_uncertai
 
 
 def test_report_quality_policy_requires_passed_grounded_report():
-    approved = assess_report({
-        "quality_gate": {"status": "pass", "blocking_count": 0},
-        "quality_summary": {"overall_quality_score": 0.9},
-        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
-    })
+    approved = assess_report(
+        {
+            "quality_gate": {"status": "pass", "blocking_count": 0},
+            "quality_summary": {"overall_quality_score": 0.9},
+            "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
+        }
+    )
     assert approved["approval_status"] == "approved"
 
-    pending = assess_report({
-        "quality_gate": {"status": "warning", "blocking_count": 0},
-        "quality_summary": {"overall_quality_score": 0.8},
-        "claim_verification": {"groundedness": 0.4, "citation_precision": 0.9},
-    })
+    pending = assess_report(
+        {
+            "quality_gate": {"status": "warning", "blocking_count": 0},
+            "quality_summary": {"overall_quality_score": 0.8},
+            "claim_verification": {"groundedness": 0.4, "citation_precision": 0.9},
+        }
+    )
     assert pending["approval_status"] == "pending"
     assert "quality_gate_not_passed" in pending["reasons"]
     assert "groundedness_below_threshold" in pending["reasons"]
@@ -286,7 +294,10 @@ def test_report_snapshots_are_versioned_and_low_quality_versions_are_hidden(tmp_
         "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
     }
     first = service.register_report_snapshot(
-        user_id="user-a", thread_id="comp-1", version=1, report_data=good,
+        user_id="user-a",
+        thread_id="comp-1",
+        version=1,
+        report_data=good,
     )
     assert first["document"]["approval_status"] == "approved"
     assert service.process_job(first["job"]["job_id"])["status"] == "completed"
@@ -299,7 +310,10 @@ def test_report_snapshots_are_versioned_and_low_quality_versions_are_hidden(tmp_
         "claim_verification": {"groundedness": 0.2, "citation_precision": 0.2},
     }
     second = service.register_report_snapshot(
-        user_id="user-a", thread_id="comp-1", version=2, report_data=low_quality,
+        user_id="user-a",
+        thread_id="comp-1",
+        version=2,
+        report_data=low_quality,
     )
     assert second["document"]["document_id"] == first["document"]["document_id"]
     assert service.process_job(second["job"]["job_id"])["status"] == "completed"
@@ -363,10 +377,12 @@ def test_historical_reports_are_planning_memory_but_never_citable_evidence(tmp_p
         "title": "Prior enterprise analysis",
         "generated_at": "2026-08-20T00:00:00+00:00",
         "products": ["Cursor", "OpenAI Codex"],
-        "sections": [{
-            "id": "themes",
-            "content": "Enterprise privacy controls and isolated cloud tasks were prior decision themes.",
-        }],
+        "sections": [
+            {
+                "id": "themes",
+                "content": "Enterprise privacy controls and isolated cloud tasks were prior decision themes.",
+            }
+        ],
         "quality_gate": {"status": "pass", "blocking_count": 0},
         "quality_summary": {"overall_quality_score": 0.9},
         "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
@@ -420,7 +436,10 @@ def test_human_review_updates_source_credibility_and_preserves_feedback_audit(tm
         "fetched_at": "2026-08-27T00:00:00+00:00",
     }
     queued = service.queue_governed_intelligence_history(
-        user_id="owner", item=item, title="Observed price", space_id=space["space_id"],
+        user_id="owner",
+        item=item,
+        title="Observed price",
+        space_id=space["space_id"],
     )
     completed = service.process_intelligence_history_job(queued["job_id"])
     document_id = completed["document_id"]
@@ -505,42 +524,89 @@ def test_review_feedback_is_owner_only_and_isolated_by_space_membership(tmp_path
 
 
 def test_governance_and_memory_metrics_enforce_isolation_thresholds():
-    governance_cases = evaluate_governance_cases([
-        {
-            "id": "strong",
-            "kind": "intelligence",
-            "source_credibility": 0.8,
-            "expected_status": "approved",
-            "payload": {
-                "product": "Cursor", "dimension": "pricing", "label": "Price", "value": "$40",
-                "source_url": "https://cursor.com/pricing", "confidence": 0.9, "credibility_tier": "official",
+    governance_cases = evaluate_governance_cases(
+        [
+            {
+                "id": "strong",
+                "kind": "intelligence",
+                "source_credibility": 0.8,
+                "expected_status": "approved",
+                "payload": {
+                    "product": "Cursor",
+                    "dimension": "pricing",
+                    "label": "Price",
+                    "value": "$40",
+                    "source_url": "https://cursor.com/pricing",
+                    "confidence": 0.9,
+                    "credibility_tier": "official",
+                },
             },
-        },
-        {
-            "id": "weak", "kind": "report", "expected_status": "pending",
-            "payload": {
-                "quality_gate": {"status": "warning"},
-                "quality_summary": {"overall_quality_score": 0.4},
-                "claim_verification": {"groundedness": 0.2, "citation_precision": 0.5},
+            {
+                "id": "weak",
+                "kind": "report",
+                "expected_status": "pending",
+                "payload": {
+                    "quality_gate": {"status": "warning"},
+                    "quality_summary": {"overall_quality_score": 0.4},
+                    "claim_verification": {"groundedness": 0.2, "citation_precision": 0.5},
+                },
             },
-        },
-    ])
+        ]
+    )
     governance = compute_governance_metrics(governance_cases)
-    memory = compute_memory_metrics([{
-        "relevant": ["report-a"],
-        "ranked": ["report-a"],
-        "citation_leak_count": 0,
-        "evidence_report_leak_count": 0,
-        "forbidden_returned": [],
-    }])
+    memory = compute_memory_metrics(
+        [
+            {
+                "relevant": ["report-a"],
+                "ranked": ["report-a"],
+                "citation_leak_count": 0,
+                "evidence_report_leak_count": 0,
+                "forbidden_returned": [],
+            }
+        ]
+    )
     metrics = {
-        "recall_at_5": 1.0, "mrr": 1.0, "ndcg_at_5": 1.0,
-        "abstention_accuracy": 1.0, "traceability_rate": 1.0,
-        "governance": governance, "memory": memory,
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_5": 1.0,
+        "abstention_accuracy": 1.0,
+        "traceability_rate": 1.0,
+        "governance": governance,
+        "memory": memory,
     }
     assert check_thresholds(metrics, EvaluationThresholds(), k=5) == []
     metrics["memory"]["memory_isolation_rate"] = 0.0
     assert any("memory.memory_isolation_rate" in failure for failure in check_thresholds(metrics, EvaluationThresholds(), k=5))
+
+
+def test_graph_metrics_enforce_paths_traceability_time_and_unsupported_edge_gates():
+    graph = compute_graph_metrics(
+        [
+            {
+                "expected_route": "hybrid_graph",
+                "actual_route": "hybrid_graph",
+                "relevant": ["Cursor|priced_at|$45 per month"],
+                "ranked": ["Cursor|priced_at|$45 per month"],
+                "citable_count": 1,
+                "traceable_count": 1,
+                "unsupported_relation_count": 0,
+                "persisted_relation_count": 2,
+                "temporal_correct": True,
+            }
+        ]
+    )
+    metrics = {
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "ndcg_at_5": 1.0,
+        "abstention_accuracy": 1.0,
+        "traceability_rate": 1.0,
+        "graph": graph,
+    }
+    assert check_thresholds(metrics, EvaluationThresholds(), k=5) == []
+    metrics["graph"]["unsupported_relation_rate"] = 0.5
+    failures = check_thresholds(metrics, EvaluationThresholds(), k=5)
+    assert any("graph.unsupported_relation_rate" in failure for failure in failures)
 
 
 def test_p1_feedback_api_contract_is_registered():

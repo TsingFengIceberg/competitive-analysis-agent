@@ -25,6 +25,7 @@ from competition.knowledge_governance import (
     assess_report,
     retention_deadline,
 )
+from competition.knowledge_graph import build_relation_candidates, graph_tokens, plan_graph_retrieval
 from competition.knowledge_index import KnowledgeIndex, merge_scores
 from competition.knowledge_intelligence import (
     build_event_candidate,
@@ -1444,11 +1445,15 @@ class KnowledgeService:
     def _sync_version_event(self, document: dict[str, Any], version_no: int, chunk: KnowledgeChunk | dict[str, Any]) -> dict[str, Any] | None:
         if not document.get("space_id") or not version_no:
             return None
-        chunk_data = chunk if isinstance(chunk, dict) else {
-            "chunk_id": chunk.chunk_id,
-            "text": chunk.text,
-            "created_at": document.get("observed_at"),
-        }
+        chunk_data = (
+            chunk
+            if isinstance(chunk, dict)
+            else {
+                "chunk_id": chunk.chunk_id,
+                "text": chunk.text,
+                "created_at": document.get("observed_at"),
+            }
+        )
         candidate = build_event_candidate(document, version_no=version_no, chunk=chunk_data)
         if not candidate.get("statement"):
             return None
@@ -1488,7 +1493,210 @@ class KnowledgeService:
                 candidate["space_id"],
                 build_long_term_insights(events, space_id=candidate["space_id"]),
             )
-            return updated_event
+        self._sync_graph_relations(
+            document,
+            version_no=version_no,
+            chunk=chunk_data,
+            event=updated_event,
+        )
+        return updated_event
+
+    def graph(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        entity_id: str | None = None,
+        relation_type: str | None = None,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.graph_snapshot(
+                user_id,
+                space_id=space_id,
+                entity_id=entity_id,
+                relation_type=relation_type,
+                temporal_mode=temporal_mode,
+                as_of=as_of,
+                limit=limit,
+            )
+
+    def rebuild_graph(self, user_id: str, space_id: str) -> dict[str, Any]:
+        self._resolve_space(user_id, space_id, roles=WRITE_ROLES)
+        with self._repo() as repository:
+            events = repository.list_events(user_id, space_id=space_id, limit=2000)
+            repository.clear_relations(space_id)
+        rebuilt = 0
+        skipped = 0
+        for event in events:
+            for evidence in event.get("evidence") or []:
+                with self._repo() as repository:
+                    document = repository.get_document(str(evidence["document_id"]))
+                    if document is None or document.get("deleted_at") or document.get("approval_status") != "approved":
+                        skipped += 1
+                        continue
+                    version_no = int(evidence.get("version_no") or 0)
+                    version = next(
+                        (item for item in repository.list_versions(document["document_id"]) if int(item["version_no"]) == version_no),
+                        None,
+                    )
+                    if version:
+                        fields = (version.get("metadata") or {}).get("document_fields") or {}
+                        document = {**document, **fields}
+                    chunks = repository.list_chunks(document_id=document["document_id"], active_only=False)
+                    chunk = next(
+                        (item for item in chunks if item.get("chunk_id") == evidence.get("chunk_id") or (not evidence.get("chunk_id") and int(item.get("version_no") or 0) == version_no)),
+                        None,
+                    )
+                if chunk is None:
+                    skipped += 1
+                    continue
+                version_event = {
+                    **event,
+                    "statement": chunk.get("text") or event.get("statement") or "",
+                    "occurred_at": (document.get("published_at") or document.get("observed_at") or evidence.get("observed_at") or event.get("occurred_at")),
+                }
+                self._sync_graph_relations(
+                    document,
+                    version_no=version_no,
+                    chunk=chunk,
+                    event=version_event,
+                )
+                rebuilt += 1
+        return {
+            "space_id": space_id,
+            "events_processed": len(events),
+            "evidence_rebuilt": rebuilt,
+            "evidence_skipped": skipped,
+            "graph": self.graph(user_id, space_id=space_id, temporal_mode="all"),
+        }
+
+    def _sync_graph_relations(
+        self,
+        document: dict[str, Any],
+        *,
+        version_no: int,
+        chunk: dict[str, Any],
+        event: dict[str, Any],
+    ) -> None:
+        graph = build_relation_candidates(document, event=event, chunk=chunk)
+        with self._repo() as repository:
+            resolved_entities: dict[str, str] = {}
+            for graph_entity in graph["entities"]:
+                resolved = repository.upsert_entity(
+                    entity_id=graph_entity["entity_id"],
+                    space_id=graph_entity["space_id"],
+                    canonical_name=graph_entity["canonical_name"],
+                    normalized_key=graph_entity["normalized_key"],
+                    alias=graph_entity["alias"],
+                    entity_type=graph_entity["entity_type"],
+                    metadata=graph_entity.get("metadata") or {},
+                )
+                resolved_entities[graph_entity["entity_id"]] = resolved["entity_id"]
+            for relation in graph["relations"]:
+                relation["source_entity_id"] = resolved_entities.get(relation["source_entity_id"], relation["source_entity_id"])
+                relation["target_entity_id"] = resolved_entities.get(relation["target_entity_id"], relation["target_entity_id"])
+                stored = repository.upsert_relation(relation)
+                repository.close_document_relations(
+                    document_id=document["document_id"],
+                    source_entity_id=stored["source_entity_id"],
+                    relation_type=stored["relation_type"],
+                    current_relation_id=stored["relation_id"],
+                    valid_to=stored.get("valid_from"),
+                )
+                repository.add_relation_evidence(
+                    stored["relation_id"],
+                    {
+                        "document_id": document["document_id"],
+                        "version_no": version_no,
+                        "chunk_id": chunk.get("chunk_id"),
+                        "event_id": event.get("event_id"),
+                        "source_uri": ((document.get("metadata") or {}).get("original_source_url") or document.get("source_uri") or ""),
+                        "authority_tier": document.get("authority_tier") or "third_party",
+                        "stance": "supporting",
+                        "observed_at": event.get("occurred_at") or _now(),
+                    },
+                )
+
+    def retrieve_relationship_context(
+        self,
+        state: dict[str, Any],
+        evidence_points: list[dict[str, Any]],
+        *,
+        limit: int = 12,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        plan = plan_graph_retrieval(state)
+        if not plan.use_graph:
+            return [], plan.to_dict()
+        user_id = str(state.get("user_id") or "default")
+        query = str(state.get("user_request") or (state.get("analysis_brief") or {}).get("objective") or "")
+        query_terms = graph_tokens(query)
+        products = {canonical_product(str(value)).casefold() for value in (state.get("target_products") or (state.get("analysis_brief") or {}).get("target_products") or [])}
+        point_ids_by_chunk = {str(point.get("knowledge_chunk_id") or ""): str(point.get("id") or "") for point in evidence_points if point.get("knowledge_chunk_id")}
+        temporal_mode = "all" if "temporal_relationship_intent" in plan.reasons else "current"
+        snapshot = self.graph(user_id, temporal_mode=temporal_mode, limit=1000)
+        current_thread = str(state.get("thread_id") or "")
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for relation in snapshot["relations"]:
+            metadata = relation.get("metadata") or {}
+            if current_thread and metadata.get("report_thread_id") == current_thread:
+                continue
+            source_name = str(relation.get("source_name") or "")
+            searchable = " ".join(
+                str(relation.get(key) or "")
+                for key in (
+                    "source_name",
+                    "target_name",
+                    "relation_type",
+                    "dimension",
+                    "statement",
+                )
+            )
+            relation_terms = graph_tokens(searchable)
+            overlap = len(query_terms.intersection(relation_terms)) / max(1, len(query_terms))
+            product_boost = 0.5 if source_name.casefold() in products else 0.0
+            score = overlap + product_boost + 0.15 * float(relation.get("confidence") or 0.0)
+            if score <= 0.05:
+                continue
+            evidence_chunk_ids = [str(item.get("chunk_id") or "") for item in relation.get("evidence") or [] if item.get("chunk_id")]
+            linked_point_ids = [point_ids_by_chunk[value] for value in evidence_chunk_ids if value in point_ids_by_chunk]
+            citation_eligible = bool(relation.get("citation_eligible") and linked_point_ids)
+            ranked.append(
+                (
+                    score,
+                    {
+                        "id": f"graph-{relation['relation_id']}",
+                        "context_role": "relationship_graph",
+                        "source_entity": source_name,
+                        "source_entity_type": relation.get("source_type"),
+                        "relation_type": relation.get("relation_type"),
+                        "target_entity": relation.get("target_name"),
+                        "target_entity_type": relation.get("target_type"),
+                        "dimension": relation.get("dimension"),
+                        "statement": relation.get("statement"),
+                        "confidence": relation.get("confidence"),
+                        "status": relation.get("status"),
+                        "valid_from": relation.get("valid_from"),
+                        "valid_to": relation.get("valid_to"),
+                        "citation_eligible": citation_eligible,
+                        "evidence_status": "linked" if linked_point_ids else "navigation_only",
+                        "source_data_point_ids": linked_point_ids,
+                        "supporting_knowledge_chunk_ids": evidence_chunk_ids,
+                        "query_route": plan.route,
+                        "usage_policy": ("factual_only_through_linked_source_data_point_ids" if citation_eligible else "planning_only_until_source_evidence_is_retrieved"),
+                    },
+                )
+            )
+        context = [item for _, item in sorted(ranked, key=lambda value: value[0], reverse=True)[:limit]]
+        return context, {
+            **plan.to_dict(),
+            "relationship_count": len(context),
+            "linked_relationship_count": sum(item["evidence_status"] == "linked" for item in context),
+        }
 
     def list_events(self, user_id: str, *, space_id: str | None = None, entity_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         if space_id:

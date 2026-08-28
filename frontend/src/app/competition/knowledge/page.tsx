@@ -30,12 +30,14 @@ import {
   type KnowledgeDocument,
   type KnowledgeHit,
   type KnowledgeEvent,
+  type KnowledgeGraph,
   type KnowledgeInsight,
   type KnowledgeJob,
   type KnowledgeQueryPlan,
   type KnowledgeSpace,
   type KnowledgeStatus,
 } from "@/components/competition/api-client";
+import KnowledgeRelationshipGraph from "@/components/competition/knowledge-relationship-graph";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -77,6 +79,7 @@ const AUTHORITIES: Array<[KnowledgeAuthority, string]> = [
 
 type ImportMode = "upload" | "inbox" | "intelligence";
 type TemporalMode = "current" | "historical" | "all" | "as_of";
+type GraphTemporalMode = "current" | "historical" | "all";
 
 interface IntelligenceItem {
   item_key: string;
@@ -279,6 +282,9 @@ export default function KnowledgePage() {
   const [members, setMembers] = useState<KnowledgeMember[]>([]);
   const [events, setEvents] = useState<KnowledgeEvent[]>([]);
   const [insights, setInsights] = useState<KnowledgeInsight[]>([]);
+  const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
+  const [graphTemporalMode, setGraphTemporalMode] =
+    useState<GraphTemporalMode>("current");
   const [deletions, setDeletions] = useState<KnowledgeDeletion[]>([]);
   const [queryPlan, setQueryPlan] = useState<KnowledgeQueryPlan | null>(null);
   const [newSpaceName, setNewSpaceName] = useState("");
@@ -312,6 +318,7 @@ export default function KnowledgePage() {
           timelinePayload,
           eventPayload,
           insightPayload,
+          graphPayload,
           deletionPayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
@@ -333,6 +340,9 @@ export default function KnowledgePage() {
           requestJson<{ insights: KnowledgeInsight[] }>(
             `${API}/knowledge/insights?${spaceId ? `space_id=${encodeURIComponent(spaceId)}` : ""}`,
           ),
+          requestJson<KnowledgeGraph>(
+            `${API}/knowledge/graph?${scope}temporal_mode=${graphTemporalMode}&limit=500`,
+          ),
           requestJson<{ records: KnowledgeDeletion[] }>(
             `${API}/knowledge/deletions?${scope}limit=30`,
           ),
@@ -345,6 +355,7 @@ export default function KnowledgePage() {
         setSpaces(statusPayload.spaces ?? []);
         setEvents(eventPayload.events);
         setInsights(insightPayload.insights);
+        setGraph(graphPayload);
         setDeletions(deletionPayload.records);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
@@ -362,7 +373,7 @@ export default function KnowledgePage() {
         if (!quiet) setLoading(false);
       }
     },
-    [spaceId],
+    [graphTemporalMode, spaceId],
   );
 
   useEffect(() => {
@@ -689,6 +700,25 @@ export default function KnowledgePage() {
       toast.success("长期洞察已根据当前事件重新计算");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "洞察刷新失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rebuildGraph = async () => {
+    if (!spaceId || selectedSpace?.role === "viewer") return;
+    setBusy(true);
+    try {
+      const result = await requestJson<{ graph: KnowledgeGraph }>(
+        `${API}/knowledge/graph/rebuild?space_id=${encodeURIComponent(spaceId)}`,
+        { method: "POST", headers: csrfHeaders() },
+      );
+      toast.success(
+        `关系图谱已重建，共 ${result.graph.stats.relation_count} 条关系`,
+      );
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "关系图谱重建失败");
     } finally {
       setBusy(false);
     }
@@ -1073,6 +1103,83 @@ export default function KnowledgePage() {
             </div>
           </section>
         )}
+
+        <section className="ui-panel overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <BrainCircuit className="size-4 shrink-0" />
+              <div>
+                <h2 className="text-sm font-semibold">关系图谱 · GraphRAG</h2>
+                <div className="text-muted-foreground text-xs">
+                  浏览竞品、能力、价格、集成与来源之间可追溯、带时间范围的关系。
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={graphTemporalMode}
+                onValueChange={(value) =>
+                  setGraphTemporalMode(value as GraphTemporalMode)
+                }
+              >
+                <SelectTrigger
+                  className="h-8 w-28 text-xs"
+                  aria-label="图谱时间范围"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="current">当前关系</SelectItem>
+                  <SelectItem value="historical">历史关系</SelectItem>
+                  <SelectItem value="all">全部关系</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy || !spaceId || selectedSpace?.role === "viewer"}
+                onClick={() => void rebuildGraph()}
+              >
+                <RefreshCcw className="size-3.5" />
+                重建图谱
+              </Button>
+            </div>
+          </div>
+          {graph && graph.relations.length ? (
+            <div className="p-4">
+              <div className="mb-3 grid border-y sm:grid-cols-4">
+                {[
+                  ["实体", graph.stats.node_count],
+                  ["关系", graph.stats.relation_count],
+                  ["可引用", graph.stats.citable_count],
+                  ["冲突", graph.stats.conflict_count],
+                ].map(([label, value], index) => (
+                  <div
+                    key={label}
+                    className={`px-3 py-2 ${index ? "border-t sm:border-t-0 sm:border-l" : ""}`}
+                  >
+                    <div className="text-muted-foreground text-[10px]">
+                      {label}
+                    </div>
+                    <div className="mt-0.5 text-sm font-semibold tabular-nums">
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <KnowledgeRelationshipGraph
+                graph={graph}
+                onOpenChunk={(chunkId) => void loadChunk(chunkId)}
+              />
+            </div>
+          ) : (
+            <div className="px-4 py-10">
+              <StatusNotice tone="neutral" title="当前范围还没有关系">
+                批准带竞品、能力、价格或集成信息的资料后，系统会自动生成可追溯关系；编辑者也可以手动重建。
+              </StatusNotice>
+            </div>
+          )}
+        </section>
 
         {(events.length > 0 || insights.length > 0) && (
           <section className="ui-panel overflow-hidden">

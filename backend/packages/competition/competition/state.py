@@ -70,6 +70,8 @@ class CompetitionState(AgentState):
     """Entity-event facts, inferences, and hypotheses used only as labeled analysis context."""
     analysis_memory: NotRequired[list[dict] | None]
     """Historical report excerpts used for planning only and never as citable evidence."""
+    relationship_context: NotRequired[list[dict] | None]
+    """Evidence-linked GraphRAG paths plus navigation-only relationship leads."""
     analysis_result: NotRequired[dict | None]
     """AnalysisResult: comparison_matrix + swot + trends + forecast + visualization_paths (§3.13.3)."""
 

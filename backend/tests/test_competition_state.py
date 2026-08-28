@@ -35,6 +35,7 @@ class TestCompetitionStateFields:
         assert "collection_summary" in hints
         assert "knowledge_gaps" in hints
         assert "analysis_memory" in hints
+        assert "relationship_context" in hints
 
     def test_analyst_output_fields(self):
         hints = get_type_hints(CompetitionState, include_extras=True)
@@ -65,7 +66,7 @@ class TestCompetitionStateFields:
         """Runtime tracking and analysis context extend the business state."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 35, f"Expected 35 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 36, f"Expected 36 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:

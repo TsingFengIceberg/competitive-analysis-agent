@@ -326,6 +326,15 @@ HISTORICAL MEMORY RULES:
 - Every factual output must still cite source_data_point_ids from the authoritative context pack.
 - When current evidence differs from memory, current source evidence wins and the difference may be described as a possible change.
 
+RELATIONSHIP GRAPH CONTEXT:
+{json.dumps(state.get("relationship_context") or [], ensure_ascii=False, default=str)[:20000]}
+
+RELATIONSHIP GRAPH RULES:
+- Use relationships to organize cross-product, capability, integration, pricing, source, and temporal comparisons.
+- A relationship can support a factual claim only when citation_eligible=true and the claim cites one of its source_data_point_ids.
+- navigation_only relationships are leads for further research, not evidence.
+- Preserve fact, inference, and hypothesis boundaries; do not turn a graph path into causation unless the underlying evidence explicitly supports causation.
+
 Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with citation
 """
 

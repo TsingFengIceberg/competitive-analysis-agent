@@ -25,7 +25,12 @@
     "quarantine_recall": 1.0,
     "memory_recall_at_k": 1.0,
     "memory_isolation_rate": 1.0,
-    "current_thread_exclusion_rate": 1.0
+    "current_thread_exclusion_rate": 1.0,
+    "graph_route_accuracy": 1.0,
+    "relation_recall_at_k": 1.0,
+    "relation_traceability_rate": 1.0,
+    "temporal_relation_accuracy": 1.0,
+    "unsupported_relation_rate": 0.0
   },
   "documents": [
     {
@@ -333,6 +338,66 @@
       "current_thread_id": "comp-memory-current",
       "relevant": ["memory-enterprise-adoption"],
       "forbidden": ["comp-memory-current"]
+    }
+  ],
+  "graph_documents": [
+    {
+      "id": "graph-cursor-pricing-history",
+      "filename": "cursor-pricing-history.md",
+      "title": "Cursor official pricing history",
+      "product": "Cursor",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "source_type": "official_documentation",
+      "source_url": "https://www.cursor.com/pricing",
+      "versions": [
+        {
+          "published_at": "2026-07-01T00:00:00+00:00",
+          "observed_at": "2026-07-01T00:00:00+00:00",
+          "text": "# Cursor Teams pricing\n\nCursor Teams costs $40 per month."
+        },
+        {
+          "published_at": "2026-08-01T00:00:00+00:00",
+          "observed_at": "2026-08-01T00:00:00+00:00",
+          "text": "# Cursor Teams pricing\n\nCursor Teams now costs $45 per month."
+        }
+      ]
+    }
+  ],
+  "graph_cases": [
+    {
+      "id": "focused-fact-bypasses-graph",
+      "query": "What does Cursor Tab predict?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "expected_route": "vector_only",
+      "relevant": []
+    },
+    {
+      "id": "cross-product-capability-paths",
+      "query": "Compare how OpenAI Codex and GitHub Copilot execute delegated work and relate it to human review",
+      "products": ["OpenAI Codex", "GitHub Copilot"],
+      "dimensions": ["features", "technology"],
+      "expected_route": "hybrid_graph",
+      "k": 8,
+      "relevant": [
+        "OpenAI Codex|uses_capability|OpenAI Codex cloud snapshot",
+        "GitHub Copilot|provides|GitHub Copilot coding agent snapshot"
+      ]
+    },
+    {
+      "id": "temporal-pricing-paths",
+      "query": "How did Cursor pricing change over time?",
+      "products": ["Cursor"],
+      "dimensions": ["pricing"],
+      "expected_route": "hybrid_graph",
+      "k": 8,
+      "relevant": [
+        "Cursor|priced_at|$45 per month",
+        "Cursor|priced_at|$40 per month"
+      ],
+      "expected_current": ["Cursor|priced_at|$45 per month"],
+      "expected_historical": ["Cursor|priced_at|$40 per month"]
     }
   ],
   "verification_cases": [

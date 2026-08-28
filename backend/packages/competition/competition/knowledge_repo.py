@@ -890,16 +890,30 @@ class KnowledgeRepository:
         canonical_name: str,
         normalized_key: str,
         alias: str,
+        entity_type: str = "product",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = _now()
         self.conn.execute(
             """INSERT INTO knowledge_entities (
                    entity_id, space_id, canonical_name, entity_type, normalized_key,
                    metadata_json, created_at, updated_at
-               ) VALUES (?, ?, ?, 'product', ?, '{}', ?, ?)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(space_id, normalized_key) DO UPDATE SET
-                   canonical_name = excluded.canonical_name, updated_at = excluded.updated_at""",
-            (entity_id, space_id, canonical_name, normalized_key, now, now),
+                   canonical_name = excluded.canonical_name,
+                   entity_type = excluded.entity_type,
+                   metadata_json = excluded.metadata_json,
+                   updated_at = excluded.updated_at""",
+            (
+                entity_id,
+                space_id,
+                canonical_name,
+                entity_type,
+                normalized_key,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
         )
         row = self.conn.execute(
             "SELECT * FROM knowledge_entities WHERE space_id = ? AND normalized_key = ?",
@@ -917,6 +931,239 @@ class KnowledgeRepository:
             )
         self.conn.commit()
         return _json_row(row)
+
+    def upsert_relation(self, values: dict[str, Any]) -> dict[str, Any]:
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO knowledge_relations (
+                   relation_id, space_id, source_entity_id, target_entity_id,
+                   relation_type, dimension, statement, confidence, status,
+                   valid_from, valid_to, first_seen_at, last_seen_at,
+                   evidence_count, citation_eligible, cluster_key, metadata_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'observed', ?, NULL, ?, ?, 0, ?, ?, ?)
+               ON CONFLICT(space_id, cluster_key) DO UPDATE SET
+                   statement = excluded.statement,
+                   confidence = MAX(knowledge_relations.confidence, excluded.confidence),
+                   last_seen_at = excluded.last_seen_at,
+                   citation_eligible = excluded.citation_eligible,
+                   metadata_json = excluded.metadata_json""",
+            (
+                values["relation_id"],
+                values["space_id"],
+                values["source_entity_id"],
+                values["target_entity_id"],
+                values["relation_type"],
+                values.get("dimension", "general"),
+                values.get("statement", ""),
+                float(values.get("confidence", 0.5)),
+                values.get("valid_from"),
+                now,
+                now,
+                int(bool(values.get("citation_eligible", True))),
+                values["cluster_key"],
+                json.dumps(values.get("metadata", {}), ensure_ascii=False),
+            ),
+        )
+        row = self.conn.execute(
+            "SELECT * FROM knowledge_relations WHERE space_id = ? AND cluster_key = ?",
+            (values["space_id"], values["cluster_key"]),
+        ).fetchone()
+        assert row is not None
+        self.conn.commit()
+        result = _json_row(row)
+        result["citation_eligible"] = bool(result.get("citation_eligible"))
+        return result
+
+    def close_document_relations(
+        self,
+        *,
+        document_id: str,
+        source_entity_id: str,
+        relation_type: str,
+        current_relation_id: str,
+        valid_to: str | None,
+    ) -> None:
+        if relation_type != "priced_at" or not valid_to:
+            return
+        self.conn.execute(
+            """UPDATE knowledge_relations
+                  SET valid_to = ?, last_seen_at = ?
+                WHERE relation_id IN (
+                    SELECT r.relation_id
+                      FROM knowledge_relations r
+                      JOIN knowledge_relation_evidence e ON e.relation_id = r.relation_id
+                     WHERE e.document_id = ? AND r.source_entity_id = ?
+                       AND r.relation_type = ? AND r.valid_to IS NULL
+                       AND r.relation_id <> ?
+                )""",
+            (
+                valid_to,
+                _now(),
+                document_id,
+                source_entity_id,
+                relation_type,
+                current_relation_id,
+            ),
+        )
+        self.conn.commit()
+
+    def add_relation_evidence(self, relation_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        identity = f"{relation_id}|{values['document_id']}|{int(values['version_no'])}|{values.get('chunk_id') or ''}|{values.get('stance') or 'supporting'}"
+        evidence_id = f"krelev-{uuid.uuid5(uuid.NAMESPACE_URL, identity).hex}"
+        self.conn.execute(
+            """INSERT INTO knowledge_relation_evidence (
+                   evidence_id, relation_id, document_id, version_no, chunk_id,
+                   event_id, source_uri, authority_tier, stance, observed_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(evidence_id) DO UPDATE SET
+                   source_uri = excluded.source_uri,
+                   authority_tier = excluded.authority_tier,
+                   observed_at = excluded.observed_at""",
+            (
+                evidence_id,
+                relation_id,
+                values["document_id"],
+                int(values["version_no"]),
+                values.get("chunk_id"),
+                values.get("event_id"),
+                values.get("source_uri", ""),
+                values.get("authority_tier", "third_party"),
+                values.get("stance", "supporting"),
+                values.get("observed_at") or _now(),
+            ),
+        )
+        counts = self.conn.execute(
+            """SELECT COUNT(*) AS evidence_count,
+                      COUNT(DISTINCT CASE WHEN source_uri <> '' THEN source_uri END) AS source_count,
+                      SUM(CASE WHEN stance = 'contradicting' THEN 1 ELSE 0 END) AS conflict_count
+                 FROM knowledge_relation_evidence WHERE relation_id = ?""",
+            (relation_id,),
+        ).fetchone()
+        evidence_count = int(counts["evidence_count"] or 0)
+        source_count = int(counts["source_count"] or 0)
+        conflict_count = int(counts["conflict_count"] or 0)
+        status = "conflict" if conflict_count else "corroborated" if source_count >= 2 else "observed"
+        self.conn.execute(
+            """UPDATE knowledge_relations
+                  SET evidence_count = ?, status = ?, last_seen_at = ?
+                WHERE relation_id = ?""",
+            (evidence_count, status, _now(), relation_id),
+        )
+        self.conn.commit()
+        row = self.conn.execute("SELECT * FROM knowledge_relations WHERE relation_id = ?", (relation_id,)).fetchone()
+        assert row is not None
+        result = _json_row(row)
+        result["citation_eligible"] = bool(result.get("citation_eligible"))
+        return result
+
+    def list_relations(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        entity_id: str | None = None,
+        relation_type: str | None = None,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        placeholders = ",".join("?" for _ in spaces)
+        where = [f"r.space_id IN ({placeholders})"]
+        params: list[Any] = [*spaces]
+        if entity_id:
+            where.append("(r.source_entity_id = ? OR r.target_entity_id = ?)")
+            params.extend([entity_id, entity_id])
+        if relation_type:
+            where.append("r.relation_type = ?")
+            params.append(relation_type)
+        if temporal_mode == "current":
+            where.append("r.valid_to IS NULL")
+        elif temporal_mode == "historical":
+            where.append("r.valid_to IS NOT NULL")
+        elif temporal_mode == "as_of" and as_of:
+            where.append("(r.valid_from IS NULL OR r.valid_from <= ?)")
+            where.append("(r.valid_to IS NULL OR r.valid_to > ?)")
+            params.extend([as_of, as_of])
+        params.append(max(1, min(limit, 2000)))
+        rows = self.conn.execute(
+            f"""SELECT r.*,
+                       s.canonical_name AS source_name,
+                       s.entity_type AS source_type,
+                       t.canonical_name AS target_name,
+                       t.entity_type AS target_type
+                  FROM knowledge_relations r
+                  JOIN knowledge_entities s ON s.entity_id = r.source_entity_id
+                  JOIN knowledge_entities t ON t.entity_id = r.target_entity_id
+                 WHERE {" AND ".join(where)}
+                 ORDER BY COALESCE(r.valid_from, r.last_seen_at) DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        relations: list[dict[str, Any]] = []
+        for row in rows:
+            relation = _json_row(row)
+            evidence_rows = self.conn.execute(
+                """SELECT e.*, d.title, d.source_type AS document_source_type,
+                          d.approval_status
+                     FROM knowledge_relation_evidence e
+                     JOIN knowledge_documents d ON d.document_id = e.document_id
+                    WHERE e.relation_id = ? AND d.deleted_at IS NULL
+                      AND d.approval_status = 'approved'
+                    ORDER BY e.observed_at DESC""",
+                (relation["relation_id"],),
+            ).fetchall()
+            evidence = [dict(item) for item in evidence_rows]
+            if not evidence:
+                continue
+            relation["evidence"] = evidence
+            relation["evidence_count"] = len(evidence)
+            relation["citation_eligible"] = bool(relation.get("citation_eligible"))
+            relations.append(relation)
+
+        active_prices: dict[tuple[str, str], set[str]] = {}
+        for relation in relations:
+            if relation["relation_type"] == "priced_at" and not relation.get("valid_to"):
+                key = (relation["source_entity_id"], relation["dimension"])
+                active_prices.setdefault(key, set()).add(relation["target_entity_id"])
+        conflicting = {key for key, targets in active_prices.items() if len(targets) > 1}
+        for relation in relations:
+            key = (relation["source_entity_id"], relation["dimension"])
+            if relation["relation_type"] == "priced_at" and key in conflicting:
+                relation["status"] = "conflict"
+        return relations
+
+    def graph_snapshot(
+        self,
+        user_id: str,
+        **filters: Any,
+    ) -> dict[str, Any]:
+        relations = self.list_relations(user_id, **filters)
+        nodes: dict[str, dict[str, Any]] = {}
+        for relation in relations:
+            for side in ("source", "target"):
+                current_id = str(relation[f"{side}_entity_id"])
+                nodes[current_id] = {
+                    "entity_id": current_id,
+                    "canonical_name": relation[f"{side}_name"],
+                    "entity_type": relation[f"{side}_type"],
+                    "space_id": relation["space_id"],
+                }
+        return {
+            "nodes": list(nodes.values()),
+            "relations": relations,
+            "stats": {
+                "node_count": len(nodes),
+                "relation_count": len(relations),
+                "citable_count": sum(bool(item.get("citation_eligible")) for item in relations),
+                "conflict_count": sum(item.get("status") == "conflict" for item in relations),
+            },
+        }
+
+    def clear_relations(self, space_id: str) -> None:
+        self.conn.execute("DELETE FROM knowledge_relations WHERE space_id = ?", (space_id,))
+        self.conn.commit()
 
     def find_event_candidates(self, *, space_id: str, entity_id: str, dimension: str, limit: int = 40) -> list[dict[str, Any]]:
         rows = self.conn.execute(
