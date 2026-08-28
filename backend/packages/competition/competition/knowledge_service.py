@@ -39,6 +39,7 @@ from competition.knowledge_query import (
     build_analysis_queries,
     build_bridge_query,
     canonical_product,
+    expand_query_variants,
     normalize_query_text,
     plan_retrieval_query,
 )
@@ -990,6 +991,10 @@ class KnowledgeService:
                     continue
                 flat.append((step.query, filters, per_step))
                 owners.append(owner)
+            if os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "true").lower() in {"1", "true", "yes", "on"}:
+                for variant in plan.metadata.get("query_expansions") or expand_query_variants(plan.normalized_query):
+                    flat.append((variant, filters, per_step))
+                    owners.append(owner)
         groups = self.search_many(flat, user_id=user_id)
         accumulated: list[list[KnowledgeHit]] = [[] for _ in requests]
         for owner, hits in zip(owners, groups, strict=True):
@@ -1414,6 +1419,16 @@ class KnowledgeService:
             self._resolve_space(user_id, space_id)
         with self._repo() as repository:
             return repository.list_review_feedback(user_id, space_id=space_id, limit=limit)
+
+    def retrieval_logs(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._repo() as repository:
+            return repository.list_retrieval_logs(user_id, limit=limit)
+
+    def governance_stats(self, user_id: str, *, space_id: str | None = None) -> dict[str, Any]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.governance_stats(user_id, space_id=space_id)
 
     def purge_expired(self, *, actor_id: str = "system") -> dict[str, Any]:
         with self._repo() as repository:

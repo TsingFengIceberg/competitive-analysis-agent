@@ -15,7 +15,7 @@ from competition.knowledge_eval import (
     evaluate_governance_cases,
 )
 from competition.knowledge_governance import assess_intelligence_item, assess_report
-from competition.knowledge_query import plan_retrieval_query
+from competition.knowledge_query import expand_query_variants, plan_retrieval_query
 from competition.knowledge_repo import KnowledgeRepository
 from competition.knowledge_types import RetrievalFilters
 from competition.schema import ReportData
@@ -53,6 +53,31 @@ def test_query_planner_routes_simple_and_decomposes_complex_requests():
     assert any(step.purpose == "subquestion" for step in complex_plan.steps)
     assert complex_plan.steps[-1].hop == 2
     assert complex_plan.steps[-1].depends_on
+
+
+def test_query_expansion_is_bounded_and_bilingual():
+    variants = expand_query_variants("Cursor pricing and features", max_variants=1)
+    assert len(variants) == 1
+    assert "Cursor pricing and features" in variants[0]
+    assert "定价" in variants[0]
+    expanded = expand_query_variants("Cursor pricing and features", max_variants=2)
+    assert any("功能" in variant for variant in expanded)
+    assert expand_query_variants("   ") == ()
+    assert len(expand_query_variants("pricing features users market technology", max_variants=3)) == 3
+
+
+def test_query_expansion_can_be_disabled(monkeypatch, tmp_path):
+    service = build_service(tmp_path)
+    calls = []
+
+    def fake_search_many(requests, *, user_id):
+        calls.extend(requests)
+        return [[] for _ in requests]
+
+    monkeypatch.setattr(service, "search_many", fake_search_many)
+    monkeypatch.setenv("CI_AGENT_RAG_QUERY_EXPANSION", "false")
+    service.search_planned("Cursor pricing", user_id="owner", filters=RetrievalFilters())
+    assert [query for query, _, _ in calls] == ["Cursor pricing"]
 
 
 def test_space_approval_permissions_and_shared_retrieval(tmp_path):
@@ -614,6 +639,8 @@ def test_p1_feedback_api_contract_is_registered():
 
     contracts = {(route.path, method) for route in router.routes for method in route.methods or []}
     assert ("/api/competition/knowledge/reviews", "GET") in contracts
+    assert ("/api/competition/knowledge/retrieval-logs", "GET") in contracts
+    assert ("/api/competition/knowledge/governance/stats", "GET") in contracts
     request = KnowledgeReviewRequest(
         decision="rejected",
         feedback_type="conflict",
@@ -626,3 +653,25 @@ def test_p1_feedback_api_contract_is_registered():
         "reason": "Sources disagree",
         "correction": "Prefer the official release note",
     }
+
+
+def test_retrieval_trace_and_governance_stats_are_user_scoped(tmp_path):
+    service = build_service(tmp_path)
+    space = service.create_space("owner", name="Traceable RAG", require_approval=False)
+    document_id = _ingest(
+        service,
+        user_id="owner",
+        filename="cursor-trace.md",
+        text="# Pricing\n\nCursor Teams costs 40 dollars monthly.",
+        product="Cursor",
+        dimension="pricing",
+        space_id=space["space_id"],
+    )
+    hits = service.search("Cursor Teams price", user_id="owner")
+    assert hits and hits[0].document_id == document_id
+    logs = service.retrieval_logs("owner")
+    assert logs and logs[0]["result_count"] >= 1
+    assert logs[0]["selected_chunk_ids"]
+    stats = service.governance_stats("owner", space_id=space["space_id"])
+    assert stats["document_reviews"]["total"] == 0
+    assert stats["hypotheses"] == {}

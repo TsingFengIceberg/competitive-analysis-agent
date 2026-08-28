@@ -40,6 +40,14 @@ def _key(value: str) -> str:
 _PRODUCT_LOOKUP = {_key(alias): canonical for canonical, aliases in _PRODUCT_GROUPS for alias in (canonical, *aliases)}
 _DIMENSION_LOOKUP = {_key(alias): canonical for canonical, aliases in _DIMENSION_GROUPS.items() for alias in (canonical, *aliases)}
 
+_QUERY_EXPANSION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pricing", ("定价", "价格", "费用", "pricing", "price", "cost", "commercial")),
+    ("features", ("功能", "能力", "体验", "features", "capabilities", "user experience")),
+    ("users", ("用户", "采用", "场景", "users", "adoption", "use cases")),
+    ("market", ("市场", "竞争", "格局", "market", "competition", "landscape")),
+    ("technology", ("技术", "集成", "架构", "technology", "integration", "architecture")),
+)
+
 
 def canonical_product(value: str) -> str:
     normalized = normalize_query_text(value)
@@ -64,6 +72,30 @@ def expand_product_aliases(value: str) -> tuple[str, ...]:
 def expand_dimension_aliases(value: str) -> tuple[str, ...]:
     canonical = canonical_dimension(value)
     return _unique((canonical, *_DIMENSION_GROUPS.get(canonical, ())))
+
+
+def expand_query_variants(query: str, *, max_variants: int = 3) -> tuple[str, ...]:
+    """Create bounded bilingual variants without an extra model call.
+
+    The original query is deliberately excluded from the return value.  Each
+    variant only appends terms from a matched semantic group, so filters and
+    the user's wording remain authoritative.
+    """
+    normalized = normalize_query_text(query)
+    if not normalized:
+        return ()
+    variants: list[str] = []
+    lowered = normalized.casefold()
+    for canonical, terms in _QUERY_EXPANSION_GROUPS:
+        if not any(term.casefold() in lowered for term in terms):
+            continue
+        additions = " ".join(term for term in terms[:4] if term.casefold() not in lowered)
+        candidate = normalize_query_text(f"{normalized} {additions}")
+        if candidate.casefold() != lowered and candidate.casefold() not in {item.casefold() for item in variants}:
+            variants.append(candidate)
+        if len(variants) >= max(1, max_variants):
+            break
+    return tuple(variants)
 
 
 def _unique(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -214,6 +246,7 @@ def plan_retrieval_query(
             normalized_query=normalized,
             steps=(RetrievalStep("q1", normalized, "direct_lookup"),),
             reasons=("single_focused_information_need",),
+            metadata={"query_expansions": list(expand_query_variants(normalized))},
         )
 
     variants: list[tuple[str, str]] = [(normalized, "original_intent")]
@@ -247,7 +280,7 @@ def plan_retrieval_query(
         steps=tuple(steps),
         reasons=tuple(complex_reasons),
         estimated_cost="medium",
-        metadata={"max_steps": max_steps, "llm_calls": 0},
+        metadata={"max_steps": max_steps, "llm_calls": 0, "query_expansions": list(expand_query_variants(normalized))},
     )
 
 

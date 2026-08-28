@@ -747,6 +747,72 @@ class KnowledgeRepository:
         )
         self.conn.commit()
 
+    def list_retrieval_logs(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return the caller's retrieval trace without exposing other users."""
+        rows = self.conn.execute(
+            "SELECT * FROM knowledge_retrieval_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user_id, max(1, min(int(limit), 500))),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["filters"] = _loads(item.pop("filters_json", "{}"), {})
+            item["selected_chunk_ids"] = _loads(item.pop("selected_chunk_ids_json", "[]"), [])
+            result.append(item)
+        return result
+
+    def governance_stats(self, user_id: str, *, space_id: str | None = None) -> dict[str, Any]:
+        """Aggregate durable review outcomes for a knowledge-space quality view."""
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return {
+                "document_reviews": {"total": 0, "approved": 0, "rejected": 0},
+                "feedback_by_type": {},
+                "relation_reviews": {"total": 0, "approved": 0, "rejected": 0, "overrides": 0},
+                "hypotheses": {},
+            }
+        placeholders = ",".join("?" for _ in spaces)
+        review_rows = self.conn.execute(
+            f"SELECT decision, feedback_type, COUNT(*) AS count FROM knowledge_review_feedback WHERE space_id IN ({placeholders}) GROUP BY decision, feedback_type",
+            spaces,
+        ).fetchall()
+        document_reviews = {"total": 0, "approved": 0, "rejected": 0}
+        feedback_by_type: dict[str, int] = {}
+        for row in review_rows:
+            count = int(row[2] or 0)
+            document_reviews["total"] += count
+            if row[0] in document_reviews:
+                document_reviews[row[0]] += count
+            feedback_by_type[str(row[1] or "unknown")] = feedback_by_type.get(str(row[1] or "unknown"), 0) + count
+        relation_rows = self.conn.execute(
+            f"SELECT action, COUNT(*) AS count FROM knowledge_relation_audits WHERE space_id IN ({placeholders}) GROUP BY action",
+            spaces,
+        ).fetchall()
+        relation_reviews = {"total": 0, "approved": 0, "rejected": 0, "overrides": 0}
+        for row in relation_rows:
+            count = int(row[1] or 0)
+            relation_reviews["total"] += count
+            action = str(row[0] or "")
+            if action in {"approve", "resolve_conflict", "restore"}:
+                relation_reviews["approved"] += count
+            elif action == "reject":
+                relation_reviews["rejected"] += count
+            elif action == "override":
+                relation_reviews["overrides"] += count
+        hypothesis_rows = self.conn.execute(
+            f"SELECT status, COUNT(*) AS count FROM knowledge_hypotheses WHERE space_id IN ({placeholders}) GROUP BY status",
+            spaces,
+        ).fetchall()
+        hypotheses = {str(row[0] or "unknown"): int(row[1] or 0) for row in hypothesis_rows}
+        reviewed = document_reviews["approved"] + document_reviews["rejected"]
+        return {
+            "document_reviews": document_reviews,
+            "feedback_by_type": feedback_by_type,
+            "relation_reviews": relation_reviews,
+            "hypotheses": hypotheses,
+            "approval_rate": round(document_reviews["approved"] / reviewed, 4) if reviewed else None,
+        }
+
     def soft_delete_document(
         self,
         document_id: str,

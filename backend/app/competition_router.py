@@ -1633,6 +1633,22 @@ async def get_knowledge_timeline(
     )
 
 
+@router.get("/knowledge/retrieval-logs")
+async def list_knowledge_retrieval_logs(
+    fastapi_request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    """Expose the caller-scoped retrieval trace for RAG explainability."""
+    from competition.knowledge_service import get_knowledge_service
+
+    logs = await asyncio.to_thread(
+        get_knowledge_service().retrieval_logs,
+        _get_user_id(fastapi_request),
+        limit=limit,
+    )
+    return {"logs": logs}
+
+
 @router.get("/knowledge/spaces")
 async def list_knowledge_spaces(fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
@@ -1759,6 +1775,25 @@ async def list_knowledge_reviews(
         limit=limit,
     )
     return {"reviews": reviews}
+
+
+@router.get("/knowledge/governance/stats")
+async def get_knowledge_governance_stats(
+    fastapi_request: Request,
+    space_id: str | None = None,
+) -> dict:
+    """Return aggregate document, relation, and hypothesis governance metrics."""
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        stats = await asyncio.to_thread(
+            get_knowledge_service().governance_stats,
+            _get_user_id(fastapi_request),
+            space_id=space_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"stats": stats}
 
 
 @router.get("/knowledge/deletions")
