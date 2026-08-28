@@ -104,7 +104,7 @@ class AnalysisBrief(BaseModel):
     readiness: Literal["ready", "needs_confirmation"] = "needs_confirmation"
     ambiguities: list[BriefAmbiguity] = Field(default_factory=list, max_length=8)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    confirmation_source: Literal["auto", "bypass", "user"] | None = None
+    confirmation_source: Literal["auto", "bypass", "user", "a2a"] | None = None
     confirmed_at: str | None = None
 
     def editable_payload(self) -> dict:

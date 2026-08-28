@@ -22,6 +22,7 @@ from google.protobuf.json_format import MessageToDict
 
 from app.a2a.provider import CompetitionA2AHandler, build_agent_card
 from app.a2a.store import A2AStore
+from competition.schema import AnalysisBrief
 
 
 def _context(owner: str = "client-a", tenant: str = "tenant-a") -> ServerCallContext:
@@ -35,6 +36,17 @@ async def test_agent_card_declares_a2a_1_and_capabilities() -> None:
     assert card["supportedInterfaces"][0]["protocolVersion"] == "1.0"
     assert card["capabilities"]["streaming"] is True
     assert "competitive-analysis" in {item["id"] for item in card["skills"]}
+
+
+def test_analysis_brief_preserves_a2a_confirmation_provenance() -> None:
+    brief = AnalysisBrief(
+        target_products=["Cursor", "Codex"],
+        objective="Compare developer experience",
+        confirmation_source="a2a",
+        dimensions=[{"id": "features", "label": "Features", "source": "core", "weight": 1.0}],
+    )
+    restored = AnalysisBrief.model_validate(brief.model_dump())
+    assert restored.confirmation_source == "a2a"
 
 
 @pytest.mark.asyncio
