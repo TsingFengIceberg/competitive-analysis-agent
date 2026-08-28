@@ -468,19 +468,22 @@ class KnowledgeService:
         governance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Queue one observation fact's complete immutable version series."""
+        job_metadata = {
+            "item": item,
+            "title": title,
+            "authority_tier": authority_tier,
+            "space_id": self._resolve_space(user_id, space_id, roles=WRITE_ROLES)["space_id"],
+            "approval_status": approval_status,
+            "governance": governance or {},
+        }
+        if (governance or {}).get("trigger") == "observation":
+            job_metadata["idempotency_key"] = f"intelligence:{item.get('item_key') or ''}:{item.get('content_hash') or item.get('last_seen_at') or ''}"
         with self._repo() as repository:
             return repository.create_job(
                 job_id=f"kjob-{uuid.uuid4().hex}",
                 user_id=user_id,
                 operation="import_history",
-                metadata={
-                    "item": item,
-                    "title": title,
-                    "authority_tier": authority_tier,
-                    "space_id": self._resolve_space(user_id, space_id, roles=WRITE_ROLES)["space_id"],
-                    "approval_status": approval_status,
-                    "governance": governance or {},
-                },
+                metadata=job_metadata,
             )
 
     def queue_governed_intelligence_history(
@@ -1574,6 +1577,41 @@ class KnowledgeService:
             "evidence_skipped": skipped,
             "graph": self.graph(user_id, space_id=space_id, temporal_mode="all"),
         }
+
+    def review_relation(self, user_id: str, relation_id: str, **values: Any) -> dict[str, Any]:
+        """Apply an auditable human decision without deleting automatic evidence."""
+        with self._repo() as repository:
+            result = repository.review_relation(relation_id, user_id=user_id, **values)
+        self._invalidate_result_cache(user_id)
+        return result
+
+    def relation_audits(self, user_id: str, *, relation_id: str | None = None, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_relation_audits(user_id, relation_id=relation_id, space_id=space_id, limit=limit)
+
+    def create_hypothesis(self, user_id: str, **values: Any) -> dict[str, Any]:
+        space = self._resolve_space(user_id, values.get("space_id"), roles=WRITE_ROLES)
+        relation_id = values.get("relation_id")
+        if relation_id:
+            with self._repo() as repository:
+                relation = repository.get_relation(str(relation_id), user_id)
+            if relation is None or relation.get("space_id") != space["space_id"]:
+                raise ValueError("relation_id must belong to the selected knowledge space")
+        values = {**values, "space_id": space["space_id"], "created_by": user_id}
+        with self._repo() as repository:
+            return repository.create_hypothesis(values)
+
+    def list_hypotheses(self, user_id: str, *, space_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_hypotheses(user_id, space_id=space_id, status=status, limit=limit)
+
+    def transition_hypothesis(self, user_id: str, hypothesis_id: str, status: str, *, notes: str | None = None) -> dict[str, Any]:
+        with self._repo() as repository:
+            return repository.transition_hypothesis(hypothesis_id, user_id, status, notes=notes)
 
     def _sync_graph_relations(
         self,

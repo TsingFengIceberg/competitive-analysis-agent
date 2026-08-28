@@ -286,6 +286,59 @@ def test_analyst_prompt_keeps_graph_navigation_separate_from_evidence():
     assert "navigation_only relationships are leads" in task
 
 
+def test_relation_governance_survives_rebuild_and_records_audit(tmp_path):
+    service = build_service(tmp_path)
+    _ingest(
+        service,
+        filename="cursor-feature.md",
+        text="# Agent review\n\nCursor provides repository-wide agent review.",
+        product="Cursor",
+        dimension="features",
+        source_uri="https://cursor.com/features",
+        observed_at="2026-08-01T00:00:00+00:00",
+    )
+    graph = service.graph("owner")
+    relation = graph["relations"][0]
+    edited = service.review_relation(
+        "owner",
+        relation["relation_id"],
+        action="override",
+        statement="Human-reviewed repository-wide review capability.",
+        reason="Confirmed against product documentation",
+    )
+    rebuilt = service.rebuild_graph("owner", relation["space_id"])
+    persisted = next(item for item in rebuilt["graph"]["relations"] if item["relation_id"] == relation["relation_id"])
+    assert persisted["statement"] == edited["statement"]
+    assert persisted["metadata"]["governance"]["manual_override"] is True
+    audits = service.relation_audits("owner", relation_id=relation["relation_id"])
+    assert audits[0]["action"] == "override"
+
+
+def test_rejected_relation_is_excluded_and_hypothesis_has_lifecycle(tmp_path):
+    service = build_service(tmp_path)
+    _ingest(
+        service,
+        filename="cursor-feature.md",
+        text="# Agent review\n\nCursor provides repository-wide agent review.",
+        product="Cursor",
+        dimension="features",
+        source_uri="https://cursor.com/features",
+        observed_at="2026-08-01T00:00:00+00:00",
+    )
+    relation = next(item for item in service.graph("owner")["relations"] if item["relation_type"] == "provides")
+    service.review_relation("owner", relation["relation_id"], action="reject", reason="Unsupported wording")
+    assert all(item["relation_id"] != relation["relation_id"] for item in service.graph("owner")["relations"])
+    hypothesis = service.create_hypothesis(
+        "owner",
+        title="Potential enterprise adoption signal",
+        statement="The feature may reduce enterprise review cost.",
+        relation_id=relation["relation_id"],
+    )
+    assert hypothesis["status"] == "proposed"
+    validated = service.transition_hypothesis("owner", hypothesis["hypothesis_id"], "validated", notes="Confirmed in workshop")
+    assert validated["status"] == "validated"
+
+
 def test_collector_carries_relationship_context_and_evidence_policy(monkeypatch):
     from competition.nodes import collector
 

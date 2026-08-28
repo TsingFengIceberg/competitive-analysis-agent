@@ -208,6 +208,30 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_observation_runs_schedule ON observation_runs(schedule_id, started_at DESC);
 
+        CREATE TABLE IF NOT EXISTS background_tasks (
+            task_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            task_type TEXT NOT NULL,
+            idempotency_key TEXT,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT NOT NULL DEFAULT '{}',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            available_at TEXT NOT NULL,
+            lease_until TEXT,
+            heartbeat_at TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            cancelled_at TEXT,
+            UNIQUE(user_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_background_tasks_claim ON background_tasks(status, available_at, lease_until);
+        CREATE INDEX IF NOT EXISTS idx_background_tasks_user ON background_tasks(user_id, created_at DESC);
+
         CREATE TABLE IF NOT EXISTS alert_rules (
             rule_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL DEFAULT 'default',
@@ -530,6 +554,40 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_relation_evidence_relation ON knowledge_relation_evidence(relation_id, observed_at DESC);
         CREATE INDEX IF NOT EXISTS idx_knowledge_relation_evidence_document ON knowledge_relation_evidence(document_id, version_no);
+
+        CREATE TABLE IF NOT EXISTS knowledge_relation_audits (
+            audit_id TEXT PRIMARY KEY,
+            relation_id TEXT NOT NULL,
+            space_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (relation_id) REFERENCES knowledge_relations(relation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relation_audits_relation ON knowledge_relation_audits(relation_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_relation_audits_space ON knowledge_relation_audits(space_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_hypotheses (
+            hypothesis_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            title TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            relation_id TEXT,
+            evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+            notes TEXT NOT NULL DEFAULT '',
+            valid_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (space_id) REFERENCES knowledge_spaces(space_id) ON DELETE CASCADE,
+            FOREIGN KEY (relation_id) REFERENCES knowledge_relations(relation_id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_hypotheses_space ON knowledge_hypotheses(space_id, status, updated_at DESC);
     """)
     # Migration: add columns that may not exist in older DBs
     _migrate_analysis_history(conn)

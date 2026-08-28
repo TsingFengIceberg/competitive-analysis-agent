@@ -31,6 +31,7 @@ import {
   type KnowledgeHit,
   type KnowledgeEvent,
   type KnowledgeGraph,
+  type KnowledgeHypothesis,
   type KnowledgeInsight,
   type KnowledgeJob,
   type KnowledgeQueryPlan,
@@ -283,6 +284,9 @@ export default function KnowledgePage() {
   const [events, setEvents] = useState<KnowledgeEvent[]>([]);
   const [insights, setInsights] = useState<KnowledgeInsight[]>([]);
   const [graph, setGraph] = useState<KnowledgeGraph | null>(null);
+  const [hypotheses, setHypotheses] = useState<KnowledgeHypothesis[]>([]);
+  const [hypothesisTitle, setHypothesisTitle] = useState("");
+  const [hypothesisStatement, setHypothesisStatement] = useState("");
   const [graphTemporalMode, setGraphTemporalMode] =
     useState<GraphTemporalMode>("current");
   const [deletions, setDeletions] = useState<KnowledgeDeletion[]>([]);
@@ -320,6 +324,7 @@ export default function KnowledgePage() {
           insightPayload,
           graphPayload,
           deletionPayload,
+          hypothesisPayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
@@ -346,6 +351,9 @@ export default function KnowledgePage() {
           requestJson<{ records: KnowledgeDeletion[] }>(
             `${API}/knowledge/deletions?${scope}limit=30`,
           ),
+          requestJson<{ hypotheses: KnowledgeHypothesis[] }>(
+            `${API}/knowledge/graph/hypotheses?${scope}limit=100`,
+          ),
         ]);
         setStatus(statusPayload);
         setDocuments(documentPayload.documents);
@@ -357,6 +365,7 @@ export default function KnowledgePage() {
         setInsights(insightPayload.insights);
         setGraph(graphPayload);
         setDeletions(deletionPayload.records);
+        setHypotheses(hypothesisPayload.hypotheses);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
             statusPayload.spaces.find(
@@ -721,6 +730,92 @@ export default function KnowledgePage() {
       toast.error(error instanceof Error ? error.message : "关系图谱重建失败");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const reviewRelation = async (
+    relationId: string,
+    action: "approve" | "reject" | "resolve_conflict",
+  ) => {
+    if (selectedSpace?.role === "viewer") return;
+    try {
+      await requestJson(
+        `${API}/knowledge/graph/relations/${relationId}/review`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({
+            action,
+            reason:
+              action === "approve"
+                ? "人工确认关系"
+                : action === "reject"
+                  ? "人工驳回关系"
+                  : "人工裁决关系冲突",
+          }),
+        },
+      );
+      toast.success(
+        action === "approve"
+          ? "关系已采纳"
+          : action === "reject"
+            ? "关系已驳回"
+            : "关系冲突已标记为人工裁决",
+      );
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "关系治理失败");
+    }
+  };
+
+  const createHypothesis = async () => {
+    if (!spaceId || !hypothesisTitle.trim() || !hypothesisStatement.trim()) {
+      toast.error("请填写假设标题和内容");
+      return;
+    }
+    try {
+      const result = await requestJson<{ hypothesis: KnowledgeHypothesis }>(
+        `${API}/knowledge/graph/hypotheses`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({
+            space_id: spaceId,
+            title: hypothesisTitle.trim(),
+            statement: hypothesisStatement.trim(),
+          }),
+        },
+      );
+      setHypotheses((current) => [result.hypothesis, ...current]);
+      setHypothesisTitle("");
+      setHypothesisStatement("");
+      toast.success("假设已加入治理队列");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "假设创建失败");
+    }
+  };
+
+  const transitionHypothesis = async (
+    hypothesisId: string,
+    status: KnowledgeHypothesis["status"],
+  ) => {
+    try {
+      const result = await requestJson<{ hypothesis: KnowledgeHypothesis }>(
+        `${API}/knowledge/graph/hypotheses/${hypothesisId}/transition`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...csrfHeaders() },
+          body: JSON.stringify({ status }),
+        },
+      );
+      setHypotheses((current) =>
+        current.map((item) =>
+          item.hypothesis_id === hypothesisId ? result.hypothesis : item,
+        ),
+      );
+      toast.success("假设状态已更新");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "假设状态更新失败");
     }
   };
 
@@ -1170,6 +1265,9 @@ export default function KnowledgePage() {
               <KnowledgeRelationshipGraph
                 graph={graph}
                 onOpenChunk={(chunkId) => void loadChunk(chunkId)}
+                onReviewRelation={
+                  selectedSpace?.role === "viewer" ? undefined : reviewRelation
+                }
               />
             </div>
           ) : (
@@ -1179,6 +1277,105 @@ export default function KnowledgePage() {
               </StatusNotice>
             </div>
           )}
+        </section>
+
+        <section className="ui-panel overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <FileSearch className="size-4 shrink-0" />
+              <div>
+                <h2 className="text-sm font-semibold">假设治理</h2>
+                <div className="text-muted-foreground text-xs">
+                  假设与事实关系分离，只有经过验证才会成为可复用结论。
+                </div>
+              </div>
+            </div>
+            <StatusBadge tone="info" label={`${hypotheses.length} 条记录`} />
+          </div>
+          <div className="grid gap-3 p-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+            <div className="space-y-2">
+              <Input
+                value={hypothesisTitle}
+                onChange={(event) => setHypothesisTitle(event.target.value)}
+                placeholder="假设标题"
+                aria-label="假设标题"
+                disabled={selectedSpace?.role === "viewer"}
+              />
+              <textarea
+                value={hypothesisStatement}
+                onChange={(event) => setHypothesisStatement(event.target.value)}
+                placeholder="描述需要验证的判断"
+                aria-label="假设内容"
+                disabled={selectedSpace?.role === "viewer"}
+                className="border-input bg-background min-h-20 w-full resize-y border px-3 py-2 text-xs outline-none focus-visible:ring-2"
+              />
+              <Button
+                size="sm"
+                disabled={busy || selectedSpace?.role === "viewer"}
+                onClick={() => void createHypothesis()}
+              >
+                <Plus className="size-3.5" />
+                新建假设
+              </Button>
+            </div>
+            <div className="divide-y border-y">
+              {hypotheses.length ? (
+                hypotheses.slice(0, 8).map((hypothesis) => (
+                  <div
+                    key={hypothesis.hypothesis_id}
+                    className="space-y-1 px-3 py-2.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-medium">
+                        {hypothesis.title}
+                      </span>
+                      <StatusBadge
+                        tone={
+                          hypothesis.status === "validated"
+                            ? "success"
+                            : hypothesis.status === "rejected"
+                              ? "danger"
+                              : "warning"
+                        }
+                        label={
+                          {
+                            proposed: "待验证",
+                            approved: "已批准",
+                            rejected: "已驳回",
+                            validated: "已验证",
+                            expired: "已过期",
+                          }[hypothesis.status]
+                        }
+                      />
+                      {hypothesis.status === "proposed" &&
+                        selectedSpace?.role !== "viewer" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="ml-auto h-6 px-2 text-[11px]"
+                            onClick={() =>
+                              void transitionHypothesis(
+                                hypothesis.hypothesis_id,
+                                "validated",
+                              )
+                            }
+                          >
+                            标记已验证
+                          </Button>
+                        )}
+                    </div>
+                    <p className="text-muted-foreground text-[11px] leading-5">
+                      {hypothesis.statement}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <div className="text-muted-foreground px-3 py-6 text-center text-xs">
+                  尚无待治理假设
+                </div>
+              )}
+            </div>
+          </div>
         </section>
 
         {(events.length > 0 || insights.length > 0) && (

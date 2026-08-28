@@ -271,13 +271,52 @@ export interface KnowledgeGraphRelation {
   dimension: string;
   statement: string;
   confidence: number;
-  status: "observed" | "corroborated" | "conflict";
+  status: "observed" | "corroborated" | "conflict" | "rejected";
   valid_from?: string | null;
   valid_to?: string | null;
   evidence_count: number;
   citation_eligible: boolean;
   evidence: KnowledgeGraphEvidence[];
   metadata?: Record<string, unknown>;
+}
+
+export interface BackgroundTask {
+  task_id: string;
+  user_id: string;
+  task_type: string;
+  idempotency_key?: string | null;
+  status:
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "dead_letter";
+  payload: Record<string, unknown>;
+  result: Record<string, unknown>;
+  progress: number;
+  attempts: number;
+  max_attempts: number;
+  error?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface KnowledgeHypothesis {
+  hypothesis_id: string;
+  space_id: string;
+  created_by: string;
+  title: string;
+  statement: string;
+  status: "proposed" | "approved" | "rejected" | "validated" | "expired";
+  confidence: number;
+  relation_id?: string | null;
+  evidence_ids: string[];
+  notes: string;
+  valid_until?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface KnowledgeGraph {

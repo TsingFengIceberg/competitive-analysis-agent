@@ -650,12 +650,26 @@ class KnowledgeRepository:
         document_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        metadata = metadata or {}
+        idempotency_key = metadata.get("idempotency_key")
+        if idempotency_key:
+            existing = self.conn.execute(
+                """SELECT * FROM knowledge_ingestion_jobs
+                   WHERE user_id = ? AND operation = ?
+                     AND json_extract(metadata_json, '$.idempotency_key') = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (user_id, operation, str(idempotency_key)),
+            ).fetchone()
+            if existing is not None:
+                item = dict(existing)
+                item["metadata"] = _loads(item.pop("metadata_json", "{}"), {})
+                return item
         self.conn.execute(
             """INSERT INTO knowledge_ingestion_jobs (
                    job_id, user_id, document_id, operation, status, progress,
                    created_at, metadata_json
                ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)""",
-            (job_id, user_id, document_id, operation, _now(), json.dumps(metadata or {}, ensure_ascii=False)),
+            (job_id, user_id, document_id, operation, _now(), json.dumps(metadata, ensure_ascii=False)),
         )
         self.conn.commit()
         result = self.get_job(job_id, user_id)
@@ -934,6 +948,23 @@ class KnowledgeRepository:
 
     def upsert_relation(self, values: dict[str, Any]) -> dict[str, Any]:
         now = _now()
+        existing = self.conn.execute(
+            "SELECT * FROM knowledge_relations WHERE space_id = ? AND cluster_key = ?",
+            (values["space_id"], values["cluster_key"]),
+        ).fetchone()
+        if existing is not None:
+            existing_data = _json_row(existing)
+            existing_governance = (existing_data.get("metadata") or {}).get("governance") or {}
+            if existing_governance.get("manual_override"):
+                # Automatic rebuilding may refresh evidence timestamps, but it
+                # must never silently overwrite a human correction.
+                values = {
+                    **values,
+                    "statement": existing_data.get("statement", values.get("statement", "")),
+                    "confidence": existing_data.get("confidence", values.get("confidence", 0.5)),
+                    "citation_eligible": bool(existing_data.get("citation_eligible")),
+                    "metadata": existing_data.get("metadata") or values.get("metadata", {}),
+                }
         self.conn.execute(
             """INSERT INTO knowledge_relations (
                    relation_id, space_id, source_entity_id, target_entity_id,
@@ -994,6 +1025,7 @@ class KnowledgeRepository:
                       JOIN knowledge_relation_evidence e ON e.relation_id = r.relation_id
                      WHERE e.document_id = ? AND r.source_entity_id = ?
                        AND r.relation_type = ? AND r.valid_to IS NULL
+                       AND COALESCE(json_extract(r.metadata_json, '$.governance.manual_override'), 0) <> 1
                        AND r.relation_id <> ?
                 )""",
             (
@@ -1071,7 +1103,7 @@ class KnowledgeRepository:
         if not spaces:
             return []
         placeholders = ",".join("?" for _ in spaces)
-        where = [f"r.space_id IN ({placeholders})"]
+        where = [f"r.space_id IN ({placeholders})", "r.status <> 'rejected'"]
         params: list[Any] = [*spaces]
         if entity_id:
             where.append("(r.source_entity_id = ? OR r.target_entity_id = ?)")
@@ -1161,8 +1193,208 @@ class KnowledgeRepository:
             },
         }
 
+    def get_relation(self, relation_id: str, user_id: str) -> dict[str, Any] | None:
+        """Return one relation only when its space is visible to the actor."""
+        spaces = self.accessible_space_ids(user_id)
+        if not spaces:
+            return None
+        placeholders = ",".join("?" for _ in spaces)
+        row = self.conn.execute(
+            f"""SELECT r.*, s.canonical_name AS source_name, s.entity_type AS source_type,
+                       t.canonical_name AS target_name, t.entity_type AS target_type
+                  FROM knowledge_relations r
+                  JOIN knowledge_entities s ON s.entity_id = r.source_entity_id
+                  JOIN knowledge_entities t ON t.entity_id = r.target_entity_id
+                 WHERE r.relation_id = ? AND r.space_id IN ({placeholders})""",
+            [relation_id, *spaces],
+        ).fetchone()
+        if row is None:
+            return None
+        result = _json_row(row)
+        result["citation_eligible"] = bool(result.get("citation_eligible"))
+        return result
+
+    def review_relation(
+        self,
+        relation_id: str,
+        *,
+        user_id: str,
+        action: str,
+        reason: str = "",
+        statement: str | None = None,
+        confidence: float | None = None,
+        citation_eligible: bool | None = None,
+    ) -> dict[str, Any]:
+        relation = self.get_relation(relation_id, user_id)
+        if relation is None:
+            raise KeyError(f"Knowledge relation not found: {relation_id}")
+        space = self.get_space(relation["space_id"], user_id)
+        if not space or space.get("role") not in {"owner", "editor"}:
+            raise PermissionError("Knowledge-space edit permission is required")
+        action = str(action).strip().lower()
+        if action not in {"approve", "reject", "override", "restore", "resolve_conflict"}:
+            raise ValueError("Unsupported relation review action")
+        before = dict(relation)
+        metadata = dict(relation.get("metadata") or {})
+        governance = dict(metadata.get("governance") or {})
+        if action == "reject":
+            status, eligible = "rejected", False
+        elif action in {"approve", "resolve_conflict"}:
+            status = "corroborated" if int(relation.get("evidence_count") or 0) >= 2 else "observed"
+            eligible = True
+        elif action == "restore":
+            status = "corroborated" if int(relation.get("evidence_count") or 0) >= 2 else "observed"
+            eligible = bool(relation.get("citation_eligible"))
+            governance.pop("manual_override", None)
+        else:
+            status = str(relation.get("status") or "observed")
+            eligible = bool(relation.get("citation_eligible"))
+        if citation_eligible is not None:
+            eligible = bool(citation_eligible)
+        if statement is not None:
+            statement = str(statement).strip()
+            if not statement:
+                raise ValueError("statement cannot be empty")
+        governance.update({"manual_override": action != "restore", "last_action": action, "reviewed_by": user_id, "reviewed_at": _now()})
+        metadata["governance"] = governance
+        updates = {
+            "status": status,
+            "statement": statement if statement is not None else relation.get("statement", ""),
+            "confidence": max(0.0, min(1.0, float(confidence if confidence is not None else relation.get("confidence") or 0.5))),
+            "citation_eligible": int(eligible),
+            "metadata_json": json.dumps(metadata, ensure_ascii=False),
+            "last_seen_at": _now(),
+        }
+        self.conn.execute(
+            """UPDATE knowledge_relations SET status = ?, statement = ?, confidence = ?,
+                   citation_eligible = ?, metadata_json = ?, last_seen_at = ?
+               WHERE relation_id = ?""",
+            (*updates.values(), relation_id),
+        )
+        after = self.get_relation(relation_id, user_id) or {}
+        self.conn.execute(
+            """INSERT INTO knowledge_relation_audits (
+                   audit_id, relation_id, space_id, actor_id, action, reason,
+                   before_json, after_json, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"kra-{uuid.uuid4().hex}", relation_id, relation["space_id"], user_id,
+                action, str(reason or "")[:2000], json.dumps(before, ensure_ascii=False, default=str),
+                json.dumps(after, ensure_ascii=False, default=str), _now(),
+            ),
+        )
+        self.conn.commit()
+        return after
+
+    def list_relation_audits(self, user_id: str, *, relation_id: str | None = None, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        clauses = [f"space_id IN ({','.join('?' for _ in spaces)})"]
+        params: list[Any] = [*spaces]
+        if relation_id:
+            clauses.append("relation_id = ?")
+            params.append(relation_id)
+        params.append(max(1, min(int(limit), 500)))
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_relation_audits WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["before"] = _loads(item.pop("before_json"), {})
+            item["after"] = _loads(item.pop("after_json"), {})
+            result.append(item)
+        return result
+
+    def create_hypothesis(self, values: dict[str, Any]) -> dict[str, Any]:
+        now = _now()
+        hypothesis_id = str(values.get("hypothesis_id") or f"khyp-{uuid.uuid4().hex}")
+        self.conn.execute(
+            """INSERT INTO knowledge_hypotheses (
+                   hypothesis_id, space_id, created_by, title, statement, status,
+                   confidence, relation_id, evidence_ids_json, notes, valid_until,
+                   created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                hypothesis_id, values["space_id"], values["created_by"], values["title"], values["statement"],
+                max(0.0, min(1.0, float(values.get("confidence", 0.5)))), values.get("relation_id"),
+                json.dumps(values.get("evidence_ids") or [], ensure_ascii=False), values.get("notes", ""),
+                values.get("valid_until"), now, now,
+            ),
+        )
+        self.conn.commit()
+        return self.get_hypothesis(hypothesis_id, values["created_by"]) or {"hypothesis_id": hypothesis_id}
+
+    def get_hypothesis(self, hypothesis_id: str, user_id: str) -> dict[str, Any] | None:
+        spaces = self.accessible_space_ids(user_id)
+        if not spaces:
+            return None
+        row = self.conn.execute(
+            f"SELECT * FROM knowledge_hypotheses WHERE hypothesis_id = ? AND space_id IN ({','.join('?' for _ in spaces)})",
+            [hypothesis_id, *spaces],
+        ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["evidence_ids"] = _loads(item.pop("evidence_ids_json"), [])
+        return item
+
+    def list_hypotheses(self, user_id: str, *, space_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        self.conn.execute(
+            f"""UPDATE knowledge_hypotheses SET status = 'expired', updated_at = ?
+                WHERE status IN ('proposed', 'approved') AND valid_until IS NOT NULL
+                  AND valid_until <= ? AND space_id IN ({','.join('?' for _ in spaces)})""",
+            [_now(), _now(), *spaces],
+        )
+        self.conn.commit()
+        clauses = [f"space_id IN ({','.join('?' for _ in spaces)})"]
+        params: list[Any] = [*spaces]
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        params.append(max(1, min(int(limit), 500)))
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_hypotheses WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["evidence_ids"] = _loads(item.pop("evidence_ids_json"), [])
+            result.append(item)
+        return result
+
+    def transition_hypothesis(self, hypothesis_id: str, user_id: str, status: str, *, notes: str | None = None) -> dict[str, Any]:
+        item = self.get_hypothesis(hypothesis_id, user_id)
+        if item is None:
+            raise KeyError(f"Knowledge hypothesis not found: {hypothesis_id}")
+        space = self.get_space(item["space_id"], user_id)
+        if not space or space.get("role") not in {"owner", "editor"}:
+            raise PermissionError("Knowledge-space edit permission is required")
+        allowed = {"proposed", "approved", "rejected", "validated", "expired"}
+        if status not in allowed:
+            raise ValueError(f"Unsupported hypothesis status: {status}")
+        self.conn.execute(
+            "UPDATE knowledge_hypotheses SET status = ?, notes = COALESCE(?, notes), updated_at = ? WHERE hypothesis_id = ?",
+            (status, notes, _now(), hypothesis_id),
+        )
+        self.conn.commit()
+        return self.get_hypothesis(hypothesis_id, user_id) or item
+
     def clear_relations(self, space_id: str) -> None:
-        self.conn.execute("DELETE FROM knowledge_relations WHERE space_id = ?", (space_id,))
+        # Preserve human overrides and their audit trail across deterministic
+        # graph rebuilds; only derived relations are regenerated.
+        self.conn.execute(
+            """DELETE FROM knowledge_relations
+                WHERE space_id = ?
+                  AND COALESCE(json_extract(metadata_json, '$.governance.manual_override'), 0) <> 1""",
+            (space_id,),
+        )
         self.conn.commit()
 
     def find_event_candidates(self, *, space_id: str, entity_id: str, dimension: str, limit: int = 40) -> list[dict[str, Any]]:

@@ -247,11 +247,13 @@ class ObservationScheduler:
     _global_run_lock = threading.Lock()
 
     def __init__(self, repository: ScheduleRepository | None = None, runner: Callable[[dict], dict] | None = None,
-                 deep_runner: Callable[[dict, dict], dict] | None = None, clock: Callable[[], datetime] = _now):
+                 deep_runner: Callable[[dict, dict], dict] | None = None, clock: Callable[[], datetime] = _now,
+                 task_submitter: Callable[[dict, bool], dict] | None = None):
         self.repository = repository or ScheduleRepository()
         self.runner = runner
         self.deep_runner = deep_runner
         self.clock = clock
+        self.task_submitter = task_submitter
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -321,6 +323,8 @@ class ObservationScheduler:
         return min(future) if future else min(candidates) + timedelta(days=1)
 
     def _execute(self, schedule: dict, *, manual: bool) -> dict:
+        if self.task_submitter is not None:
+            return self.task_submitter(schedule, manual)
         now = self.clock()
         next_run = _iso(self.next_run(schedule, now))
         if not self._global_run_lock.acquire(blocking=False):

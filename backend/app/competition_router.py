@@ -37,6 +37,8 @@ _observation_runtime_last_tick: str | None = None
 _observation_runtime_last_error: str | None = None
 _knowledge_executor: ThreadPoolExecutor | None = None
 _knowledge_executor_lock = threading.Lock()
+_task_worker = None
+_task_worker_lock = threading.Lock()
 
 # ── Persisted version history ──
 
@@ -198,6 +200,30 @@ class KnowledgeReviewRequest(BaseModel):
     feedback_type: str | None = Field(default=None, pattern=r"^(verified|conflict|error|outdated)$")
     reason: str = Field(default="", max_length=1000)
     correction: str = Field(default="", max_length=2000)
+
+
+class KnowledgeRelationReviewRequest(BaseModel):
+    action: str = Field(..., pattern=r"^(approve|reject|override|restore|resolve_conflict)$")
+    reason: str = Field(default="", max_length=2000)
+    statement: str | None = Field(default=None, max_length=4000)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    citation_eligible: bool | None = None
+
+
+class KnowledgeHypothesisRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    statement: str = Field(..., min_length=1, max_length=4000)
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    relation_id: str | None = Field(default=None, max_length=120)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    notes: str = Field(default="", max_length=4000)
+    valid_until: str | None = None
+    space_id: str | None = None
+
+
+class KnowledgeHypothesisTransitionRequest(BaseModel):
+    status: str = Field(..., pattern=r"^(proposed|approved|rejected|validated|expired)$")
+    notes: str | None = Field(default=None, max_length=4000)
 
 
 class StreamEvent(BaseModel):
@@ -1139,6 +1165,97 @@ def _process_knowledge_job(job_id: str, operation: str) -> None:
         service.process_job(job_id)
 
 
+def _run_background_observation_task(task: dict) -> dict:
+    """Execute one durable observation task in the worker thread."""
+    payload = task.get("payload") or {}
+    schedule_id = str(payload.get("schedule_id") or "")
+    user_id = str(payload.get("user_id") or task.get("user_id") or "default")
+    if not schedule_id:
+        raise ValueError("observation task is missing schedule_id")
+    run = _run_observation_now_sync(schedule_id, user_id)
+    if run is None:
+        raise ValueError("Observation schedule not found or ownership changed")
+    return {"run": run, "schedule_id": schedule_id}
+
+
+def _run_background_knowledge_task(task: dict) -> dict:
+    payload = task.get("payload") or {}
+    job_id = str(payload.get("job_id") or "")
+    operation = str(payload.get("operation") or "ingest")
+    if not job_id:
+        raise ValueError("knowledge task is missing job_id")
+    _process_knowledge_job(job_id, operation)
+    from competition.knowledge_service import get_knowledge_service
+
+    return get_knowledge_service().get_job(job_id, str(task.get("user_id") or "default")) or {"job_id": job_id}
+
+
+def _enqueue_observation_task(schedule: dict, manual: bool = False) -> dict:
+    """Create an idempotent durable task for one schedule execution."""
+    from competition.task_queue import TaskRepository
+
+    schedule_id = str(schedule.get("schedule_id") or "")
+    user_id = str(schedule.get("user_id") or "default")
+    if not schedule_id:
+        raise ValueError("schedule_id is required")
+    # Scheduled executions are keyed by the due slot; manual executions are
+    # intentionally unique so each explicit click can be retried independently.
+    slot = str(schedule.get("next_run_at") or "")
+    key = f"observation:{schedule_id}:manual:{__import__('uuid').uuid4().hex}" if manual else f"observation:{schedule_id}:{slot}"
+    repository = TaskRepository()
+    try:
+        task = repository.enqueue(
+            user_id=user_id,
+            task_type="observation.run",
+            payload={"schedule_id": schedule_id, "user_id": user_id, "manual": manual},
+            idempotency_key=key,
+            max_attempts=3,
+        )
+        if not manual:
+            from datetime import UTC, datetime
+
+            from competition.observation_scheduler import ObservationScheduler
+
+            next_run = ObservationScheduler.next_run(schedule, datetime.now(UTC)).isoformat()
+            repository.conn.execute(
+                "UPDATE observation_schedules SET next_run_at = ?, updated_at = ? WHERE schedule_id = ?",
+                (next_run, datetime.now(UTC).isoformat(), schedule_id),
+            )
+            repository.conn.commit()
+        return task
+    finally:
+        repository.close()
+
+
+def start_task_runtime() -> None:
+    """Start the durable worker and recover leases left by a crashed process."""
+    global _task_worker
+    with _task_worker_lock:
+        if _task_worker is not None:
+            return
+        from competition.task_queue import BackgroundTaskWorker
+
+        _task_worker = BackgroundTaskWorker(
+            handlers={
+                "observation.run": _run_background_observation_task,
+                "knowledge.ingest": _run_background_knowledge_task,
+                "knowledge.import_history": _run_background_knowledge_task,
+                "knowledge.rebuild": _run_background_knowledge_task,
+                "knowledge.reindex": _run_background_knowledge_task,
+            },
+            poll_seconds=float(os.getenv("CI_AGENT_TASK_POLL_SECONDS", "1")),
+        )
+        _task_worker.start()
+
+
+def stop_task_runtime() -> None:
+    global _task_worker
+    with _task_worker_lock:
+        if _task_worker is not None:
+            _task_worker.stop()
+            _task_worker = None
+
+
 def _get_knowledge_executor() -> ThreadPoolExecutor:
     global _knowledge_executor
     with _knowledge_executor_lock:
@@ -1164,11 +1281,22 @@ def start_knowledge_runtime() -> None:
 def _queue_knowledge_job(result: dict) -> dict:
     job = result.get("job") or result
     if job.get("status") == "queued":
-        _get_knowledge_executor().submit(
-            _process_knowledge_job,
-            job["job_id"],
-            job.get("operation", "ingest"),
-        )
+        from competition.task_queue import TaskRepository
+
+        operation = str(job.get("operation", "ingest"))
+        repository = TaskRepository()
+        try:
+            task = repository.enqueue(
+                user_id=str(job.get("user_id") or "default"),
+                task_type=f"knowledge.{operation}",
+                payload={"job_id": job["job_id"], "operation": operation},
+                idempotency_key=f"knowledge-job:{job['job_id']}",
+                max_attempts=3,
+            )
+        finally:
+            repository.close()
+        if isinstance(result, dict):
+            result.setdefault("background_task", task)
     return result
 
 
@@ -1745,6 +1873,116 @@ async def rebuild_knowledge_graph(space_id: str, fastapi_request: Request) -> di
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.post("/knowledge/graph/relations/{relation_id}/review")
+async def review_knowledge_relation(
+    relation_id: str,
+    body: KnowledgeRelationReviewRequest,
+    fastapi_request: Request,
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        relation = await asyncio.to_thread(
+            get_knowledge_service().review_relation,
+            _get_user_id(fastapi_request),
+            relation_id,
+            **body.model_dump(),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "relation": relation}
+
+
+@router.get("/knowledge/graph/audits")
+async def list_knowledge_relation_audits(
+    fastapi_request: Request,
+    relation_id: str | None = None,
+    space_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        audits = await asyncio.to_thread(
+            get_knowledge_service().relation_audits,
+            _get_user_id(fastapi_request),
+            relation_id=relation_id,
+            space_id=space_id,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"audits": audits}
+
+
+@router.post("/knowledge/graph/hypotheses", status_code=201)
+async def create_knowledge_hypothesis(body: KnowledgeHypothesisRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        hypothesis = await asyncio.to_thread(
+            get_knowledge_service().create_hypothesis,
+            _get_user_id(fastapi_request),
+            **body.model_dump(),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "hypothesis": hypothesis}
+
+
+@router.get("/knowledge/graph/hypotheses")
+async def list_knowledge_hypotheses(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        hypotheses = await asyncio.to_thread(
+            get_knowledge_service().list_hypotheses,
+            _get_user_id(fastapi_request),
+            space_id=space_id,
+            status=status,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"hypotheses": hypotheses}
+
+
+@router.post("/knowledge/graph/hypotheses/{hypothesis_id}/transition")
+async def transition_knowledge_hypothesis(
+    hypothesis_id: str,
+    body: KnowledgeHypothesisTransitionRequest,
+    fastapi_request: Request,
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        hypothesis = await asyncio.to_thread(
+            get_knowledge_service().transition_hypothesis,
+            _get_user_id(fastapi_request),
+            hypothesis_id,
+            body.status,
+            notes=body.notes,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "hypothesis": hypothesis}
 
 
 @router.get("/knowledge/chunks/{chunk_id}")
@@ -3257,18 +3495,38 @@ def _queue_observation_knowledge(schedule: dict, persistence: dict) -> dict:
         "approved": approved,
         "quarantined": quarantined,
         "jobs": [
-            {key: job.get(key) for key in ("job_id", "status", "error", "item_key") if job.get(key) is not None}
+            {
+                **{key: job.get(key) for key in ("job_id", "status", "error", "item_key") if job.get(key) is not None},
+                **({"task_id": (job.get("background_task") or {}).get("task_id")} if (job.get("background_task") or {}).get("task_id") else {}),
+            }
             for job in jobs
         ],
     }
 
 
-def _run_scheduled_deep_analysis(schedule: dict, _collection_result: dict) -> dict:
+def _run_scheduled_deep_analysis(schedule: dict, collection_result: dict) -> dict:
     """Start the normal graph only after the observation found material changes."""
     import uuid
     from datetime import UTC, datetime
 
     from competition.db import upsert_analysis
+
+    # Keep the observation -> knowledge -> analysis ordering deterministic.
+    # The durable task remains the outer retry boundary; processing these small
+    # governed imports here makes the subsequent Collector see the new graph
+    # relations instead of racing the ingestion worker.
+    for queued in ((collection_result.get("knowledge_ingestion") or {}).get("jobs") or []):
+        job_id = str(queued.get("job_id") or "")
+        if not job_id:
+            continue
+        try:
+            from competition.knowledge_service import get_knowledge_service
+
+            job = get_knowledge_service().get_job(job_id, str(schedule.get("user_id") or "default"))
+            if job and job.get("status") == "queued":
+                _process_knowledge_job(job_id, str(job.get("operation") or "import_history"))
+        except Exception:
+            logger.warning("Observation knowledge sync degraded for job %s", job_id, exc_info=True)
 
     thread_id = f"comp-watch-{uuid.uuid4().hex[:12]}"
     products = schedule.get("products") or []
@@ -3314,6 +3572,7 @@ def start_observation_runtime(poll_seconds: int = 30) -> None:
                     repository=repository,
                     runner=_run_scheduled_collection,
                     deep_runner=_run_scheduled_deep_analysis,
+                    task_submitter=_enqueue_observation_task,
                 )
                 scheduler.tick()
                 _observation_runtime_last_tick = datetime.now(UTC).isoformat()
@@ -3345,7 +3604,67 @@ async def observation_runtime_status():
         "running": bool(_observation_runtime_thread and _observation_runtime_thread.is_alive()),
         "last_tick_at": _observation_runtime_last_tick,
         "last_error": _observation_runtime_last_error,
+        "task_worker_running": bool(_task_worker and _task_worker._thread and _task_worker._thread.is_alive()),
     }
+
+
+@router.get("/tasks")
+async def list_background_tasks(
+    fastapi_request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    status: str | None = None,
+) -> dict:
+    """List durable background work for the current user."""
+    from competition.task_queue import TaskRepository
+
+    repository = TaskRepository()
+    try:
+        statuses = [status] if status else None
+        return {"tasks": repository.list(_get_user_id(fastapi_request), limit=limit, statuses=statuses)}
+    finally:
+        repository.close()
+
+
+@router.get("/tasks/{task_id}")
+async def get_background_task(task_id: str, fastapi_request: Request) -> dict:
+    from competition.task_queue import TaskRepository
+
+    repository = TaskRepository()
+    try:
+        task = repository.get(task_id, _get_user_id(fastapi_request))
+        if task is None:
+            raise HTTPException(status_code=404, detail="Background task not found")
+        return {"task": task}
+    finally:
+        repository.close()
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_background_task(task_id: str, fastapi_request: Request) -> dict:
+    from competition.task_queue import TaskRepository
+
+    repository = TaskRepository()
+    try:
+        task = repository.cancel(task_id, _get_user_id(fastapi_request))
+        if task is None:
+            raise HTTPException(status_code=404, detail="Background task not found")
+        return {"ok": True, "task": task}
+    finally:
+        repository.close()
+
+
+@router.post("/tasks/{task_id}/retry", status_code=202)
+async def retry_background_task(task_id: str, fastapi_request: Request) -> dict:
+    from competition.task_queue import TaskRepository
+
+    repository = TaskRepository()
+    try:
+        task = repository.retry(task_id, _get_user_id(fastapi_request))
+        if task is None:
+            raise HTTPException(status_code=404, detail="Background task not found")
+        return {"ok": True, "task": task}
+    finally:
+        repository.close()
 
 
 @router.post("/observation/schedules")
@@ -3469,14 +3788,18 @@ def _run_observation_now_sync(schedule_id: str, user_id: str) -> dict | None:
 
 @router.post("/observation/schedules/{schedule_id}/run-now")
 async def run_observation_now(schedule_id: str, fastapi_request: Request):
-    run = await asyncio.to_thread(
-        _run_observation_now_sync,
-        schedule_id,
-        _get_user_id(fastapi_request),
-    )
-    if run is None:
-        raise HTTPException(status_code=404, detail="Observation schedule not found")
-    return {"ok": True, "run": run}
+    user_id = _get_user_id(fastapi_request)
+    from competition.observation_scheduler import ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        schedule = repository.get(schedule_id)
+        if not schedule or schedule.get("user_id") != user_id:
+            raise HTTPException(status_code=404, detail="Observation schedule not found")
+    finally:
+        repository.close()
+    task = await asyncio.to_thread(_enqueue_observation_task, schedule, True)
+    return {"ok": True, "task": task, "run": {"status": "queued", "task_id": task["task_id"], "schedule_id": schedule_id}}
 
 
 def _run_observation_tick_sync(user_id: str) -> list[dict]:
@@ -3489,6 +3812,7 @@ def _run_observation_tick_sync(user_id: str) -> list[dict]:
             repository=repository,
             runner=_run_scheduled_collection,
             deep_runner=_run_scheduled_deep_analysis,
+            task_submitter=_enqueue_observation_task,
         )
         return scheduler.tick(user_id=user_id)
     finally:

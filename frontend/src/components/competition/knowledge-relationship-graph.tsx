@@ -25,6 +25,10 @@ import { StatusBadge } from "@/components/ui/status-badge";
 interface Props {
   graph: KnowledgeGraph;
   onOpenChunk: (chunkId: string) => void;
+  onReviewRelation?: (
+    relationId: string,
+    action: "approve" | "reject" | "resolve_conflict",
+  ) => void;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -143,6 +147,7 @@ function relationEdges(relations: KnowledgeGraphRelation[]): Edge[] {
 export default function KnowledgeRelationshipGraph({
   graph,
   onOpenChunk,
+  onReviewRelation,
 }: Props) {
   const [query, setQuery] = useState("");
   const [relationType, setRelationType] = useState("all");
@@ -284,6 +289,47 @@ export default function KnowledgeRelationshipGraph({
               />
               {!selected.citation_eligible && (
                 <StatusBadge tone="warning" label="仅作分析记忆" />
+              )}
+              {onReviewRelation && (
+                <div className="ml-auto flex items-center gap-1">
+                  {selected.status === "conflict" && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() =>
+                        onReviewRelation(
+                          selected.relation_id,
+                          "resolve_conflict",
+                        )
+                      }
+                    >
+                      解决冲突
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() =>
+                      onReviewRelation(selected.relation_id, "approve")
+                    }
+                  >
+                    <ShieldCheck className="size-3" />
+                    采纳
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[11px] text-red-600"
+                    onClick={() =>
+                      onReviewRelation(selected.relation_id, "reject")
+                    }
+                  >
+                    <span aria-hidden="true">×</span>
+                    驳回
+                  </Button>
+                </div>
               )}
             </div>
             <p className="text-muted-foreground mt-2 text-xs leading-5">

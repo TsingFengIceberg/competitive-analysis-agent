@@ -21,7 +21,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { csrfHeaders } from "@/components/competition/api-client";
+import {
+  csrfHeaders,
+  type BackgroundTask,
+} from "@/components/competition/api-client";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -190,6 +193,7 @@ interface RuntimeStatus {
   running: boolean;
   last_tick_at: string | null;
   last_error: string | null;
+  task_worker_running?: boolean;
 }
 
 const DIMENSIONS = [
@@ -408,6 +412,7 @@ export default function MonitoringPage() {
   });
   const [schedules, setSchedules] = useState<ObservationSchedule[]>([]);
   const [runs, setRuns] = useState<ObservationRun[]>([]);
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
   const [reportRuns, setReportRuns] = useState<ObservationReportRun[]>([]);
   const [reportTotal, setReportTotal] = useState(0);
   const [reportLoadingMore, setReportLoadingMore] = useState(false);
@@ -448,6 +453,7 @@ export default function MonitoringPage() {
         changesResponse,
         rulesResponse,
         eventsResponse,
+        tasksResponse,
       ] = await Promise.all([
         fetch("/api/competition/observation/runtime", {
           credentials: "include",
@@ -471,6 +477,7 @@ export default function MonitoringPage() {
         fetch("/api/competition/alerts/events?limit=100", {
           credentials: "include",
         }),
+        fetch("/api/competition/tasks?limit=30", { credentials: "include" }),
       ]);
       if (
         ![
@@ -481,6 +488,7 @@ export default function MonitoringPage() {
           changesResponse,
           rulesResponse,
           eventsResponse,
+          tasksResponse,
         ].every((response) => response.ok)
       ) {
         throw new Error("观察数据加载失败");
@@ -493,6 +501,7 @@ export default function MonitoringPage() {
         changesPayload,
         rulesPayload,
         eventsPayload,
+        tasksPayload,
       ] = await Promise.all([
         runtimeResponse.json(),
         schedulesResponse.json(),
@@ -501,6 +510,7 @@ export default function MonitoringPage() {
         changesResponse.json(),
         rulesResponse.json(),
         eventsResponse.json(),
+        tasksResponse.json(),
       ]);
       setRuntime(runtimePayload);
       setSchedules(schedulesPayload.schedules || []);
@@ -523,6 +533,7 @@ export default function MonitoringPage() {
       setChanges(changesPayload.changes || []);
       setRules(rulesPayload.rules || []);
       setEvents(eventsPayload.events || []);
+      setBackgroundTasks(tasksPayload.tasks || []);
       setError(null);
     } catch (fetchError) {
       setError(
@@ -748,7 +759,7 @@ export default function MonitoringPage() {
           `/api/competition/observation/schedules/${schedule.schedule_id}/run-now`,
           "POST",
         );
-        toast.success("观察任务已执行");
+        toast.success("观察任务已进入后台队列");
       } else if (action === "delete") {
         await request(
           `/api/competition/observation/schedules/${schedule.schedule_id}`,
@@ -1021,6 +1032,68 @@ export default function MonitoringPage() {
             <span aria-hidden="true">→</span>
             <span>发现实质变化才启动深度分析</span>
           </div>
+        )}
+
+        {tab === "schedules" && backgroundTasks.length > 0 && (
+          <section className="border-y py-3" aria-label="后台任务状态">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">后台任务</h2>
+                <p className="text-muted-foreground mt-1 text-xs">
+                  观察和知识同步会在后台可靠执行，页面刷新不会丢失进度。
+                </p>
+              </div>
+              <StatusBadge
+                tone={runtime.task_worker_running ? "success" : "warning"}
+                label={
+                  runtime.task_worker_running ? "Worker 在线" : "Worker 未启动"
+                }
+              />
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              {backgroundTasks.slice(0, 6).map((task) => {
+                const label = task.task_type.startsWith("observation")
+                  ? "观察执行"
+                  : "知识同步";
+                const tone: StatusTone =
+                  task.status === "succeeded"
+                    ? "success"
+                    : task.status === "failed" || task.status === "dead_letter"
+                      ? "danger"
+                      : task.status === "running"
+                        ? "info"
+                        : "neutral";
+                const statusLabel: Record<string, string> = {
+                  queued: "排队中",
+                  running: "执行中",
+                  succeeded: "已完成",
+                  failed: "失败重试",
+                  dead_letter: "待人工处理",
+                  cancelled: "已取消",
+                };
+                return (
+                  <div
+                    key={task.task_id}
+                    className="flex min-w-0 items-center justify-between gap-3 border px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium">
+                        {label}
+                      </div>
+                      <div className="text-muted-foreground mt-0.5 text-[10px]">
+                        {formatTime(task.created_at)} · 尝试 {task.attempts}/
+                        {task.max_attempts}
+                      </div>
+                    </div>
+                    <StatusBadge
+                      tone={tone}
+                      label={statusLabel[task.status] || task.status}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {tab === "schedules" && (

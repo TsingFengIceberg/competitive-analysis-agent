@@ -249,8 +249,10 @@ def create_app() -> FastAPI:
     from app.competition_router import (
         start_knowledge_runtime,
         start_observation_runtime,
+        start_task_runtime,
         stop_knowledge_runtime,
         stop_observation_runtime,
+        stop_task_runtime,
     )
 
     app.include_router(competition_router)
@@ -258,6 +260,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def start_background_services():
         start_knowledge_runtime()
+        if os.getenv("CI_AGENT_TASK_WORKER_ENABLED", "true").lower() == "true":
+            start_task_runtime()
         if os.getenv("CI_AGENT_OBSERVATION_SCHEDULER_ENABLED", "true").lower() == "true":
             try:
                 poll_seconds = int(os.getenv("CI_AGENT_OBSERVATION_POLL_SECONDS", "30"))
@@ -268,6 +272,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def stop_background_services():
+        stop_task_runtime()
         stop_observation_runtime()
         stop_knowledge_runtime()
         from competition.knowledge_service import close_knowledge_service
