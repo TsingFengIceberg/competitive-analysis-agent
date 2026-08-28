@@ -317,6 +317,15 @@ LONG-HORIZON RULES:
 - Use only listed source_data_point_ids in report claims; context_only items cannot support a rating or citation.
 - Keep hypotheses labeled as hypotheses and do not convert them into factual conclusions.
 
+HISTORICAL ANALYSIS MEMORY (planning context only):
+{json.dumps(state.get("analysis_memory") or [], ensure_ascii=False, default=str)[:16000]}
+
+HISTORICAL MEMORY RULES:
+- Use memory only to identify comparisons, changes, and questions worth checking against current evidence.
+- Never cite a memory item, report thread, or memory ID as evidence.
+- Every factual output must still cite source_data_point_ids from the authoritative context pack.
+- When current evidence differs from memory, current source evidence wins and the difference may be described as a possible change.
+
 Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with citation
 """
 

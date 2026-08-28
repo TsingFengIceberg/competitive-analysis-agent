@@ -195,6 +195,9 @@ class KnowledgeSpaceMemberRequest(BaseModel):
 
 class KnowledgeReviewRequest(BaseModel):
     decision: str = Field(..., pattern=r"^(approved|rejected)$")
+    feedback_type: str | None = Field(default=None, pattern=r"^(verified|conflict|error|outdated)$")
+    reason: str = Field(default="", max_length=1000)
+    correction: str = Field(default="", max_length=2000)
 
 
 class StreamEvent(BaseModel):
@@ -1602,12 +1605,32 @@ async def review_knowledge_document(document_id: str, body: KnowledgeReviewReque
             _get_user_id(fastapi_request),
             document_id,
             body.decision,
+            feedback_type=body.feedback_type,
+            reason=body.reason,
+            correction=body.correction,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"document": document}
+
+
+@router.get("/knowledge/reviews")
+async def list_knowledge_reviews(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    reviews = await asyncio.to_thread(
+        get_knowledge_service().list_review_feedback,
+        _get_user_id(fastapi_request),
+        space_id=space_id,
+        limit=limit,
+    )
+    return {"reviews": reviews}
 
 
 @router.get("/knowledge/deletions")

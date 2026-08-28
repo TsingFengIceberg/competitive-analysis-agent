@@ -146,6 +146,18 @@ export interface KnowledgeDocument {
       trigger?: string;
     };
     lineage?: Record<string, string | number | null>;
+    latest_human_review?: {
+      decision: "approved" | "rejected";
+      feedback_type: "verified" | "conflict" | "error" | "outdated";
+      reason?: string;
+      correction?: string;
+      source_domain?: string;
+      credibility_before?: number | null;
+      credibility_after?: number | null;
+      reviewed_by?: string;
+      reviewed_at?: string;
+    };
+    human_review_count?: number;
   };
 }
 

@@ -20,7 +20,12 @@
     "numeric_consistency_accuracy": 0.8,
     "groundedness": 0.4,
     "query_route_accuracy": 0.9,
-    "decomposition_coverage": 0.8
+    "decomposition_coverage": 0.8,
+    "governance_accuracy": 1.0,
+    "quarantine_recall": 1.0,
+    "memory_recall_at_k": 1.0,
+    "memory_isolation_rate": 1.0,
+    "current_thread_exclusion_rate": 1.0
   },
   "documents": [
     {
@@ -213,6 +218,121 @@
       "relevant": [],
       "expected_route": "direct",
       "required_step_purposes": ["direct_lookup"]
+    }
+  ],
+  "governance_cases": [
+    {
+      "id": "official-high-confidence-auto-admit",
+      "kind": "intelligence",
+      "source_credibility": 0.8,
+      "expected_status": "approved",
+      "payload": {
+        "product": "Cursor",
+        "dimension": "pricing",
+        "label": "Official team price",
+        "value": "$40 per user per month",
+        "source_url": "https://cursor.com/pricing",
+        "confidence": 0.92,
+        "credibility_tier": "official"
+      }
+    },
+    {
+      "id": "uncertain-missing-source-quarantine",
+      "kind": "intelligence",
+      "source_credibility": 0.2,
+      "expected_status": "pending",
+      "payload": {
+        "product": "Cursor",
+        "dimension": "pricing",
+        "label": "Rumored price",
+        "value": "$99",
+        "source_url": "",
+        "confidence": 0.3,
+        "credibility_tier": "secondary"
+      }
+    },
+    {
+      "id": "grounded-report-auto-admit",
+      "kind": "report",
+      "expected_status": "approved",
+      "payload": {
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    },
+    {
+      "id": "warning-report-quarantine",
+      "kind": "report",
+      "expected_status": "pending",
+      "payload": {
+        "quality_gate": {"status": "warning", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.8},
+        "claim_verification": {"groundedness": 0.4, "citation_precision": 0.9}
+      }
+    }
+  ],
+  "memory_documents": [
+    {
+      "id": "memory-enterprise-adoption",
+      "thread_id": "comp-memory-enterprise",
+      "version": 1,
+      "generation_id": "eval-memory-enterprise-v1",
+      "analysis_brief": {
+        "objective": "Compare enterprise adoption considerations for Cursor and OpenAI Codex",
+        "target_products": ["Cursor", "OpenAI Codex"]
+      },
+      "report_data": {
+        "title": "Prior enterprise adoption analysis",
+        "generated_at": "2026-08-20T00:00:00+00:00",
+        "products": ["Cursor", "OpenAI Codex"],
+        "sections": [
+          {
+            "id": "enterprise-memory",
+            "title": "Decision themes",
+            "content": "The previous analysis identified enterprise privacy controls and isolated cloud task execution as decision themes that should be rechecked against current first-party evidence."
+          }
+        ],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    },
+    {
+      "id": "memory-current-thread",
+      "thread_id": "comp-memory-current",
+      "version": 1,
+      "generation_id": "eval-memory-current-v1",
+      "analysis_brief": {
+        "objective": "Current in-progress report that must not retrieve itself",
+        "target_products": ["Cursor", "OpenAI Codex"]
+      },
+      "report_data": {
+        "title": "Current report self-reference trap",
+        "generated_at": "2026-08-27T00:00:00+00:00",
+        "products": ["Cursor", "OpenAI Codex"],
+        "sections": [
+          {
+            "id": "self-reference",
+            "title": "Self reference",
+            "content": "This current report repeats enterprise privacy controls and isolated cloud task execution but must be excluded from its own memory context."
+          }
+        ],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    }
+  ],
+  "memory_cases": [
+    {
+      "id": "historical-report-planning-memory",
+      "query": "Which prior analysis identified enterprise privacy controls and isolated cloud task execution as decision themes?",
+      "products": ["Cursor", "OpenAI Codex"],
+      "dimensions": ["technology"],
+      "current_thread_id": "comp-memory-current",
+      "relevant": ["memory-enterprise-adoption"],
+      "forbidden": ["comp-memory-current"]
     }
   ],
   "verification_cases": [

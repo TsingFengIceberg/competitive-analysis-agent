@@ -396,6 +396,24 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             deleted_at TEXT NOT NULL,
             snapshot_json TEXT NOT NULL DEFAULT '{}'
         );
+
+        CREATE TABLE IF NOT EXISTS knowledge_review_feedback (
+            review_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            space_id TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            feedback_type TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            correction TEXT NOT NULL DEFAULT '',
+            source_domain TEXT NOT NULL DEFAULT '',
+            credibility_before REAL,
+            credibility_after REAL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES knowledge_documents(document_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_review_document ON knowledge_review_feedback(document_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_review_space ON knowledge_review_feedback(space_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_knowledge_deletion_space ON knowledge_deletion_audit(space_id, deleted_at DESC);
 
         CREATE TABLE IF NOT EXISTS knowledge_entities (

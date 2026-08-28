@@ -26,6 +26,11 @@ class EvaluationThresholds:
     groundedness: float = 0.4
     query_route_accuracy: float = 0.9
     decomposition_coverage: float = 0.8
+    governance_accuracy: float = 0.9
+    quarantine_recall: float = 1.0
+    memory_recall_at_k: float = 0.8
+    memory_isolation_rate: float = 1.0
+    current_thread_exclusion_rate: float = 1.0
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -146,6 +151,109 @@ def compute_planning_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def evaluate_governance_cases(definitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Run deterministic admission examples through production governance policy."""
+    from competition.knowledge_governance import assess_intelligence_item, assess_report
+
+    cases: list[dict[str, Any]] = []
+    for item in definitions:
+        kind = str(item.get("kind") or "intelligence")
+        if kind == "report":
+            result = assess_report(dict(item.get("payload") or {}))
+        else:
+            result = assess_intelligence_item(
+                dict(item.get("payload") or {}),
+                source_credibility=float(item.get("source_credibility", 0.5)),
+            )
+        cases.append({
+            "id": item.get("id"),
+            "kind": kind,
+            "expected_status": item.get("expected_status"),
+            "actual_status": result.get("approval_status"),
+            "expected_quarantined": item.get("expected_status") == "pending",
+            "actual_quarantined": bool(result.get("quarantined")),
+            "result": result,
+        })
+    return cases
+
+
+def compute_governance_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    if not cases:
+        return {"case_count": 0, "governance_accuracy": 1.0, "quarantine_recall": 1.0}
+    correct = sum(case.get("actual_status") == case.get("expected_status") for case in cases)
+    expected_quarantine = [case for case in cases if case.get("expected_quarantined")]
+    quarantine_hits = sum(case.get("actual_quarantined") for case in expected_quarantine)
+    return {
+        "case_count": len(cases),
+        "governance_accuracy": round(correct / len(cases), 6),
+        "quarantine_recall": round(quarantine_hits / len(expected_quarantine), 6) if expected_quarantine else 1.0,
+    }
+
+
+def evaluate_memory_cases(
+    service: Any,
+    definitions: list[dict[str, Any]],
+    *,
+    user_id: str,
+    document_labels: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Measure report-memory recall while proving reports never enter citable evidence."""
+    labels = document_labels or {}
+    cases: list[dict[str, Any]] = []
+    for item in definitions:
+        state = {
+            "user_id": user_id,
+            "user_request": item["query"],
+            "target_products": list(item.get("products") or []),
+            "thread_id": item.get("current_thread_id") or "",
+            "analysis_brief": {
+                "objective": item["query"],
+                "target_products": list(item.get("products") or []),
+                "effective_dimensions": [{"id": value} for value in item.get("dimensions") or ["features"]],
+            },
+        }
+        memory = service.retrieve_analysis_memory(state, limit=int(item.get("k") or 5))
+        evidence = service.retrieve_for_analysis(state, limit=12)
+        ranked = [labels.get(str(entry.get("knowledge_document_id") or ""), str(entry.get("knowledge_document_id") or "")) for entry in memory]
+        forbidden = set(item.get("forbidden") or [])
+        returned_threads = {str(entry.get("report_thread_id") or "") for entry in memory}
+        cases.append({
+            "id": item.get("id"),
+            "relevant": list(item.get("relevant") or []),
+            "ranked": ranked,
+            "memory_count": len(memory),
+            "citation_leak_count": sum(bool(entry.get("citation_eligible")) for entry in memory),
+            "evidence_report_leak_count": sum(entry.get("source_authority") == "report" for entry in evidence),
+            "forbidden_returned": sorted(forbidden.intersection(returned_threads)),
+        })
+    return cases
+
+
+def compute_memory_metrics(cases: list[dict[str, Any]], *, k: int = 5) -> dict[str, Any]:
+    if not cases:
+        return {
+            "case_count": 0,
+            f"memory_recall_at_{k}": 1.0,
+            "memory_isolation_rate": 1.0,
+            "current_thread_exclusion_rate": 1.0,
+        }
+    recalls: list[float] = []
+    isolated = 0
+    excluded = 0
+    for case in cases:
+        relevant = set(case.get("relevant") or [])
+        ranked = set((case.get("ranked") or [])[:k])
+        recalls.append(len(relevant.intersection(ranked)) / len(relevant) if relevant else 1.0)
+        isolated += int(not case.get("citation_leak_count") and not case.get("evidence_report_leak_count"))
+        excluded += int(not case.get("forbidden_returned"))
+    return {
+        "case_count": len(cases),
+        f"memory_recall_at_{k}": round(statistics.fmean(recalls), 6),
+        "memory_isolation_rate": round(isolated / len(cases), 6),
+        "current_thread_exclusion_rate": round(excluded / len(cases), 6),
+    }
+
+
 def check_thresholds(metrics: dict[str, Any], thresholds: EvaluationThresholds, *, k: int = 5) -> list[str]:
     failures: list[str] = []
     checks = {
@@ -185,6 +293,25 @@ def check_thresholds(metrics: dict[str, Any], thresholds: EvaluationThresholds, 
             actual = float(planning.get(name) or 0.0)
             if actual < minimum:
                 failures.append(f"planning.{name}={actual:.4f} is below {minimum:.4f}")
+    governance = metrics.get("governance") or {}
+    if governance:
+        for name, minimum in {
+            "governance_accuracy": thresholds.governance_accuracy,
+            "quarantine_recall": thresholds.quarantine_recall,
+        }.items():
+            actual = float(governance.get(name) or 0.0)
+            if actual < minimum:
+                failures.append(f"governance.{name}={actual:.4f} is below {minimum:.4f}")
+    memory = metrics.get("memory") or {}
+    if memory:
+        for name, minimum in {
+            f"memory_recall_at_{k}": thresholds.memory_recall_at_k,
+            "memory_isolation_rate": thresholds.memory_isolation_rate,
+            "current_thread_exclusion_rate": thresholds.current_thread_exclusion_rate,
+        }.items():
+            actual = float(memory.get(name) or 0.0)
+            if actual < minimum:
+                failures.append(f"memory.{name}={actual:.4f} is below {minimum:.4f}")
     return failures
 
 

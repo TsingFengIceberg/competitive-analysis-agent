@@ -615,7 +615,7 @@ def test_collector_merges_local_knowledge_without_repersisting_it(monkeypatch: p
     monkeypatch.setattr(
         collector,
         "_retrieve_local_knowledge",
-        lambda state: ([local], {"status": "available", "hit_count": 1}, []),
+        lambda state: ([local], {"status": "available", "hit_count": 1}, [], []),
     )
     monkeypatch.setattr(collector, "_run_searches", lambda state: "")
     monkeypatch.setattr(collector, "_execute_collector", lambda task, state: ("[]", 0))
@@ -636,9 +636,59 @@ def test_collector_merges_local_knowledge_without_repersisting_it(monkeypatch: p
         }
     )
     assert result["collected_data"][0]["knowledge_chunk_id"] == "kch-1"
+    assert result["analysis_memory"] == []
     assert result["long_term_insights"] == []
     assert result["collection_summary"]["rag_retrieval"]["status"] == "available"
     assert persisted == [[]]
+
+
+def test_collector_keeps_historical_report_memory_separate_from_evidence(monkeypatch: pytest.MonkeyPatch):
+    from competition.nodes import collector
+
+    memory = {
+        "id": "memory-report-1",
+        "context_role": "historical_analysis_memory",
+        "citation_eligible": False,
+        "title": "Prior comparison",
+        "summary": "Recheck enterprise deployment assumptions.",
+        "usage_policy": "planning_only_not_factual_evidence",
+    }
+    monkeypatch.setattr(
+        collector,
+        "_retrieve_local_knowledge",
+        lambda state: (
+            [],
+            {
+                "status": "empty",
+                "hit_count": 0,
+                "analysis_memory_count": 1,
+                "report_citation_policy": "planning_only",
+            },
+            [],
+            [memory],
+        ),
+    )
+    monkeypatch.setattr(collector, "_run_searches", lambda state: "")
+    monkeypatch.setattr(collector, "_execute_collector", lambda task, state: ("[]", 0))
+    monkeypatch.setattr(collector, "_get_search_info", lambda: {})
+    monkeypatch.setattr(
+        collector,
+        "_persist_intelligence_items",
+        lambda state, points: {"inserted": 0},
+    )
+
+    result = collector.collector_node(
+        {
+            "user_id": "user-a",
+            "user_request": "Compare Cursor and Codex",
+            "target_products": ["Cursor", "OpenAI Codex"],
+            "analysis_brief": {"effective_dimensions": [{"id": "features"}]},
+        }
+    )
+
+    assert result["collected_data"] == []
+    assert result["analysis_memory"] == [memory]
+    assert result["collection_summary"]["rag_retrieval"]["analysis_memory_count"] == 1
 
 
 def test_broken_or_unsupported_documents_fail_cleanly(tmp_path: Path):

@@ -29,7 +29,7 @@ def collector_node(state: dict) -> dict:
 
     # Reuse curated local evidence first. Retrieval is optional at runtime: a
     # missing model/index degrades to fresh collection instead of failing the graph.
-    local_points, rag_summary, long_term_insights = _retrieve_local_knowledge(state)
+    local_points, rag_summary, long_term_insights, analysis_memory = _retrieve_local_knowledge(state)
     if local_points:
         task += (
             "\n\nLOCAL KNOWLEDGE ALREADY AVAILABLE — use it to avoid duplicate searching "
@@ -42,6 +42,13 @@ def collector_node(state: dict) -> dict:
             "\n\nLONG-HORIZON KNOWLEDGE CONTEXT — use this only to prioritize collection. "
             "Facts, inferences, and hypotheses remain distinct; none replaces a source citation:\n"
             + json.dumps(long_term_insights, ensure_ascii=False, default=str)[:16000]
+        )
+    if analysis_memory:
+        task += (
+            "\n\nHISTORICAL ANALYSIS MEMORY — use only to identify questions, possible changes, "
+            "and missing searches. It is not factual evidence, must not be cited, and must not be "
+            "copied into collected data:\n"
+            + json.dumps(analysis_memory, ensure_ascii=False, default=str)[:16000]
         )
 
     # Phase 1: Real web search
@@ -124,10 +131,11 @@ def collector_node(state: dict) -> dict:
         "collector_self_assessment": self_assessment,
         "questionnaire": questionnaire,
         "long_term_insights": long_term_insights,
+        "analysis_memory": analysis_memory,
     }
 
 
-def _retrieve_local_knowledge(state: dict) -> tuple[list[dict], dict, list[dict]]:
+def _retrieve_local_knowledge(state: dict) -> tuple[list[dict], dict, list[dict], list[dict]]:
     """Return analysis-ready local evidence with explicit degradation status."""
     try:
         from competition.knowledge_service import get_knowledge_service
@@ -135,12 +143,15 @@ def _retrieve_local_knowledge(state: dict) -> tuple[list[dict], dict, list[dict]
         service = get_knowledge_service()
         points = service.retrieve_for_analysis(state)
         insights = service.insights_for_analysis(state, points)
+        memory = service.retrieve_analysis_memory(state)
         return points, {
             "status": "available" if points else "empty",
             "hit_count": len(points),
             "long_term_insight_count": len(insights),
+            "analysis_memory_count": len(memory),
+            "report_citation_policy": "planning_only",
             "source": "local_hybrid_index",
-        }, insights
+        }, insights, memory
     except Exception as exc:
         logger.warning("Local knowledge retrieval degraded: %s", exc)
         return [], {
@@ -148,7 +159,7 @@ def _retrieve_local_knowledge(state: dict) -> tuple[list[dict], dict, list[dict]
             "hit_count": 0,
             "source": "local_hybrid_index",
             "error": str(exc)[:240],
-        }, []
+        }, [], []
 
 
 def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -> dict:

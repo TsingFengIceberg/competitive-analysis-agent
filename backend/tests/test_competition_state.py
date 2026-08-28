@@ -1,7 +1,7 @@
 """Tests for competition/state.py — CompetitionState TypedDict.
 
 Covers §1.1 of the coding plan:
-- All 33 custom fields declared with correct types
+- All custom fields declared with correct types
 - Annotated[list, op_add] reducer fields
 - NotRequired optional fields
 - AgentState inheritance (messages field)
@@ -34,6 +34,7 @@ class TestCompetitionStateFields:
         assert "collected_data" in hints
         assert "collection_summary" in hints
         assert "knowledge_gaps" in hints
+        assert "analysis_memory" in hints
 
     def test_analyst_output_fields(self):
         hints = get_type_hints(CompetitionState, include_extras=True)
@@ -64,7 +65,7 @@ class TestCompetitionStateFields:
         """Runtime tracking and analysis context extend the business state."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 34, f"Expected 34 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 35, f"Expected 35 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:

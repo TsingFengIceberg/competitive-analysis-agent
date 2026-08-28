@@ -106,6 +106,20 @@ interface KnowledgeDetail extends KnowledgeDocument {
     page_no?: number | null;
     token_count: number;
   }>;
+  reviews: KnowledgeReview[];
+}
+
+interface KnowledgeReview {
+  review_id: string;
+  decision: "approved" | "rejected";
+  feedback_type: "verified" | "conflict" | "error" | "outdated";
+  reason: string;
+  correction: string;
+  source_domain: string;
+  credibility_before?: number | null;
+  credibility_after?: number | null;
+  reviewer_id: string;
+  created_at: string;
 }
 
 interface KnowledgeChunkDetail {
@@ -255,6 +269,7 @@ export default function KnowledgePage() {
   const [searching, setSearching] = useState(false);
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const [temporalMode, setTemporalMode] = useState<TemporalMode>("current");
+  const [includeReports, setIncludeReports] = useState(false);
   const [asOf, setAsOf] = useState("");
   const [timeline, setTimeline] = useState<KnowledgeTimeline | null>(null);
   const [detail, setDetail] = useState<KnowledgeDetail | null>(null);
@@ -273,6 +288,11 @@ export default function KnowledgePage() {
   );
   const [retentionDays, setRetentionDays] = useState("0");
   const [requireApproval, setRequireApproval] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
+  const [reviewCorrection, setReviewCorrection] = useState("");
+  const [rejectionType, setRejectionType] = useState<
+    "conflict" | "error" | "outdated"
+  >("error");
 
   const selectedSpace = useMemo(
     () => spaces.find((space) => space.space_id === spaceId) ?? null,
@@ -474,7 +494,7 @@ export default function KnowledgePage() {
           query: searchQuery,
           products: product ? [product] : [],
           dimensions: dimension ? [dimension] : [],
-          include_reports: false,
+          include_reports: includeReports,
           temporal_mode: temporalMode,
           as_of:
             temporalMode === "as_of" && asOf
@@ -496,6 +516,9 @@ export default function KnowledgePage() {
 
   const loadDocument = async (documentId: string) => {
     try {
+      setReviewNote("");
+      setReviewCorrection("");
+      setRejectionType("error");
       setDetail(
         await requestJson<KnowledgeDetail>(
           `${API}/knowledge/documents/${documentId}`,
@@ -635,7 +658,12 @@ export default function KnowledgePage() {
       await requestJson(`${API}/knowledge/documents/${documentId}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...csrfHeaders() },
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({
+          decision,
+          feedback_type: decision === "approved" ? "verified" : rejectionType,
+          reason: reviewNote.trim(),
+          correction: reviewCorrection.trim(),
+        }),
       });
       toast.success(
         decision === "approved" ? "资料已批准并可用于检索" : "资料已驳回",
@@ -1384,6 +1412,21 @@ export default function KnowledgePage() {
                     />
                   )}
                 </div>
+                <label className="hover:bg-muted flex cursor-pointer items-center gap-2 border-y px-1 py-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={includeReports}
+                    onChange={(event) =>
+                      setIncludeReports(event.target.checked)
+                    }
+                  />
+                  <span>
+                    包含历史报告
+                    <span className="text-muted-foreground ml-1">
+                      仅用于人工检索验证
+                    </span>
+                  </span>
+                </label>
                 {queryPlan && (
                   <div className="border-y py-2 text-[11px]">
                     <div className="flex items-center justify-between gap-2">
@@ -1648,29 +1691,65 @@ export default function KnowledgePage() {
               <div className="flex flex-wrap gap-2">
                 {detail.approval_status === "pending" &&
                   detail.space_role === "owner" && (
-                    <>
-                      <Button
-                        size="sm"
-                        disabled={busy}
-                        onClick={() =>
-                          void reviewDocument(detail.document_id, "approved")
+                    <div className="w-full space-y-3 border-b pb-4">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Select
+                          value={rejectionType}
+                          onValueChange={(value) =>
+                            setRejectionType(
+                              value as "conflict" | "error" | "outdated",
+                            )
+                          }
+                        >
+                          <SelectTrigger aria-label="驳回原因类型">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="error">内容错误</SelectItem>
+                            <SelectItem value="conflict">来源冲突</SelectItem>
+                            <SelectItem value="outdated">资料过期</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={reviewNote}
+                          onChange={(event) =>
+                            setReviewNote(event.target.value)
+                          }
+                          placeholder="审批说明（可选）"
+                        />
+                      </div>
+                      <textarea
+                        value={reviewCorrection}
+                        onChange={(event) =>
+                          setReviewCorrection(event.target.value)
                         }
-                      >
-                        <Check className="size-3.5" />
-                        批准入库
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={busy}
-                        onClick={() =>
-                          void reviewDocument(detail.document_id, "rejected")
-                        }
-                      >
-                        <X className="size-3.5" />
-                        驳回
-                      </Button>
-                    </>
+                        placeholder="正确内容或修正建议（可选）"
+                        className="border-input bg-background min-h-20 w-full resize-y border px-3 py-2 text-sm outline-none focus-visible:ring-2"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void reviewDocument(detail.document_id, "approved")
+                          }
+                        >
+                          <Check className="size-3.5" />
+                          批准入库
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void reviewDocument(detail.document_id, "rejected")
+                          }
+                        >
+                          <X className="size-3.5" />
+                          驳回
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 <Button
                   variant="outline"
@@ -1707,6 +1786,53 @@ export default function KnowledgePage() {
                   删除
                 </Button>
               </div>
+              {detail.reviews?.length > 0 && (
+                <section>
+                  <h3 className="text-xs font-semibold">人工治理记录</h3>
+                  <div className="mt-2 divide-y border-y">
+                    {detail.reviews.map((review) => (
+                      <div
+                        key={review.review_id}
+                        className="space-y-1 py-2 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <StatusBadge
+                            tone={
+                              review.decision === "approved"
+                                ? "success"
+                                : "danger"
+                            }
+                            label={
+                              review.decision === "approved"
+                                ? "已批准"
+                                : "已驳回"
+                            }
+                          />
+                          <span className="text-muted-foreground">
+                            {new Date(review.created_at).toLocaleString(
+                              "zh-CN",
+                            )}
+                          </span>
+                        </div>
+                        {review.reason && <div>{review.reason}</div>}
+                        {review.correction && (
+                          <div className="text-muted-foreground">
+                            修正：{review.correction}
+                          </div>
+                        )}
+                        {review.source_domain && (
+                          <div className="text-muted-foreground">
+                            {review.source_domain} 可信度：
+                            {Math.round((review.credibility_before ?? 0) * 100)}
+                            % →{" "}
+                            {Math.round((review.credibility_after ?? 0) * 100)}%
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
               <section>
                 <h3 className="text-xs font-semibold">版本历史</h3>
                 <div className="mt-2 divide-y border-y">

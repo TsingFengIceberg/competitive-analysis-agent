@@ -801,6 +801,79 @@ class KnowledgeRepository:
         self.conn.commit()
         return self.get_document(document_id)
 
+    def record_review_feedback(
+        self,
+        *,
+        document_id: str,
+        space_id: str,
+        reviewer_id: str,
+        decision: str,
+        feedback_type: str,
+        reason: str = "",
+        correction: str = "",
+        source_domain: str = "",
+        credibility_before: float | None = None,
+        credibility_after: float | None = None,
+    ) -> dict[str, Any]:
+        review_id = f"kreview-{uuid.uuid4().hex}"
+        self.conn.execute(
+            """INSERT INTO knowledge_review_feedback (
+                   review_id, document_id, space_id, reviewer_id, decision,
+                   feedback_type, reason, correction, source_domain,
+                   credibility_before, credibility_after, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                review_id, document_id, space_id, reviewer_id, decision,
+                feedback_type, reason, correction, source_domain,
+                credibility_before, credibility_after, _now(),
+            ),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT * FROM knowledge_review_feedback WHERE review_id = ?",
+            (review_id,),
+        ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_document_reviews(self, document_id: str, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.ensure_personal_space(user_id)
+        rows = self.conn.execute(
+            """SELECT r.*
+                 FROM knowledge_review_feedback r
+                 JOIN knowledge_space_members m
+                   ON m.space_id = r.space_id AND m.user_id = ?
+                WHERE r.document_id = ?
+                ORDER BY r.created_at DESC LIMIT ?""",
+            (user_id, document_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_review_feedback(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self.ensure_personal_space(user_id)
+        where = ["m.user_id = ?"]
+        params: list[Any] = [user_id]
+        if space_id:
+            where.append("r.space_id = ?")
+            params.append(space_id)
+        params.append(max(1, min(limit, 500)))
+        rows = self.conn.execute(
+            f"""SELECT r.*, d.title, d.product, d.source_type
+                  FROM knowledge_review_feedback r
+                  JOIN knowledge_documents d ON d.document_id = r.document_id
+                  JOIN knowledge_space_members m ON m.space_id = r.space_id
+                 WHERE {' AND '.join(where)}
+                 ORDER BY r.created_at DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_expired_documents(self, *, now: str | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT * FROM knowledge_documents

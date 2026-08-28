@@ -37,6 +37,7 @@ from competition.knowledge_query import (
     RetrievalPlan,
     build_analysis_queries,
     build_bridge_query,
+    canonical_product,
     normalize_query_text,
     plan_retrieval_query,
 )
@@ -917,7 +918,10 @@ class KnowledgeService:
                     temporal_status=row.get("temporal_status") or ("current" if row.get("active") else "historical"),
                     score=score,
                     retrieval_sources=("dense", "sparse", "reranker"),
-                    metadata=row.get("metadata") or {},
+                    metadata={
+                        **(row.get("metadata") or {}),
+                        "version_metadata": row.get("version_metadata") or {},
+                    },
                 )
             )
             if len(hits) >= limit:
@@ -1127,6 +1131,70 @@ class KnowledgeService:
             )
         return points
 
+    def retrieve_analysis_memory(self, state: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+        """Retrieve historical reports as non-citable planning memory."""
+        user_id = str(state.get("user_id") or "default")
+        brief = state.get("analysis_brief") or {}
+        query = normalize_query_text(
+            str(state.get("user_request") or brief.get("objective") or "competitive analysis history")
+        )
+        filters = RetrievalFilters(
+            source_types=("analysis_report",),
+            authority_tiers=("report",),
+            include_reports=True,
+            temporal_mode="current",
+        )
+        hits, plan = self.search_planned(query, user_id=user_id, filters=filters, limit=max(limit * 2, 8))
+        current_thread = str(state.get("thread_id") or "")
+        target_products = {
+            canonical_product(str(value)).casefold()
+            for value in (state.get("target_products") or brief.get("target_products") or [])
+            if str(value).strip()
+        }
+        memories: list[dict[str, Any]] = []
+        seen_documents: set[str] = set()
+        for hit in hits:
+            version_metadata = hit.metadata.get("version_metadata") or {}
+            fields = version_metadata.get("document_fields") or {}
+            document_metadata = fields.get("metadata") or {}
+            lineage = document_metadata.get("lineage") or {}
+            source_thread = str(lineage.get("thread_id") or "")
+            if current_thread and source_thread == current_thread:
+                continue
+            if hit.document_id in seen_documents:
+                continue
+            hit_products = {
+                canonical_product(value.strip()).casefold()
+                for value in re.split(r"\s*/\s*|\s*,\s*|\s*，\s*", hit.product)
+                if value.strip()
+            }
+            if target_products and hit_products and not target_products.intersection(hit_products):
+                continue
+            governance = document_metadata.get("auto_ingestion") or {}
+            memories.append(
+                {
+                    "id": f"memory-{hit.chunk_id}",
+                    "context_role": "historical_analysis_memory",
+                    "citation_eligible": False,
+                    "title": hit.title,
+                    "summary": hit.text[:2400],
+                    "products": sorted(hit_products) if hit_products else [hit.product] if hit.product else [],
+                    "report_thread_id": source_thread,
+                    "report_version": lineage.get("report_version") or hit.version_no,
+                    "generated_at": hit.published_at or hit.observed_at,
+                    "retrieval_score": hit.score,
+                    "quality_score": governance.get("quality_score"),
+                    "knowledge_document_id": hit.document_id,
+                    "knowledge_chunk_id": hit.chunk_id,
+                    "query_route": plan.route,
+                    "usage_policy": "planning_only_not_factual_evidence",
+                }
+            )
+            seen_documents.add(hit.document_id)
+            if len(memories) >= limit:
+                break
+        return memories
+
     def rebuild_user_index(self, user_id: str) -> dict[str, Any]:
         indexed = 0
         failed: list[dict[str, str]] = []
@@ -1246,15 +1314,75 @@ class KnowledgeService:
         with self._repo() as repository:
             return repository.remove_space_member(space_id, member_id)
 
-    def review_document(self, user_id: str, document_id: str, decision: str) -> dict[str, Any]:
+    def review_document(
+        self,
+        user_id: str,
+        document_id: str,
+        decision: str,
+        *,
+        feedback_type: str | None = None,
+        reason: str = "",
+        correction: str = "",
+    ) -> dict[str, Any]:
         if decision not in {"approved", "rejected"}:
             raise ValueError("Decision must be approved or rejected")
+        allowed_feedback = {"verified", "conflict", "error", "outdated"}
+        resolved_feedback = feedback_type or ("verified" if decision == "approved" else "error")
+        if resolved_feedback not in allowed_feedback:
+            raise ValueError("Feedback type must be verified, conflict, error, or outdated")
+        if decision == "approved" and resolved_feedback != "verified":
+            raise ValueError("Approved documents must use verified feedback")
+        if decision == "rejected" and resolved_feedback == "verified":
+            raise ValueError("Rejected documents require conflict, error, or outdated feedback")
         with self._repo() as repository:
             document = repository.get_document(document_id, user_id)
             if document is None or document.get("space_role") not in REVIEW_ROLES:
                 raise PermissionError("Only the knowledge-space owner can review documents")
             updated = repository.set_document_approval(document_id, status=decision, reviewer_id=user_id)
             chunks = repository.list_chunks(document_id=document_id, active_only=True)
+        from competition.db import get_credibility, init_db, update_credibility
+        from competition.intelligence import source_domain
+
+        metadata = dict(document.get("metadata") or {})
+        original_url = str(metadata.get("original_source_url") or document.get("source_uri") or "")
+        domain = source_domain(original_url) if original_url.startswith(("http://", "https://")) else ""
+        credibility_before: float | None = None
+        credibility_after: float | None = None
+        if domain:
+            conn = init_db(self.db_path)
+            try:
+                credibility_before = get_credibility(domain, conn)
+                credibility_after = update_credibility(domain, resolved_feedback, conn)
+            finally:
+                conn.close()
+        review_summary = {
+            "decision": decision,
+            "feedback_type": resolved_feedback,
+            "reason": reason.strip()[:1000],
+            "correction": correction.strip()[:2000],
+            "source_domain": domain,
+            "credibility_before": credibility_before,
+            "credibility_after": credibility_after,
+            "reviewed_by": user_id,
+            "reviewed_at": _now(),
+        }
+        metadata["latest_human_review"] = review_summary
+        metadata["human_review_count"] = int(metadata.get("human_review_count") or 0) + 1
+        with self._repo() as repository:
+            repository.update_document(document_id, metadata=metadata)
+            feedback = repository.record_review_feedback(
+                document_id=document_id,
+                space_id=str(document.get("space_id") or ""),
+                reviewer_id=user_id,
+                decision=decision,
+                feedback_type=resolved_feedback,
+                reason=review_summary["reason"],
+                correction=review_summary["correction"],
+                source_domain=domain,
+                credibility_before=credibility_before,
+                credibility_after=credibility_after,
+            )
+            updated = repository.get_document(document_id, user_id)
         assert updated is not None
         if decision == "approved" and chunks:
             try:
@@ -1268,7 +1396,20 @@ class KnowledgeService:
             except Exception:
                 logger.warning("Rejected-document index cleanup degraded for %s", document_id, exc_info=True)
         self._invalidate_result_cache()
+        updated["review_feedback"] = feedback
         return updated
+
+    def list_review_feedback(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_review_feedback(user_id, space_id=space_id, limit=limit)
 
     def purge_expired(self, *, actor_id: str = "system") -> dict[str, Any]:
         with self._repo() as repository:
@@ -1433,6 +1574,7 @@ class KnowledgeService:
                 return None
             chunks = repository.list_chunks(document_id=document_id, active_only=True)
             document["versions"] = repository.list_versions(document_id)
+            document["reviews"] = repository.list_document_reviews(document_id, user_id)
             document["chunks"] = [
                 {
                     **chunk,

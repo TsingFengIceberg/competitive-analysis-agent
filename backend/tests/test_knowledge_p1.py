@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 from test_competition_knowledge import build_service
 
+from competition.knowledge_eval import (
+    EvaluationThresholds,
+    check_thresholds,
+    compute_governance_metrics,
+    compute_memory_metrics,
+    evaluate_governance_cases,
+)
 from competition.knowledge_governance import assess_intelligence_item, assess_report
 from competition.knowledge_query import plan_retrieval_query
 from competition.knowledge_repo import KnowledgeRepository
@@ -207,6 +214,13 @@ def test_real_rag_dataset_has_traceable_public_snapshots():
     assert all(item["source_url"].startswith("https://") for item in dataset["documents"])
     assert all(item.get("captured_at") for item in dataset["documents"])
     assert {item["expected_route"] for item in dataset["queries"]} == {"direct", "multi_hop"}
+    memory_ids = {item["id"] for item in dataset["memory_documents"]}
+    memory_threads = {item["thread_id"] for item in dataset["memory_documents"]}
+    assert len(memory_ids) == len(dataset["memory_documents"])
+    assert all(set(case["relevant"]) <= memory_ids for case in dataset["memory_cases"])
+    assert all(set(case["forbidden"]) <= memory_threads for case in dataset["memory_cases"])
+    assert all(case["current_thread_id"] in case["forbidden"] for case in dataset["memory_cases"])
+    assert {case["expected_status"] for case in dataset["governance_cases"]} == {"approved", "pending"}
 
 
 def test_auto_admission_policy_approves_strong_evidence_and_quarantines_uncertain_content():
@@ -341,3 +355,208 @@ def test_p1_auto_ingestion_and_retry_api_contracts_are_registered():
 
     contracts = {(route.path, method) for route in router.routes for method in route.methods or []}
     assert ("/api/competition/knowledge/jobs/{job_id}/retry", "POST") in contracts
+
+
+def test_historical_reports_are_planning_memory_but_never_citable_evidence(tmp_path):
+    service = build_service(tmp_path)
+    report = {
+        "title": "Prior enterprise analysis",
+        "generated_at": "2026-08-20T00:00:00+00:00",
+        "products": ["Cursor", "OpenAI Codex"],
+        "sections": [{
+            "id": "themes",
+            "content": "Enterprise privacy controls and isolated cloud tasks were prior decision themes.",
+        }],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9},
+    }
+    registration = service.register_report_snapshot(
+        user_id="user-a",
+        thread_id="historical-thread",
+        version=1,
+        report_data=report,
+    )
+    service.process_job(registration["job"]["job_id"])
+    state = {
+        "user_id": "user-a",
+        "thread_id": "current-thread",
+        "user_request": "Compare enterprise privacy controls and isolated cloud tasks",
+        "target_products": ["Cursor", "OpenAI Codex"],
+        "analysis_brief": {
+            "target_products": ["Cursor", "OpenAI Codex"],
+            "effective_dimensions": [{"id": "technology"}],
+        },
+    }
+
+    memory = service.retrieve_analysis_memory(state)
+    evidence = service.retrieve_for_analysis(state)
+    assert memory
+    assert memory[0]["context_role"] == "historical_analysis_memory"
+    assert memory[0]["citation_eligible"] is False
+    assert memory[0]["report_thread_id"] == "historical-thread"
+    assert all(point.get("source_authority") != "report" for point in evidence)
+
+    self_state = {**state, "thread_id": "historical-thread"}
+    assert service.retrieve_analysis_memory(self_state) == []
+
+
+def test_human_review_updates_source_credibility_and_preserves_feedback_audit(tmp_path):
+    service = build_service(tmp_path)
+    space = service.create_space("owner", name="Governed facts", require_approval=True)
+    item = {
+        "item_key": "cursor-price-review",
+        "product": "Cursor",
+        "dimension": "pricing",
+        "label": "Team price",
+        "value": "$40",
+        "source_url": "https://cursor.com/pricing",
+        "source_domain": "cursor.com",
+        "source_type": "official",
+        "scope": "Global",
+        "confidence": 0.9,
+        "credibility_tier": "official",
+        "content_hash": "cursor-price-v1",
+        "fetched_at": "2026-08-27T00:00:00+00:00",
+    }
+    queued = service.queue_governed_intelligence_history(
+        user_id="owner", item=item, title="Observed price", space_id=space["space_id"],
+    )
+    completed = service.process_intelligence_history_job(queued["job_id"])
+    document_id = completed["document_id"]
+    assert service.document_detail(document_id, "owner")["approval_status"] == "pending"
+
+    approved = service.review_document(
+        "owner",
+        document_id,
+        "approved",
+        feedback_type="verified",
+        reason="Official page confirmed the value",
+    )
+    feedback = approved["review_feedback"]
+    assert feedback["source_domain"] == "cursor.com"
+    assert feedback["credibility_before"] == pytest.approx(0.5)
+    assert feedback["credibility_after"] == pytest.approx(0.55)
+    detail = service.document_detail(document_id, "owner")
+    assert detail["metadata"]["latest_human_review"]["feedback_type"] == "verified"
+    assert detail["reviews"][0]["reason"] == "Official page confirmed the value"
+    assert service.list_review_feedback("owner", space_id=space["space_id"])[0]["document_id"] == document_id
+
+
+def test_rejected_feedback_penalizes_bad_source_and_records_correction(tmp_path):
+    service = build_service(tmp_path)
+    space = service.create_space("owner", name="Review queue", require_approval=True)
+    registration = service.register_bytes(
+        user_id="owner",
+        filename="bad-source.md",
+        data=b"# Price\n\nCursor costs 999 dollars.",
+        source_type="intelligence",
+        source_uri="https://rumor.example/cursor",
+        product="Cursor",
+        dimension="pricing",
+        metadata={"original_source_url": "https://rumor.example/cursor"},
+        space_id=space["space_id"],
+    )
+    service.process_job(registration["job"]["job_id"])
+    rejected = service.review_document(
+        "owner",
+        registration["document"]["document_id"],
+        "rejected",
+        feedback_type="error",
+        reason="The value is fabricated",
+        correction="Use the official pricing page instead",
+    )
+    feedback = rejected["review_feedback"]
+    assert feedback["credibility_before"] == pytest.approx(0.5)
+    assert feedback["credibility_after"] == pytest.approx(0.35)
+    assert feedback["correction"] == "Use the official pricing page instead"
+    assert rejected["approval_status"] == "rejected"
+
+
+def test_review_feedback_is_owner_only_and_isolated_by_space_membership(tmp_path):
+    service = build_service(tmp_path)
+    space = service.create_space("owner", name="Private review queue", require_approval=True)
+    service.set_space_member("owner", space["space_id"], "viewer", "viewer")
+    registration = service.register_bytes(
+        user_id="owner",
+        filename="private.md",
+        data=b"# Evidence\n\nA pending private-space claim.",
+        source_type="intelligence",
+        source_uri="https://private.example/evidence",
+        product="Cursor",
+        dimension="features",
+        space_id=space["space_id"],
+    )
+    service.process_job(registration["job"]["job_id"])
+    document_id = registration["document"]["document_id"]
+
+    with pytest.raises(PermissionError, match="owner"):
+        service.review_document("viewer", document_id, "approved")
+    with pytest.raises(ValueError, match="verified"):
+        service.review_document("owner", document_id, "approved", feedback_type="conflict")
+    with pytest.raises(ValueError, match="conflict"):
+        service.review_document("owner", document_id, "rejected", feedback_type="verified")
+
+    service.review_document("owner", document_id, "rejected", feedback_type="outdated")
+    assert service.list_review_feedback("viewer", space_id=space["space_id"])[0]["document_id"] == document_id
+    assert service.list_review_feedback("outsider") == []
+    with pytest.raises(PermissionError):
+        service.list_review_feedback("outsider", space_id=space["space_id"])
+
+
+def test_governance_and_memory_metrics_enforce_isolation_thresholds():
+    governance_cases = evaluate_governance_cases([
+        {
+            "id": "strong",
+            "kind": "intelligence",
+            "source_credibility": 0.8,
+            "expected_status": "approved",
+            "payload": {
+                "product": "Cursor", "dimension": "pricing", "label": "Price", "value": "$40",
+                "source_url": "https://cursor.com/pricing", "confidence": 0.9, "credibility_tier": "official",
+            },
+        },
+        {
+            "id": "weak", "kind": "report", "expected_status": "pending",
+            "payload": {
+                "quality_gate": {"status": "warning"},
+                "quality_summary": {"overall_quality_score": 0.4},
+                "claim_verification": {"groundedness": 0.2, "citation_precision": 0.5},
+            },
+        },
+    ])
+    governance = compute_governance_metrics(governance_cases)
+    memory = compute_memory_metrics([{
+        "relevant": ["report-a"],
+        "ranked": ["report-a"],
+        "citation_leak_count": 0,
+        "evidence_report_leak_count": 0,
+        "forbidden_returned": [],
+    }])
+    metrics = {
+        "recall_at_5": 1.0, "mrr": 1.0, "ndcg_at_5": 1.0,
+        "abstention_accuracy": 1.0, "traceability_rate": 1.0,
+        "governance": governance, "memory": memory,
+    }
+    assert check_thresholds(metrics, EvaluationThresholds(), k=5) == []
+    metrics["memory"]["memory_isolation_rate"] = 0.0
+    assert any("memory.memory_isolation_rate" in failure for failure in check_thresholds(metrics, EvaluationThresholds(), k=5))
+
+
+def test_p1_feedback_api_contract_is_registered():
+    from app.competition_router import KnowledgeReviewRequest, router
+
+    contracts = {(route.path, method) for route in router.routes for method in route.methods or []}
+    assert ("/api/competition/knowledge/reviews", "GET") in contracts
+    request = KnowledgeReviewRequest(
+        decision="rejected",
+        feedback_type="conflict",
+        reason="Sources disagree",
+        correction="Prefer the official release note",
+    )
+    assert request.model_dump() == {
+        "decision": "rejected",
+        "feedback_type": "conflict",
+        "reason": "Sources disagree",
+        "correction": "Prefer the official release note",
+    }
