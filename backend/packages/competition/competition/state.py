@@ -109,3 +109,7 @@ class CompetitionState(AgentState):
     """Overall execution status: running, completed, partial, or failed."""
     usage_summary: NotRequired[dict | None]
     """Aggregate runtime cost derived from ``stage_results``."""
+    budget_policy: NotRequired[dict | None]
+    """Optional total/stage token limits supplied by the caller."""
+    budget_summary: NotRequired[dict | None]
+    """Latest budget consumption and remaining allowance."""

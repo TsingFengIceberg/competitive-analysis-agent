@@ -66,6 +66,7 @@ class AnalyzeRequest(BaseModel):
     persona: str = Field(default="pm", description="'pm' | 'entrepreneur' | 'both'")
     uploaded_files: list[str] | None = Field(default=None, description="Sandbox paths of uploaded files")
     context_report: dict | None = Field(default=None, description="Previous report data to use as analysis context")
+    budget_policy: dict | None = Field(default=None, description="Optional total_tokens and stage_tokens limits for this run")
     confirmation_mode: str = Field(default="auto", description="auto | always | skip")
 
 
@@ -546,6 +547,8 @@ def _build_report_snapshot(
         "report_data": resolved_report,
         "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
         "analysis_context_pack": state.get("analysis_context_pack"),
+        "budget_policy": state.get("budget_policy"),
+        "budget_summary": state.get("budget_summary"),
         "analysis_result": state.get("analysis_result"),
         "review_verdict": state.get("review_verdict"),
         "stage_results": state.get("stage_results") or [],
@@ -2084,6 +2087,7 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
             "industry": request.industry,
             "collected_data": [],
             "context_report": request.context_report,
+            "budget_policy": request.budget_policy,
         },
         "created_at": datetime.now(UTC).isoformat(),
         "query": request.query,
@@ -2491,6 +2495,31 @@ async def get_report_version(thread_id: str, version: int, fastapi_request: Requ
         "created_at": item.get("created_at"),
         "is_latest": latest == version,
     }
+
+
+@router.get("/report/{thread_id}/versions/{from_version}/evidence-diff/{to_version}")
+async def get_report_evidence_diff(
+    thread_id: str,
+    from_version: int,
+    to_version: int,
+    fastapi_request: Request = None,
+):
+    """Compare evidence facts between two immutable report versions."""
+    _assert_thread_access(thread_id, fastapi_request)
+    if from_version == to_version:
+        raise HTTPException(status_code=422, detail="Evidence diff requires two different versions")
+    old_item = _snapshot_to_history(thread_id, from_version)
+    new_item = _snapshot_to_history(thread_id, to_version)
+    if old_item is None or new_item is None:
+        raise HTTPException(status_code=404, detail="Report version not found")
+    from competition.evidence_diff import build_evidence_diff
+
+    return build_evidence_diff(
+        old_item.get("snapshot"),
+        new_item.get("snapshot"),
+        old_version=from_version,
+        new_version=to_version,
+    )
 
 
 @router.get("/report/{thread_id}/trace")

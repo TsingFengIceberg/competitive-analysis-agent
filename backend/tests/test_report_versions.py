@@ -80,6 +80,35 @@ async def test_missing_version_is_404(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_evidence_diff_endpoint_compares_immutable_versions(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+
+    import app.competition_router as router
+    from competition.branchtree.store import BranchSnapshotStore
+
+    store = BranchSnapshotStore(tmp_path / "versions.db")
+    monkeypatch.setattr(router, "_history_store", store)
+    thread_id = "evidence-diff-test"
+    router._store[thread_id] = _entry({"title": "Report", "sections": []})
+    router._store[thread_id]["state"]["collected_data"] = [
+        {"id": "dp-1", "product": "Alpha", "category": "pricing", "label": "Pro", "value": "$20", "source_url": "https://alpha.test/pricing"},
+    ]
+    router._persist_report_version(thread_id, "initial")
+    router._store[thread_id]["state"]["collected_data"] = [
+        {"id": "dp-2", "product": "Alpha", "category": "pricing", "label": "Pro", "value": "$25", "source_url": "https://alpha.test/pricing"},
+    ]
+    router._persist_report_version(thread_id, "reanalyze", parent_version=1)
+    app = FastAPI()
+    app.include_router(router.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/competition/report/{thread_id}/versions/1/evidence-diff/2")
+    assert response.status_code == 200
+    assert response.json()["summary"]["modified"] == 1
+    router._store.pop(thread_id, None)
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_human_edit_creates_child_version(monkeypatch, tmp_path):
     from fastapi import FastAPI
 

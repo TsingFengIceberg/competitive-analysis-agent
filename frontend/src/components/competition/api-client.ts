@@ -521,6 +521,8 @@ export interface ReportVersionSnapshot {
   report_data?: ReportData | null;
   analysis_brief?: AnalysisBrief | null;
   analysis_context_pack?: Record<string, unknown> | null;
+  budget_policy?: Record<string, unknown> | null;
+  budget_summary?: Record<string, unknown> | null;
   analysis_result?: Record<string, unknown> | null;
   review_verdict?: Record<string, unknown> | null;
   stage_results?: StageResult[];

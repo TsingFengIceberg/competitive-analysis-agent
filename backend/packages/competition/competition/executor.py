@@ -235,6 +235,26 @@ def clear_stage_deadline() -> None:
     _tl.stage_deadline = None
 
 
+def set_stage_token_budget(remaining: int | None) -> None:
+    """Set the maximum output-token allowance for the current stage."""
+    _tl.stage_token_budget_remaining = None if remaining is None else max(0, int(remaining))
+
+
+def clear_stage_token_budget() -> None:
+    """Clear the current stage token allowance."""
+    _tl.stage_token_budget_remaining = None
+
+
+def stage_token_budget_remaining() -> int | None:
+    return getattr(_tl, "stage_token_budget_remaining", None)
+
+
+def _consume_stage_token_budget(tokens: int) -> None:
+    remaining = stage_token_budget_remaining()
+    if remaining is not None:
+        _tl.stage_token_budget_remaining = max(0, remaining - max(0, int(tokens or 0)))
+
+
 def stage_time_remaining() -> float | None:
     """Return remaining stage seconds, or ``None`` when no deadline is active."""
     deadline = getattr(_tl, "stage_deadline", None)
@@ -291,6 +311,7 @@ class ExecutorContextSnapshot:
     cancel_checker: Callable[[], bool] | None
     progress_callback: Callable[[dict], None] | None
     stage_deadline: float | None
+    stage_token_budget_remaining: int | None
 
 
 def capture_executor_context() -> ExecutorContextSnapshot:
@@ -301,6 +322,7 @@ def capture_executor_context() -> ExecutorContextSnapshot:
         cancel_checker=getattr(_tl, "cancel_checker", None),
         progress_callback=getattr(_tl, "progress_callback", None),
         stage_deadline=getattr(_tl, "stage_deadline", None),
+        stage_token_budget_remaining=getattr(_tl, "stage_token_budget_remaining", None),
     )
 
 
@@ -314,11 +336,13 @@ def run_in_executor_context(snapshot: ExecutorContextSnapshot, fn: Callable[[], 
             "progress_callback": getattr(_tl, "progress_callback", None),
             "stream_callback": getattr(_tl, "stream_callback", None),
             "stage_deadline": getattr(_tl, "stage_deadline", None),
+            "stage_token_budget_remaining": getattr(_tl, "stage_token_budget_remaining", None),
         }
         _tl.thread_id = snapshot.thread_id
         _tl.cancel_checker = snapshot.cancel_checker
         _tl.progress_callback = snapshot.progress_callback
         _tl.stage_deadline = snapshot.stage_deadline
+        _tl.stage_token_budget_remaining = snapshot.stage_token_budget_remaining
         # Do not mix independent section output in the parent SSE stream.
         _tl.stream_callback = None
         try:
@@ -584,6 +608,16 @@ def execute_agent(
                 if "max_tokens" in agent_params:
                     max_tokens = int(agent_params["max_tokens"])
 
+        # A run budget is optional and installed by graph instrumentation. It
+        # clamps output tokens without changing the provider contract. When
+        # exhausted, return the normal empty-result fallback path immediately.
+        budget_remaining = stage_token_budget_remaining()
+        if budget_remaining is not None:
+            if budget_remaining <= 0:
+                logger.warning("Token budget exhausted before %s call", agent_name or "LLM")
+                return (None, 0)
+            max_tokens = max(1, min(int(max_tokens), budget_remaining))
+
         llm_kwargs: dict = {
             "model": model,
             "base_url": api_base,
@@ -697,6 +731,7 @@ def execute_agent(
 
         logger.info("%sAgent response: %d chars (%d tokens)", _thread_prefix(), len(str(content)), usage)
         _record_usage(agent_name, usage_details)
+        _consume_stage_token_budget(usage_details.get("total_tokens", usage))
         return (str(content) if content else None, usage)
 
     except Exception as e:

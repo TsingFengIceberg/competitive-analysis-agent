@@ -84,14 +84,22 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
         stage_timeout = _stage_timeout_seconds(stage, state)
         stage_deadline = started_monotonic + stage_timeout if stage_timeout else None
         try:
-            from competition.executor import get_agent_call_counts, get_agent_usage, set_stage_deadline
+            from competition.budget import limits_for_stage
+            from competition.executor import get_agent_call_counts, get_agent_usage, set_stage_deadline, set_stage_token_budget
 
             set_stage_deadline(stage_deadline)
+            budget_limits = limits_for_stage(state, stage)
+            set_stage_token_budget(
+                budget_limits.get("effective_remaining")
+                if budget_limits.get("enabled")
+                else None
+            )
             before_usage = get_agent_usage()
             before_calls = get_agent_call_counts()
         except Exception:  # pragma: no cover - executor is optional in graph unit tests
             before_usage = {}
             before_calls = {}
+            budget_limits = {}
 
         try:
             update = fn(state) or {}
@@ -127,9 +135,10 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
             after_calls = {}
         finally:
             try:
-                from competition.executor import clear_stage_deadline
+                from competition.executor import clear_stage_deadline, clear_stage_token_budget
 
                 clear_stage_deadline()
+                clear_stage_token_budget()
             except Exception:
                 pass
 
@@ -160,6 +169,15 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
                 "source_types": summary.get("source_types", {}),
                 "stopped_by": summary.get("stopped_by"),
             })
+        if budget_limits.get("enabled"):
+            metrics["budget"] = {
+                "total_limit": budget_limits.get("total_limit"),
+                "stage_limit": budget_limits.get("stage_limit"),
+                "used_total_before": budget_limits.get("used_total"),
+                "used_stage_before": budget_limits.get("used_stage"),
+                "remaining_before": budget_limits.get("effective_remaining"),
+                "actual_stage_tokens": usage_delta.get("total_tokens", 0),
+            }
 
         result = build_stage_result(
             stage=stage,
@@ -184,6 +202,14 @@ def _instrument_node(stage: str, fn: Callable) -> Callable:
         update["current_stage"] = stage
         update["run_status"] = status if status in {"failed", "timeout", "cancelled", "partial"} else "running"
         update["usage_summary"] = summarize_stage_results(merged_results)
+        if budget_limits.get("enabled"):
+            from competition.budget import summarize as summarize_budget
+
+            update["budget_summary"] = summarize_budget(
+                {**state, "stage_results": merged_results},
+                stage=stage,
+                actual_tokens=usage_delta.get("total_tokens", 0),
+            )
         return update
 
     _wrapped.__name__ = getattr(fn, "__name__", stage)

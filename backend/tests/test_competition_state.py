@@ -66,7 +66,7 @@ class TestCompetitionStateFields:
         """Runtime tracking and analysis context extend the business state."""
         hints = get_type_hints(CompetitionState, include_extras=True)
         custom_fields = {k for k in hints if k != "messages"}
-        assert len(custom_fields) == 36, f"Expected 36 custom fields, got {len(custom_fields)}: {custom_fields}"
+        assert len(custom_fields) == 38, f"Expected 38 custom fields, got {len(custom_fields)}: {custom_fields}"
 
 
 class TestReducers:
