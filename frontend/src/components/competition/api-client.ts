@@ -366,6 +366,28 @@ export interface KnowledgeHit {
   metadata?: Record<string, unknown>;
 }
 
+export interface KnowledgeSourceConnector {
+  source_id: string;
+  name: string;
+  uri: string;
+  source_type: string;
+  product: string;
+  dimension: string;
+  market_scope: string;
+  authority_tier: KnowledgeAuthority;
+  enabled: boolean;
+  sync_interval_minutes: number;
+  timeout_seconds: number;
+  etag?: string | null;
+  last_modified?: string | null;
+  content_hash?: string | null;
+  last_checked_at?: string | null;
+  last_success_at?: string | null;
+  last_status: string;
+  last_error?: string | null;
+  last_job_id?: string | null;
+}
+
 export interface KnowledgeStatus {
   database: {
     documents: number;

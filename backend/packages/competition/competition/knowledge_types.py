@@ -60,6 +60,7 @@ class RetrievalFilters:
     temporal_mode: str = "current"
     as_of: str | None = None
     space_ids: tuple[str, ...] = ()
+    retrieval_mode: str = "hybrid"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +75,7 @@ class RetrievalFilters:
             "temporal_mode": self.temporal_mode,
             "as_of": self.as_of,
             "space_ids": list(self.space_ids),
+            "retrieval_mode": self.retrieval_mode,
         }
 
 

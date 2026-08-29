@@ -18,6 +18,7 @@ import os
 import queue as _queue_mod
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -192,6 +193,8 @@ class KnowledgeSearchRequest(BaseModel):
     space_ids: list[str] = Field(default_factory=list, max_length=20)
     advanced: bool = True
     ranking_profile: str = Field(default="balanced", pattern=r"^(balanced|freshness|authority)$")
+    retrieval_mode: str = Field(default="hybrid", pattern=r"^(hybrid|dense|sparse)$")
+    rerank: bool = True
     query_expansion: bool | None = None
     limit: int = Field(default=12, ge=1, le=50)
 
@@ -204,6 +207,29 @@ class KnowledgeEvaluationRequest(BaseModel):
     governance_cases: list[dict] = Field(default_factory=list, max_length=500)
     k: int = Field(default=5, ge=1, le=50)
     thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+class KnowledgeSourceRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    uri: str = Field(..., min_length=8, max_length=2000)
+    product: str = Field(default="", max_length=200)
+    dimension: str = Field(default="", max_length=120)
+    market_scope: str = Field(default="Global / unspecified", max_length=200)
+    authority_tier: str = Field(default="primary", pattern=r"^(primary|structured_fact|change_event|third_party|report)$")
+    media_type: str = Field(default="application/octet-stream", max_length=120)
+    space_id: str = Field(default="", max_length=120)
+    source_type: str = Field(default="web", max_length=40)
+    enabled: bool = True
+    sync_interval_minutes: int = Field(default=360, ge=5, le=10080)
+    timeout_seconds: int = Field(default=20, ge=3, le=120)
+
+
+class KnowledgeRetrievalFeedbackRequest(BaseModel):
+    retrieval_id: str | None = Field(default=None, max_length=120)
+    query: str = Field(..., min_length=1, max_length=2000)
+    chunk_id: str = Field(..., min_length=1, max_length=200)
+    action: str = Field(..., pattern=r"^(relevant|not_relevant|citation_used)$")
+    note: str = Field(default="", max_length=1000)
 
 
 class KnowledgeSpaceCreateRequest(BaseModel):
@@ -452,6 +478,7 @@ def _emit_event(thread_id: str, event_type: str, data: dict) -> None:
     hasn't connected yet — critical for the ~2min product-resolution phase.
     """
     import logging
+
     _log = logging.getLogger(__name__)
     try:
         with _stream_lock:
@@ -492,6 +519,7 @@ def _get_user_id(request: Request | None = None) -> str:
         return "default"
     try:
         import jwt as _jwt
+
         payload = _jwt.decode(token, options={"verify_signature": False})
         user_id = payload.get("sub", "")
         return user_id if user_id else "default"
@@ -526,6 +554,7 @@ def _assert_thread_access(thread_id: str, request: Request | None = None) -> Non
     if owner is None:
         try:
             from competition.db import get_analysis, init_db
+
             conn = init_db()
             record = get_analysis(thread_id, conn=conn)
             conn.close()
@@ -570,27 +599,30 @@ def _build_report_snapshot(
     entry = _store.get(thread_id, {})
     state = entry.get("state", {})
     resolved_report = report_data if report_data is not None else state.get("report_data")
-    return _serialize_snapshot_value({
-        "snapshot_schema_version": 1,
-        "snapshot_status": "complete" if resolved_report is not None else "partial",
-        "report_data": resolved_report,
-        "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
-        "analysis_context_pack": state.get("analysis_context_pack"),
-        "budget_policy": state.get("budget_policy"),
-        "budget_summary": state.get("budget_summary"),
-        "analysis_result": state.get("analysis_result"),
-        "review_verdict": state.get("review_verdict"),
-        "stage_results": state.get("stage_results") or [],
-        "usage_summary": state.get("usage_summary") or {},
-        "token_usage": entry.get("token_usage") or [],
-        "collected_data": state.get("collected_data") or [],
-        "query": entry.get("query") or state.get("user_request") or "",
-        "products": entry.get("products") or state.get("target_products") or [],
-        "comment": comment or state.get("hitl_decision", {}).get("comment", ""),
-        "generation_id": generation_id or entry.get("generation_id") or state.get("generation_id"),
-        "status": entry.get("status") or state.get("run_status") or "completed",
-        "action": action,
-    })
+    return _serialize_snapshot_value(
+        {
+            "snapshot_schema_version": 1,
+            "snapshot_status": "complete" if resolved_report is not None else "partial",
+            "report_data": resolved_report,
+            "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
+            "analysis_context_pack": state.get("analysis_context_pack"),
+            "rag_context": state.get("rag_context"),
+            "budget_policy": state.get("budget_policy"),
+            "budget_summary": state.get("budget_summary"),
+            "analysis_result": state.get("analysis_result"),
+            "review_verdict": state.get("review_verdict"),
+            "stage_results": state.get("stage_results") or [],
+            "usage_summary": state.get("usage_summary") or {},
+            "token_usage": entry.get("token_usage") or [],
+            "collected_data": state.get("collected_data") or [],
+            "query": entry.get("query") or state.get("user_request") or "",
+            "products": entry.get("products") or state.get("target_products") or [],
+            "comment": comment or state.get("hitl_decision", {}).get("comment", ""),
+            "generation_id": generation_id or entry.get("generation_id") or state.get("generation_id"),
+            "status": entry.get("status") or state.get("run_status") or "completed",
+            "action": action,
+        }
+    )
 
 
 def _persist_report_version(
@@ -659,6 +691,7 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
         "analysis_result": snapshot.get("analysis_result") if snapshot else None,
         "collected_data": snapshot.get("collected_data") if snapshot else None,
         "analysis_context_pack": snapshot.get("analysis_context_pack") if snapshot else None,
+        "rag_context": snapshot.get("rag_context") if snapshot else None,
     }
 
 
@@ -666,6 +699,7 @@ def _load_phases(thread_id: str) -> list[dict]:
     """Load persisted phase records from DB for history reconstruction."""
     try:
         from competition.db import get_phases, init_db
+
         conn = init_db()
         phases = get_phases(thread_id, conn=conn)
         conn.close()
@@ -703,21 +737,24 @@ def _list_history(thread_id: str) -> list[dict]:
         # would make an old version appear to contain the latest report.
         snapshot, snapshot_status = _snapshot_from_metadata(metadata)
         stored_rd = snapshot.get("report_data") if snapshot else metadata.get("report_data")
-        result.append({
-            "version": r["version"],
-            "parent_version": r["parent_version"],
-            "checkpoint_id": r["checkpoint_id"],
-            "action": r["action"],
-            "is_approved": r["is_approved"],
-            "created_at": r["created_at"],
-            "metadata": r.get("metadata_json", {}),
-            "report_data": stored_rd,
-            "snapshot": snapshot,
-            "snapshot_status": snapshot_status,
-            "analysis_result": snapshot.get("analysis_result") if snapshot else None,
-            "collected_data": snapshot.get("collected_data") if snapshot else None,
-            "analysis_context_pack": snapshot.get("analysis_context_pack") if snapshot else None,
-        })
+        result.append(
+            {
+                "version": r["version"],
+                "parent_version": r["parent_version"],
+                "checkpoint_id": r["checkpoint_id"],
+                "action": r["action"],
+                "is_approved": r["is_approved"],
+                "created_at": r["created_at"],
+                "metadata": r.get("metadata_json", {}),
+                "report_data": stored_rd,
+                "snapshot": snapshot,
+                "snapshot_status": snapshot_status,
+                "analysis_result": snapshot.get("analysis_result") if snapshot else None,
+                "collected_data": snapshot.get("collected_data") if snapshot else None,
+                "analysis_context_pack": snapshot.get("analysis_context_pack") if snapshot else None,
+                "rag_context": snapshot.get("rag_context") if snapshot else None,
+            }
+        )
     return result
 
 
@@ -756,9 +793,21 @@ def _assess_complexity(query: str, products: list[str]) -> str:
 
     # Deep indicators: strategic keywords or explicit depth requests
     deep_keywords = [
-        "深度", "全面", "预测", "战略", "市场格局", "全景", "详细",
-        "deep", "comprehensive", "strategic", "forecast", "landscape",
-        "详细对比", "完整分析", "竞争格局",
+        "深度",
+        "全面",
+        "预测",
+        "战略",
+        "市场格局",
+        "全景",
+        "详细",
+        "deep",
+        "comprehensive",
+        "strategic",
+        "forecast",
+        "landscape",
+        "详细对比",
+        "完整分析",
+        "竞争格局",
     ]
     deep_score = sum(1 for kw in deep_keywords if kw in query_lower)
 
@@ -777,6 +826,7 @@ def _assess_complexity(query: str, products: list[str]) -> str:
 
 
 # ── Product name extraction & correction ──
+
 
 def _llm_extract_products(query: str, thread_id: str | None = None) -> list[str]:
     """Multi-round LLM+Search extraction with progressive relaxation.
@@ -797,45 +847,60 @@ def _llm_extract_products(query: str, thread_id: str | None = None) -> list[str]
         remaining = _build_round_prompt(query, all_candidates, round_num)
 
         if thread_id:
-            _emit_event(thread_id, "progress", {
-                "phase": "resolving",
-                "message": f"第 {round_num} 轮: LLM 提取竞品名称...",
-                "round": round_num,
-            })
+            _emit_event(
+                thread_id,
+                "progress",
+                {
+                    "phase": "resolving",
+                    "message": f"第 {round_num} 轮: LLM 提取竞品名称...",
+                    "round": round_num,
+                },
+            )
 
         new_candidates = _llm_extract_candidates(remaining)
         if not new_candidates:
             if thread_id:
-                _emit_event(thread_id, "progress", {
-                    "phase": "resolving",
-                    "message": f"第 {round_num} 轮: 未提取到新候选",
-                    "round": round_num,
-                })
+                _emit_event(
+                    thread_id,
+                    "progress",
+                    {
+                        "phase": "resolving",
+                        "message": f"第 {round_num} 轮: 未提取到新候选",
+                        "round": round_num,
+                    },
+                )
             continue
 
         if thread_id:
-            _emit_event(thread_id, "progress", {
-                "phase": "resolving",
-                "message": f"第 {round_num} 轮: 候选 {', '.join(new_candidates)} → 搜索验证...",
-                "round": round_num,
-                "candidates": new_candidates,
-            })
+            _emit_event(
+                thread_id,
+                "progress",
+                {
+                    "phase": "resolving",
+                    "message": f"第 {round_num} 轮: 候选 {', '.join(new_candidates)} → 搜索验证...",
+                    "round": round_num,
+                    "candidates": new_candidates,
+                },
+            )
 
         verified = _verify_products_via_search(new_candidates, strictness=round_num, query_hint=query)
         for v in verified:
             if v not in all_candidates:
                 all_candidates.append(v)
 
-        logger.info("Product extraction round %d: got %d candidates, %d verified (total: %d)",
-                     round_num, len(new_candidates), len(verified), len(all_candidates))
+        logger.info("Product extraction round %d: got %d candidates, %d verified (total: %d)", round_num, len(new_candidates), len(verified), len(all_candidates))
 
         if thread_id:
-            _emit_event(thread_id, "progress", {
-                "phase": "resolving",
-                "message": f"第 {round_num} 轮: {len(verified)} 个验证通过 ({', '.join(verified) if verified else '无'})",
-                "round": round_num,
-                "verified": verified,
-            })
+            _emit_event(
+                thread_id,
+                "progress",
+                {
+                    "phase": "resolving",
+                    "message": f"第 {round_num} 轮: {len(verified)} 个验证通过 ({', '.join(verified) if verified else '无'})",
+                    "round": round_num,
+                    "verified": verified,
+                },
+            )
 
         if len(all_candidates) >= 2:
             break
@@ -845,22 +910,14 @@ def _llm_extract_products(query: str, thread_id: str | None = None) -> list[str]
 
 def _build_round_prompt(query: str, already_found: list[str], round_num: int) -> str:
     """Build progressively more permissive extraction prompts."""
-    base = (
-        f"User request: {query}\n\n"
-        "Extract the names of software products or tools they want to compare. "
-        "Return ONLY a JSON array of product name strings.\n"
-    )
+    base = f"User request: {query}\n\nExtract the names of software products or tools they want to compare. Return ONLY a JSON array of product name strings.\n"
     if already_found:
         base += f"Already identified: {json.dumps(already_found)}. Find any ADDITIONAL products.\n"
 
     if round_num == 1:
         base += "Be strict: only extract clearly named, well-known tools."
     elif round_num == 2:
-        base += (
-            "Be moderate: include products mentioned by description or nickname. "
-            "Resolve references like '微软的那个AI编程工具' → 'GitHub Copilot'. "
-            "If uncertain, still include the candidate."
-        )
+        base += "Be moderate: include products mentioned by description or nickname. Resolve references like '微软的那个AI编程工具' → 'GitHub Copilot'. If uncertain, still include the candidate."
     else:
         base += (
             "Be very permissive: extract ANY possible product mention, even vague ones. "
@@ -876,12 +933,13 @@ def _llm_extract_candidates(query: str) -> list[str]:
     try:
         from competition.executor import execute_agent
 
-        prompt = (
-            "You are a product name extractor. "
-            "Return ONLY a JSON array of product name strings, e.g. [\"GitHub Copilot\", \"Cursor\"]."
-        )
+        prompt = 'You are a product name extractor. Return ONLY a JSON array of product name strings, e.g. ["GitHub Copilot", "Cursor"].'
         result, _tokens = execute_agent(
-            prompt, query, temperature=0.0, max_tokens=200, agent_name="ProductResolver",
+            prompt,
+            query,
+            temperature=0.0,
+            max_tokens=200,
+            agent_name="ProductResolver",
         )
         if result:
             text = result.strip()
@@ -892,7 +950,6 @@ def _llm_extract_candidates(query: str) -> list[str]:
     except Exception:
         logger.warning("LLM candidate extraction failed", exc_info=True)
     return []
-
 
 
 def _verify_products_via_search(
@@ -932,6 +989,7 @@ def _verify_products_via_search(
         # Small jitter to avoid thundering herd on search API (especially DDG rate limits)
         import random as _random
         import time as _time
+
         _time.sleep(_random.uniform(0, 0.5))
         all_titles: list[str] = []
         try:
@@ -947,7 +1005,7 @@ def _verify_products_via_search(
                         all_titles.extend(t)
 
                 # Independent search: UNquoted — lets search engine auto-correct typos
-                resp2 = web_search(f'{name} product', max_results=5)
+                resp2 = web_search(f"{name} product", max_results=5)
                 if resp2 and resp2.results:
                     t2 = [r.title if hasattr(r, "title") else r.get("title", "") for r in resp2.results]
                     for title in t2:
@@ -1052,12 +1110,12 @@ def _llm_judge_and_correct(
     parts: list[str] = []
 
     if query_hint:
-        parts.append(f"User query: \"{query_hint}\"\n")
+        parts.append(f'User query: "{query_hint}"\n')
 
     parts.append("Candidates to resolve:\n")
     for name, titles in search_titles.items():
         if titles:
-            lines = "\n".join(f"      {i+1}. {t}" for i, t in enumerate(titles[:5]))
+            lines = "\n".join(f"      {i + 1}. {t}" for i, t in enumerate(titles[:5]))
             parts.append(f'  - "{name}" → search titles:\n{lines}\n')
         else:
             parts.append(f'  - "{name}" → search titles: (no results)\n')
@@ -1067,7 +1125,7 @@ def _llm_judge_and_correct(
         "\nFor each candidate, determine the canonical product name. Use these rules:\n"
         "\n"
         "1. **Search titles are ground truth.** If titles consistently show a different "
-        "but related name (e.g. \"Notion\" when candidate is \"Noton\"), the titles are correct.\n"
+        'but related name (e.g. "Notion" when candidate is "Noton"), the titles are correct.\n'
         "2. **Query context is critical for disambiguation.** The user's query tells you "
         "the product domain. Use it to expand common words and abbreviations:\n"
         '   - "Power" + "数据分析" → "Power BI" (data analytics domain)\n'
@@ -1081,12 +1139,12 @@ def _llm_judge_and_correct(
         "Examples: Noton→Notion, MonngoDB→MongoDB, Githbu→GitHub, Postgre→PostgreSQL. "
         "The independent search is unquoted so the search engine may auto-correct; "
         "if even ONE title shows the corrected name, that's strong evidence.\n"
-        "4. **Be concise.** \"Power BI\" not \"Microsoft Power BI Desktop\". "
-        "\"Salesforce\" not \"Salesforce CRM Platform\".\n"
+        '4. **Be concise.** "Power BI" not "Microsoft Power BI Desktop". '
+        '"Salesforce" not "Salesforce CRM Platform".\n'
         "5. **Don't hallucinate.** If search titles don't clearly support a correction, "
         "keep the original name. Do NOT guess based on domain alone — there must be "
         "evidence in the search titles.\n"
-        "6. **Proper nouns stay proper.** Respect original capitalization: \"MongoDB\", \"GitHub\", \"iOS\".\n"
+        '6. **Proper nouns stay proper.** Respect original capitalization: "MongoDB", "GitHub", "iOS".\n'
         "7. **Each candidate is independent.** Don't change candidate A because candidate B's "
         "search results are about a different product. Judge each candidate on its OWN titles.\n"
         "\n"
@@ -1154,8 +1212,7 @@ def _llm_judge_and_correct(
                 continue
             # Length guard: reject overly long / descriptive names
             if len(resolved) > 50:
-                logger.warning("LLM judge returned overly long name for '%s': '%s' — keeping original",
-                             orig, resolved[:80])
+                logger.warning("LLM judge returned overly long name for '%s': '%s' — keeping original", orig, resolved[:80])
                 result[orig] = {"resolved": orig, "confidence": "low"}
             else:
                 normalized_confidence = confidence if confidence in {"high", "medium", "low"} else "low"
@@ -1163,8 +1220,7 @@ def _llm_judge_and_correct(
                 logger.debug("LLM judge: '%s' → '%s' [%s]", orig, resolved, confidence)
 
         corrected = sum(1 for k, v in result.items() if v["resolved"].lower() != k.lower())
-        logger.info("LLM judge: %d/%d candidates corrected (%d tokens)",
-                    corrected, len(result), tokens)
+        logger.info("LLM judge: %d/%d candidates corrected (%d tokens)", corrected, len(result), tokens)
         return result
 
     except Exception:
@@ -1301,6 +1357,7 @@ def _get_knowledge_executor() -> ThreadPoolExecutor:
 
 def start_knowledge_runtime() -> None:
     """Warm local retrieval models in the background without delaying API startup."""
+
     def warmup() -> None:
         from competition.knowledge_service import get_knowledge_service
 
@@ -1379,6 +1436,121 @@ async def knowledge_status(fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
 
     return await asyncio.to_thread(get_knowledge_service().status, _get_user_id(fastapi_request))
+
+
+@router.post("/knowledge/sources", status_code=201)
+async def create_knowledge_source(body: KnowledgeSourceRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+    from competition.knowledge_sources import KnowledgeSourceConnector, SourceRepository
+
+    user_id = _get_user_id(fastapi_request)
+    service = get_knowledge_service()
+    if body.space_id:
+        try:
+            service._resolve_space(user_id, body.space_id, roles=frozenset({"owner", "editor"}))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        source = KnowledgeSourceConnector(**body.model_dump(), user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with SourceRepository() as repository:
+        return {"source": repository.save(source)}
+
+
+@router.get("/knowledge/sources")
+async def list_knowledge_sources(
+    fastapi_request: Request,
+    enabled_only: bool = False,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_sources import SourceRepository
+
+    with SourceRepository() as repository:
+        return {"sources": repository.list(_get_user_id(fastapi_request), enabled_only=enabled_only, limit=limit)}
+
+
+@router.delete("/knowledge/sources/{source_id}")
+async def delete_knowledge_source(source_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_sources import SourceRepository
+
+    with SourceRepository() as repository:
+        if not repository.delete(source_id, _get_user_id(fastapi_request)):
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+    return {"deleted": True, "source_id": source_id}
+
+
+@router.post("/knowledge/sources/{source_id}/sync", status_code=202)
+async def sync_knowledge_source(source_id: str, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+    from competition.knowledge_sources import SourceRepository, sync_source
+
+    user_id = _get_user_id(fastapi_request)
+
+    def run_sync() -> dict[str, Any]:
+        with SourceRepository() as repository:
+            source = repository.get(source_id, user_id)
+            if source is None:
+                raise KeyError("Knowledge source not found")
+            return sync_source(
+                source,
+                user_id=user_id,
+                repository=repository,
+                register=lambda **kwargs: get_knowledge_service().register_bytes(user_id=user_id, **kwargs),
+            )
+
+    try:
+        result = await asyncio.to_thread(run_sync)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    registration = result.get("registration") if isinstance(result, dict) else None
+    if registration and registration.get("job"):
+        _queue_knowledge_job(registration)
+    if result.get("status") == "failed":
+        raise HTTPException(status_code=502, detail=result.get("error") or "Source fetch failed")
+    return result
+
+
+def _sync_due_knowledge_sources(limit: int = 10) -> list[dict[str, Any]]:
+    """Scheduler hook for connector refreshes; each source is independently isolated."""
+    from competition.knowledge_service import get_knowledge_service
+    from competition.knowledge_sources import SourceRepository, sync_source
+
+    results: list[dict[str, Any]] = []
+    with SourceRepository() as repository:
+        for source in repository.list_due(limit=limit):
+            try:
+                result = sync_source(
+                    source,
+                    user_id=str(source.get("user_id") or "default"),
+                    repository=repository,
+                    register=lambda **kwargs: get_knowledge_service().register_bytes(user_id=str(source.get("user_id") or "default"), **kwargs),
+                )
+                registration = result.get("registration") if isinstance(result, dict) else None
+                if registration and registration.get("job"):
+                    _queue_knowledge_job(registration)
+                results.append({"source_id": source.get("source_id"), "status": result.get("status")})
+            except Exception as exc:
+                logger.warning("Knowledge source sync failed for %s", source.get("source_id"), exc_info=True)
+                repository.update_result(
+                    str(source.get("source_id") or ""),
+                    str(source.get("user_id") or "default"),
+                    last_status="failed",
+                    last_checked_at=datetime.now(UTC).isoformat(),
+                    last_error=str(exc)[:500],
+                )
+                results.append({"source_id": source.get("source_id"), "status": "failed", "error": str(exc)[:300]})
+    return results
+
+
+@router.post("/knowledge/sources/sync-due")
+async def sync_due_knowledge_sources(fastapi_request: Request, limit: int = Query(default=10, ge=1, le=50)) -> dict:
+    del fastapi_request
+    return {"results": await asyncio.to_thread(_sync_due_knowledge_sources, limit)}
 
 
 @router.post("/knowledge/upload", status_code=202)
@@ -1509,9 +1681,7 @@ async def list_knowledge_documents(
 async def get_knowledge_document(document_id: str, fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
 
-    document = await asyncio.to_thread(
-        get_knowledge_service().document_detail, document_id, _get_user_id(fastapi_request)
-    )
+    document = await asyncio.to_thread(get_knowledge_service().document_detail, document_id, _get_user_id(fastapi_request))
     if document is None:
         raise HTTPException(status_code=404, detail="Knowledge document not found")
     return document
@@ -1521,9 +1691,7 @@ async def get_knowledge_document(document_id: str, fastapi_request: Request) -> 
 async def delete_knowledge_document(document_id: str, fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
 
-    deleted = await asyncio.to_thread(
-        get_knowledge_service().delete_document, document_id, _get_user_id(fastapi_request)
-    )
+    deleted = await asyncio.to_thread(get_knowledge_service().delete_document, document_id, _get_user_id(fastapi_request))
     if not deleted:
         raise HTTPException(status_code=404, detail="Knowledge document not found")
     return {"deleted": True, "document_id": document_id}
@@ -1534,9 +1702,7 @@ async def reindex_knowledge_document(document_id: str, fastapi_request: Request)
     from competition.knowledge_service import get_knowledge_service
 
     try:
-        job = await asyncio.to_thread(
-            get_knowledge_service().queue_reindex, document_id, _get_user_id(fastapi_request)
-        )
+        job = await asyncio.to_thread(get_knowledge_service().queue_reindex, document_id, _get_user_id(fastapi_request))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1553,9 +1719,7 @@ async def rebuild_knowledge_index(fastapi_request: Request) -> dict:
 
 
 @router.get("/knowledge/jobs")
-async def list_knowledge_jobs(
-    fastapi_request: Request, limit: int = Query(default=50, ge=1, le=200)
-) -> dict:
+async def list_knowledge_jobs(fastapi_request: Request, limit: int = Query(default=50, ge=1, le=200)) -> dict:
     from competition.knowledge_service import get_knowledge_service
 
     jobs = await asyncio.to_thread(get_knowledge_service().list_jobs, _get_user_id(fastapi_request), limit)
@@ -1620,6 +1784,7 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
         temporal_mode=body.temporal_mode,
         as_of=body.as_of,
         space_ids=tuple(body.space_ids),
+        retrieval_mode=body.retrieval_mode,
     )
     try:
         service = get_knowledge_service()
@@ -1632,6 +1797,8 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
                 limit=body.limit,
                 query_expansion=body.query_expansion,
                 ranking_profile=body.ranking_profile,
+                retrieval_mode=body.retrieval_mode,
+                rerank=body.rerank,
             )
         else:
             hits = await asyncio.to_thread(
@@ -1641,6 +1808,8 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
                 filters=filters,
                 limit=body.limit,
                 ranking_profile=body.ranking_profile,
+                retrieval_mode=body.retrieval_mode,
+                rerank=body.rerank,
             )
             plan = None
     except KnowledgeUnavailableError as exc:
@@ -1652,6 +1821,8 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
         "hits": [hit.to_dict() for hit in hits],
         "plan": plan.to_dict() if plan is not None else None,
         "ranking_profile": body.ranking_profile,
+        "retrieval_mode": body.retrieval_mode,
+        "rerank": body.rerank,
     }
 
 
@@ -1687,7 +1858,7 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
         compute_verification_metrics,
         evaluate_governance_cases,
     )
-    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository, compare_evaluation_metrics
     from competition.knowledge_quota import QuotaExceeded, quota
 
     if not body.cases and not body.verification_cases and not body.planning_cases and not body.governance_cases:
@@ -1719,15 +1890,17 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
     status = "passed" if not failures else "failed"
     user_id = _get_user_id(fastapi_request)
     with KnowledgeEvaluationRepository() as repository:
+        previous = repository.previous(user_id, body.dataset_name)
+        regression = compare_evaluation_metrics(metrics, previous)
         run = repository.save(
             user_id=user_id,
             dataset_name=body.dataset_name,
             status=status,
-            metrics={"schema_version": "rag-evaluation.v1", **metrics},
+            metrics={"schema_version": "rag-evaluation.v1", **metrics, "regression": regression},
             failures=failures,
             case_count=len(body.cases) + len(body.verification_cases) + len(body.planning_cases) + len(body.governance_cases),
         )
-    return {"ok": not failures, **run}
+    return {"ok": not failures, "regression": regression, **run}
 
 
 @router.get("/knowledge/evaluations")
@@ -1736,6 +1909,45 @@ async def list_knowledge_evaluations(fastapi_request: Request, limit: int = Quer
 
     with KnowledgeEvaluationRepository() as repository:
         return {"runs": repository.list(_get_user_id(fastapi_request), limit=limit)}
+
+
+@router.post("/knowledge/retrieval-feedback", status_code=201)
+async def save_knowledge_retrieval_feedback(
+    body: KnowledgeRetrievalFeedbackRequest,
+    fastapi_request: Request,
+) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+    from competition.knowledge_service import get_knowledge_service
+
+    user_id = _get_user_id(fastapi_request)
+    chunk = await asyncio.to_thread(get_knowledge_service().get_chunk, body.chunk_id, user_id)
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Knowledge chunk not found")
+    with KnowledgeEvaluationRepository() as repository:
+        feedback = repository.save_feedback(
+            user_id=user_id,
+            retrieval_id=body.retrieval_id,
+            query=body.query,
+            chunk_id=body.chunk_id,
+            action=body.action,
+            note=body.note,
+        )
+        summary = repository.feedback_summary(user_id)
+    return {"feedback": feedback, "summary": summary}
+
+
+@router.get("/knowledge/retrieval-feedback")
+async def list_knowledge_retrieval_feedback(
+    fastapi_request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        return {
+            "feedback": repository.list_feedback(_get_user_id(fastapi_request), limit=limit),
+            "summary": repository.feedback_summary(_get_user_id(fastapi_request)),
+        }
 
 
 @router.get("/knowledge/retrieval-logs")
@@ -1799,9 +2011,7 @@ async def list_knowledge_space_members(space_id: str, fastapi_request: Request) 
     from competition.knowledge_service import get_knowledge_service
 
     try:
-        members = await asyncio.to_thread(
-            get_knowledge_service().list_space_members, _get_user_id(fastapi_request), space_id
-        )
+        members = await asyncio.to_thread(get_knowledge_service().list_space_members, _get_user_id(fastapi_request), space_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"members": members}
@@ -2129,9 +2339,7 @@ async def transition_knowledge_hypothesis(
 async def get_knowledge_chunk(chunk_id: str, fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
 
-    chunk = await asyncio.to_thread(
-        get_knowledge_service().get_chunk, chunk_id, _get_user_id(fastapi_request)
-    )
+    chunk = await asyncio.to_thread(get_knowledge_service().get_chunk, chunk_id, _get_user_id(fastapi_request))
     if chunk is None:
         raise HTTPException(status_code=404, detail="Knowledge chunk not found")
     return chunk
@@ -2154,10 +2362,22 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     mode = detect_confirmation_mode(request.query, request.confirmation_mode)
     brief_builder = brief_from_request_with_optional_model
     brief_future = asyncio.get_event_loop().run_in_executor(
-        None, brief_builder, request.query, request.target_products, request.industry, request.persona,
+        None,
+        brief_builder,
+        request.query,
+        request.target_products,
+        request.industry,
+        request.persona,
     )
-    brief = await brief_future if brief_future is not None else brief_builder(
-        request.query, request.target_products, request.industry, request.persona,
+    brief = (
+        await brief_future
+        if brief_future is not None
+        else brief_builder(
+            request.query,
+            request.target_products,
+            request.industry,
+            request.persona,
+        )
     )
     if mode == "skip" and brief.readiness != "ready":
         raise HTTPException(
@@ -2195,20 +2415,29 @@ async def analyze(request: AnalyzeRequest, fastapi_request: Request) -> AnalyzeR
     }
 
     upsert_analysis(
-        thread_id=thread_id, status="awaiting_confirmation", user_id=user_id,
-        query=request.query, products=brief.target_products,
-        industry=request.industry, persona=request.persona,
-        title=initial_title, analysis_brief=brief.model_dump(),
+        thread_id=thread_id,
+        status="awaiting_confirmation",
+        user_id=user_id,
+        query=request.query,
+        products=brief.target_products,
+        industry=request.industry,
+        persona=request.persona,
+        title=initial_title,
+        analysis_brief=brief.model_dump(),
     )
 
     if mode == "always" or brief.readiness != "ready":
         return AnalyzeResponse(thread_id=thread_id, status="awaiting_confirmation", analysis_brief=brief.model_dump())
 
-    confirmed = validate_confirmation_brief(brief).model_copy(update={
-        "confirmation_source": "bypass" if mode == "skip" else "auto",
-    })
+    confirmed = validate_confirmation_brief(brief).model_copy(
+        update={
+            "confirmation_source": "bypass" if mode == "skip" else "auto",
+        }
+    )
     result = claim_analysis_start(
-        thread_id, brief.revision, confirmed.model_dump(),
+        thread_id,
+        brief.revision,
+        confirmed.model_dump(),
         confirmation_source="bypass" if mode == "skip" else "auto",
     )
     if result.get("result") != "claimed":
@@ -2236,11 +2465,17 @@ def _start_analysis_worker(
     try:
         loop = event_loop or asyncio.get_event_loop()
         loop.run_in_executor(
-            None, _resolve_and_run_graph, thread_id, query,
-            analysis_brief.get("target_products", []), user_id, analysis_brief,
+            None,
+            _resolve_and_run_graph,
+            thread_id,
+            query,
+            analysis_brief.get("target_products", []),
+            user_id,
+            analysis_brief,
         )
     except Exception as exc:
         from competition.db import restore_analysis_to_waiting
+
         restore_analysis_to_waiting(thread_id, error=f"Worker submission failed: {exc}")
         if entry is not None:
             entry["status"] = "awaiting_confirmation"
@@ -2282,19 +2517,33 @@ def start_analysis_for_a2a(
     entry = {
         "status": "awaiting_confirmation",
         "state": {
-            "messages": [], "thread_id": thread_id, "user_id": user_id,
-            "user_request": query, "target_products": brief.target_products,
-            "analysis_brief": brief.model_dump(), "persona": "pm", "industry": "general",
-            "collected_data": [], "context_report": context_report,
+            "messages": [],
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "user_request": query,
+            "target_products": brief.target_products,
+            "analysis_brief": brief.model_dump(),
+            "persona": "pm",
+            "industry": "general",
+            "collected_data": [],
+            "context_report": context_report,
         },
-        "created_at": datetime.now(UTC).isoformat(), "query": query,
-        "products": brief.target_products, "title": title,
+        "created_at": datetime.now(UTC).isoformat(),
+        "query": query,
+        "products": brief.target_products,
+        "title": title,
     }
     _store[thread_id] = entry
     upsert_analysis(
-        thread_id=thread_id, status="awaiting_confirmation", user_id=user_id,
-        query=query, products=brief.target_products, industry="general", persona="pm",
-        title=title, analysis_brief=brief.model_dump(),
+        thread_id=thread_id,
+        status="awaiting_confirmation",
+        user_id=user_id,
+        query=query,
+        products=brief.target_products,
+        industry="general",
+        persona="pm",
+        title=title,
+        analysis_brief=brief.model_dump(),
     )
     if brief.readiness != "ready":
         return {"thread_id": thread_id, "status": "awaiting_confirmation", "analysis_brief": brief.model_dump()}
@@ -2435,10 +2684,13 @@ async def cancel_analysis(thread_id: str, fastapi_request: Request) -> dict:
         entry.setdefault("state", {})["error"] = "用户手动终止分析"
         try:
             from competition.db import upsert_analysis
+
             upsert_analysis(
-                thread_id=thread_id, status="interrupted",
+                thread_id=thread_id,
+                status="interrupted",
                 user_id=_thread_owners.get(thread_id, "default"),
-                query=entry.get("query", ""), products=entry.get("products", []),
+                query=entry.get("query", ""),
+                products=entry.get("products", []),
             )
         except Exception:
             logger.exception("Failed to persist awaiting cancellation for %s", thread_id)
@@ -2458,8 +2710,10 @@ async def cancel_analysis(thread_id: str, fastapi_request: Request) -> dict:
     _store[thread_id]["state"]["error"] = "用户手动终止分析"
     try:
         from competition.db import upsert_analysis
+
         upsert_analysis(
-            thread_id=thread_id, status="interrupted",
+            thread_id=thread_id,
+            status="interrupted",
             user_id=_thread_owners.get(thread_id, "default"),
             query=_store[thread_id].get("query", ""),
             products=_store[thread_id].get("products", []),
@@ -2491,6 +2745,7 @@ async def get_report(
     if entry is None:
         # Fallback: load from SQLite (survives gateway restart)
         from competition.db import get_analysis, init_db
+
         conn = init_db()
         db_record = get_analysis(thread_id, conn=conn)
         conn.close()
@@ -2501,12 +2756,7 @@ async def get_report(
         record_status = db_record.get("status", "unknown")
         compact = summary and record_status not in {"completed", "approved", "failed", "interrupted", "error"}
         restored_phases = [] if compact else _load_phases(thread_id)
-        restored_stage_results = [
-            detail
-            for phase in restored_phases
-            for detail in (phase.get("details") or [])
-            if isinstance(detail, dict) and detail.get("stage")
-        ]
+        restored_stage_results = [detail for phase in restored_phases for detail in (phase.get("details") or []) if isinstance(detail, dict) and detail.get("stage")]
         return ReportResponse(
             thread_id=thread_id,
             status=record_status,
@@ -2564,6 +2814,7 @@ async def get_report_history(thread_id: str, fastapi_request: Request = None):
     if entry is None:
         # Fallback: return history from DB even when _store is gone (gateway restart)
         from competition.db import get_analysis, init_db
+
         conn = init_db()
         db_record = get_analysis(thread_id, conn=conn)
         conn.close()
@@ -2655,9 +2906,12 @@ async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -
 
     action_label_map = {"initial": "初始分析", "rewrite": "重写", "reanalyze": "重分析", "replan": "重采集"}
     agent_map = {
-        "orchestrator": "Orchestrator", "collector": "Collector",
-        "analyst": "Analyst", "reviewer": "Reviewer",
-        "writer": "Writer", "hitl_gate": "HITL Gate",
+        "orchestrator": "Orchestrator",
+        "collector": "Collector",
+        "analyst": "Analyst",
+        "reviewer": "Reviewer",
+        "writer": "Writer",
+        "hitl_gate": "HITL Gate",
     }
 
     generations: list[GenerationTrace] = []
@@ -2673,9 +2927,7 @@ async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -
             return candidates[0].get("version"), "legacy_inferred", candidates[0]
         return None, "unresolved", None
 
-    for (association_kind, group_id), group_rows in sorted(grouped_phases.items(), key=lambda item: min(
-        (row.get("start_time") or "") for row in item[1]
-    )):
+    for (association_kind, group_id), group_rows in sorted(grouped_phases.items(), key=lambda item: min((row.get("start_time") or "") for row in item[1])):
         version = int(group_rows[0].get("version", 0))
         exact_row = exact_reports.get(group_id) if association_kind == "exact" else None
         report_version = exact_row.get("version") if exact_row else None
@@ -2702,27 +2954,42 @@ async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -
             if start and end:
                 try:
                     from datetime import datetime as _dt
+
                     s = _dt.fromisoformat(start)
                     e = _dt.fromisoformat(end)
                     duration_ms = int((e - s).total_seconds() * 1000)
                 except Exception:
                     pass
 
-            phases.append(PhaseTraceEntry(
-                phase_key=p["phase_key"], label=p["label"], icon=p["icon"],
-                agent_name=agent_name, tokens=p.get("tokens", 0),
-                start_time=start, end_time=end, duration_ms=duration_ms,
-                status=p.get("status", "completed"),
-                content=p.get("content", {}), details=p.get("details", []),
-                json_output=p.get("json_output"),
-            ))
+            phases.append(
+                PhaseTraceEntry(
+                    phase_key=p["phase_key"],
+                    label=p["label"],
+                    icon=p["icon"],
+                    agent_name=agent_name,
+                    tokens=p.get("tokens", 0),
+                    start_time=start,
+                    end_time=end,
+                    duration_ms=duration_ms,
+                    status=p.get("status", "completed"),
+                    content=p.get("content", {}),
+                    details=p.get("details", []),
+                    json_output=p.get("json_output"),
+                )
+            )
 
-        generations.append(GenerationTrace(
-            version=version, generation_id=(group_id if association_kind == "exact" else None),
-            report_version=report_version,
-            parent_report_version=(exact_row or {}).get("parent_version") if exact_row else None,
-            association=association, action=action, label=label, phases=phases,
-        ))
+        generations.append(
+            GenerationTrace(
+                version=version,
+                generation_id=(group_id if association_kind == "exact" else None),
+                report_version=report_version,
+                parent_report_version=(exact_row or {}).get("parent_version") if exact_row else None,
+                association=association,
+                action=action,
+                label=label,
+                phases=phases,
+            )
+        )
 
     # Build dynamic DAG from actual execution data (not hardcoded)
     # Collect all phase keys and detect feedback loops from execution history
@@ -2735,8 +3002,7 @@ async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -
         return any(k == node_id or k.startswith(node_id + "_") or k.startswith(node_id) for k in all_phase_keys)
 
     # Detect feedback loops: if collector/analyst/writer ran in multiple versions, a loop happened
-    collector_gens = {v for v, phases in version_phases.items()
-                      if any(p["phase_key"].startswith("collector") for p in phases)}
+    collector_gens = {v for v, phases in version_phases.items() if any(p["phase_key"].startswith("collector") for p in phases)}
     has_reviewer_feedback = len(collector_gens) > 1
     has_hitl_replan = any(a == "replan" for a in version_actions.values())
     has_hitl_reanalyze = any(a == "reanalyze" for a in version_actions.values())
@@ -2753,31 +3019,25 @@ async def get_execution_trace(thread_id: str, fastapi_request: Request = None) -
         ],
         edges=[
             # Main forward edges: active if both endpoints ran
-            DagEdge(id="e1", from_="orchestrator", to="collector", type="main",
-                    active=_node_ran("orchestrator") and _node_ran("collector")),
-            DagEdge(id="e2", from_="collector", to="analyst", type="main",
-                    active=_node_ran("collector") and _node_ran("analyst")),
-            DagEdge(id="e3", from_="analyst", to="reviewer", type="main",
-                    active=_node_ran("analyst") and _node_ran("reviewer")),
-            DagEdge(id="e4", from_="reviewer", to="writer", type="main",
-                    active=_node_ran("reviewer") and _node_ran("writer")),
-            DagEdge(id="e5", from_="writer", to="hitl_gate", type="main",
-                    active=_node_ran("writer") and _node_ran("hitl_gate")),
+            DagEdge(id="e1", from_="orchestrator", to="collector", type="main", active=_node_ran("orchestrator") and _node_ran("collector")),
+            DagEdge(id="e2", from_="collector", to="analyst", type="main", active=_node_ran("collector") and _node_ran("analyst")),
+            DagEdge(id="e3", from_="analyst", to="reviewer", type="main", active=_node_ran("analyst") and _node_ran("reviewer")),
+            DagEdge(id="e4", from_="reviewer", to="writer", type="main", active=_node_ran("reviewer") and _node_ran("writer")),
+            DagEdge(id="e5", from_="writer", to="hitl_gate", type="main", active=_node_ran("writer") and _node_ran("hitl_gate")),
             # Feedback edges: only active if the corresponding loop actually happened
-            DagEdge(id="e6", from_="reviewer", to="collector", type="feedback",
-                    active=has_reviewer_feedback),
-            DagEdge(id="e7", from_="hitl_gate", to="collector", type="hitl_replan",
-                    active=has_hitl_replan),
-            DagEdge(id="e8", from_="hitl_gate", to="analyst", type="hitl_reanalyze",
-                    active=has_hitl_reanalyze),
-            DagEdge(id="e9", from_="hitl_gate", to="writer", type="hitl_rewrite",
-                    active=has_hitl_rewrite),
+            DagEdge(id="e6", from_="reviewer", to="collector", type="feedback", active=has_reviewer_feedback),
+            DagEdge(id="e7", from_="hitl_gate", to="collector", type="hitl_replan", active=has_hitl_replan),
+            DagEdge(id="e8", from_="hitl_gate", to="analyst", type="hitl_reanalyze", active=has_hitl_reanalyze),
+            DagEdge(id="e9", from_="hitl_gate", to="writer", type="hitl_rewrite", active=has_hitl_rewrite),
         ],
     )
 
     current_version = max((row.get("version") for row in history_rows), default=None)
     return TraceResponse(
-        thread_id=thread_id, generations=generations, dag=dag, current_version=current_version,
+        thread_id=thread_id,
+        generations=generations,
+        dag=dag,
+        current_version=current_version,
     ).model_dump(by_alias=True)
 
 
@@ -2857,6 +3117,7 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest, fastapi_re
     # Persist to DB
     try:
         from competition.db import upsert_analysis
+
         upsert_analysis(
             thread_id=thread_id,
             report_data=report_dict,
@@ -2868,6 +3129,7 @@ async def update_sections(thread_id: str, body: SectionUpdateRequest, fastapi_re
     # Human edits are immutable report revisions, so the previous version can
     # still be opened and compared after the current report is changed.
     from uuid import uuid4
+
     generation_id = str(uuid4())
     entry["generation_id"] = generation_id
     state["generation_id"] = generation_id
@@ -3024,6 +3286,7 @@ async def submit_decision(thread_id: str, decision: HitlDecisionRequest, fastapi
         target_focus = [comment.strip()]
     if action == "auto":
         from competition.nodes.rework_intent import parse_rework_intent
+
         intent = parse_rework_intent(state, comment)
         action = intent["action"]
         comment = intent["comment"]
@@ -3084,7 +3347,9 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
     bubbles for HITL re-executions (re-collect, re-analyze, rewrite).
     """
     import logging
+
     logger = logging.getLogger(__name__)
+
     class _ReanalysisCancelled(Exception):
         """Internal signal used to stop a re-execution without marking it done."""
 
@@ -3106,6 +3371,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         # Extract fork parent before processing (set by submit_decision for historical fork)
         fork_parent = state.pop("_fork_parent_version", None)
         from uuid import uuid4
+
         generation_id = str(uuid4())
         entry["generation_id"] = generation_id
         state["generation_id"] = generation_id
@@ -3129,9 +3395,9 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         # ── Node metadata for re-execution phases ──
         _RE_NODES: dict[str, tuple[str, str, str]] = {
             "collector": ("collector", "📊", "重新采集"),
-            "analyst":   ("analyst",   "🔍", "重新分析"),
-            "reviewer":  ("reviewer",  "✅", "重新审查"),
-            "writer":    ("writer",    "📝", "重写报告"),
+            "analyst": ("analyst", "🔍", "重新分析"),
+            "reviewer": ("reviewer", "✅", "重新审查"),
+            "writer": ("writer", "📝", "重写报告"),
         }
 
         # Set up streaming callback so re-execution phase content is captured
@@ -3140,21 +3406,23 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
         def _re_stream(agent_name: str, chunk_text: str) -> None:
             nonlocal _chunk_seq
             _chunk_seq += 1
-            _emit_event(thread_id, "messages-tuple", [{
-                "type": "AIMessageChunk",
-                "name": agent_name or "analysis",
-                "content": chunk_text,
-                "id": f"comp-{thread_id[-8:]}-re-{_chunk_seq}",
-            }])
+            _emit_event(
+                thread_id,
+                "messages-tuple",
+                [
+                    {
+                        "type": "AIMessageChunk",
+                        "name": agent_name or "analysis",
+                        "content": chunk_text,
+                        "id": f"comp-{thread_id[-8:]}-re-{_chunk_seq}",
+                    }
+                ],
+            )
             if chunk_text and chunk_text != "\x00THINK\x00":
                 _re_content[agent_name] = _re_content.get(agent_name, "") + chunk_text
 
         def _re_progress(payload: dict) -> None:
-            allowed = {
-                key: payload[key]
-                for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message")
-                if key in payload
-            }
+            allowed = {key: payload[key] for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message") if key in payload}
             _emit_event(thread_id, "progress", allowed)
 
         _chunk_seq = 0
@@ -3178,14 +3446,19 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             phase_key = f"{node_key}{suffix}"
             start_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
-            _emit_event(thread_id, "progress", {
-                "phase": phase_key,
-                "label": display_label,
-                "icon": icon,
-                "message": f"{display_label} 开始…",
-            })
+            _emit_event(
+                thread_id,
+                "progress",
+                {
+                    "phase": phase_key,
+                    "label": display_label,
+                    "icon": icon,
+                    "message": f"{display_label} 开始…",
+                },
+            )
 
             from competition.graph import _instrument_node
+
             try:
                 instrumented_node = _instrument_node(node_key, node_fn)
                 result = instrumented_node(st)
@@ -3200,17 +3473,21 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
             delta_tokens = int((stage_result.get("token_usage") or {}).get("total_tokens", 0) or 0)
             end_time = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
-            _emit_event(thread_id, "node_end", {
-                "node": phase_key,
-                "label": display_label,
-                "icon": icon,
-                "status": stage_result.get("status", "completed"),
-                "progress": f"{display_label} 完成",
-                "tokens": delta_tokens,
-                "duration_ms": stage_result.get("duration_ms", 0),
-                "llm_calls": stage_result.get("llm_calls", 0),
-                "error_code": stage_result.get("error_code"),
-            })
+            _emit_event(
+                thread_id,
+                "node_end",
+                {
+                    "node": phase_key,
+                    "label": display_label,
+                    "icon": icon,
+                    "status": stage_result.get("status", "completed"),
+                    "progress": f"{display_label} 完成",
+                    "tokens": delta_tokens,
+                    "duration_ms": stage_result.get("duration_ms", 0),
+                    "llm_calls": stage_result.get("llm_calls", 0),
+                    "error_code": stage_result.get("error_code"),
+                },
+            )
 
             # Extract structured JSON output from the node result
             _json_output: dict | None = None
@@ -3225,11 +3502,17 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
 
             # Persist re-execution phase with captured content
             from competition.db import save_phase
+
             save_phase(
-                thread_id=thread_id, phase_key=phase_key,
-                label=display_label, icon=icon, status=stage_result.get("status", "completed"),
-                start_time=start_time, end_time=end_time,
-                tokens=delta_tokens, content=dict(_re_content),
+                thread_id=thread_id,
+                phase_key=phase_key,
+                label=display_label,
+                icon=icon,
+                status=stage_result.get("status", "completed"),
+                start_time=start_time,
+                end_time=end_time,
+                tokens=delta_tokens,
+                content=dict(_re_content),
                 details=[stage_result] if stage_result else [],
                 json_output=_json_output,
                 version=round_num,
@@ -3297,8 +3580,7 @@ def _reanalyze_sync(thread_id: str, action: str) -> None:
                 generation_id=generation_id,
             )
             _queue_report_snapshot_knowledge(thread_id, version)
-            logger.info("Saved post-%s report v%d for %s",
-                        action, version or _current_db_version(thread_id), thread_id[:12])
+            logger.info("Saved post-%s report v%d for %s", action, version or _current_db_version(thread_id), thread_id[:12])
     except _ReanalysisCancelled:
         logger.info("Reanalysis %s cancelled", thread_id)
     except Exception as e:
@@ -3434,8 +3716,7 @@ async def submit_survey_response(thread_id: str, response: SurveyResponseRequest
     state["survey_responses"] = existing
     _store[thread_id]["state"] = state
 
-    logger.info("Survey response submitted: thread=%s q=%s label=%s",
-                thread_id[:12], response.question_id, response.respondent_label)
+    logger.info("Survey response submitted: thread=%s q=%s label=%s", thread_id[:12], response.question_id, response.respondent_label)
 
     return {"status": "received", "total_responses": len(existing)}
 
@@ -3454,6 +3735,7 @@ async def export_report(thread_id: str, format: str = "md"):
 
     if format == "json":
         import json
+
         report = entry.get("state", {}).get("report_data") or {}
         return PlainTextResponse(
             json.dumps(report, ensure_ascii=False, indent=2, default=str),
@@ -3487,6 +3769,7 @@ async def export_to_feishu(thread_id: str, fastapi_request: Request):
         if entry is None:
             # Fallback: load from SQLite
             from competition.db import get_analysis, init_db
+
             conn = init_db()
             db_record = get_analysis(thread_id, conn=conn)
             conn.close()
@@ -3561,20 +3844,23 @@ async def list_history(limit: int = Query(default=10, le=50), fastapi_request: R
             owner = _thread_owners.get(tid, "default")
             if owner != user_id:
                 continue
-        history.append({
-            "thread_id": tid,
-            "query": entry.get("query", ""),
-            "products": entry.get("products", []),
-            "status": entry.get("status", "unknown"),
-            "created_at": entry.get("created_at", ""),
-            "versions": len(_history_store.list_by_thread(tid)),
-        })
+        history.append(
+            {
+                "thread_id": tid,
+                "query": entry.get("query", ""),
+                "products": entry.get("products", []),
+                "status": entry.get("status", "unknown"),
+                "created_at": entry.get("created_at", ""),
+                "versions": len(_history_store.list_by_thread(tid)),
+            }
+        )
     # Return most recent first, limited
     history.sort(key=lambda h: h.get("created_at", ""), reverse=True)
     history = history[:limit]
     try:
         from competition.db import init_db
         from competition.db import list_history as db_list_history
+
         conn = init_db()
         persisted = db_list_history(conn, limit=limit, user_id=user_id)
         conn.close()
@@ -3627,6 +3913,7 @@ async def current_user(fastapi_request: Request):
         try:
             import os as _os
             import sqlite3 as _sqlite
+
             auth_db = _os.path.join(_os.path.dirname(__file__), "..", "..", ".ci-agent", "auth.db")
             if _os.path.exists(auth_db):
                 ac = _sqlite.connect(auth_db)
@@ -3640,6 +3927,7 @@ async def current_user(fastapi_request: Request):
     config_mode = "db"
     try:
         from competition.config_mode import is_file_mode
+
         config_mode = "file" if is_file_mode() else "db"
     except Exception:
         pass
@@ -3767,9 +4055,17 @@ def _run_scheduled_collection(schedule: dict) -> dict:
     result = collector_node(state)
     persistence = (result.get("collection_summary") or {}).get("intelligence_persistence") or {}
     material = int(persistence.get("material_changes", 0) or 0)
-    knowledge_ingestion = _queue_observation_knowledge(schedule, persistence) if material else {
-        "requested": 0, "queued": 0, "approved": 0, "quarantined": 0, "jobs": [],
-    }
+    knowledge_ingestion = (
+        _queue_observation_knowledge(schedule, persistence)
+        if material
+        else {
+            "requested": 0,
+            "queued": 0,
+            "approved": 0,
+            "quarantined": 0,
+            "jobs": [],
+        }
+    )
     return {
         **persistence,
         "knowledge_ingestion": knowledge_ingestion,
@@ -3781,11 +4077,7 @@ def _run_scheduled_collection(schedule: dict) -> dict:
 
 def _queue_observation_knowledge(schedule: dict, persistence: dict) -> dict:
     """Queue only materially changed observation facts for governed ingestion."""
-    material_keys = list(dict.fromkeys(
-        str(event.get("item_key") or "")
-        for event in persistence.get("change_events") or []
-        if event.get("material") and event.get("item_key")
-    ))
+    material_keys = list(dict.fromkeys(str(event.get("item_key") or "") for event in persistence.get("change_events") or [] if event.get("material") and event.get("item_key")))
     if not material_keys:
         return {"requested": 0, "queued": 0, "approved": 0, "quarantined": 0, "jobs": []}
     items = _load_intelligence_items(material_keys)
@@ -3836,7 +4128,7 @@ def _run_scheduled_deep_analysis(schedule: dict, collection_result: dict) -> dic
     # The durable task remains the outer retry boundary; processing these small
     # governed imports here makes the subsequent Collector see the new graph
     # relations instead of racing the ingestion worker.
-    for queued in ((collection_result.get("knowledge_ingestion") or {}).get("jobs") or []):
+    for queued in (collection_result.get("knowledge_ingestion") or {}).get("jobs") or []:
         job_id = str(queued.get("job_id") or "")
         if not job_id:
             continue
@@ -3857,12 +4149,18 @@ def _run_scheduled_deep_analysis(schedule: dict, collection_result: dict) -> dic
     _store[thread_id] = {
         "status": "running",
         "state": {
-            "messages": [], "thread_id": thread_id,
+            "messages": [],
+            "thread_id": thread_id,
             "user_request": f"定期观察竞品：{', '.join(products)}",
-            "target_products": products, "analysis_brief": brief, "collected_data": [],
-            "industry": "general", "complexity": "standard",
+            "target_products": products,
+            "analysis_brief": brief,
+            "collected_data": [],
+            "industry": "general",
+            "complexity": "standard",
         },
-        "created_at": datetime.now(UTC).isoformat(), "query": f"定期观察竞品：{', '.join(products)}", "products": products,
+        "created_at": datetime.now(UTC).isoformat(),
+        "query": f"定期观察竞品：{', '.join(products)}",
+        "products": products,
         "title": f"定期观察：{'、'.join(products)}",
     }
     upsert_analysis(thread_id=thread_id, status="running", user_id=user_id, query=_store[thread_id]["query"], products=products, industry="general", persona="pm", title=_store[thread_id]["title"], analysis_brief=brief)
@@ -3896,7 +4194,10 @@ def start_observation_runtime(poll_seconds: int = 30) -> None:
                     task_submitter=_enqueue_observation_task,
                 )
                 scheduler.tick()
+                # Publish the scheduler heartbeat before connector I/O so health
+                # checks do not race with a slow or unavailable source.
                 _observation_runtime_last_tick = datetime.now(UTC).isoformat()
+                _sync_due_knowledge_sources(limit=10)
                 _observation_runtime_last_error = None
             except Exception as exc:
                 _observation_runtime_last_error = str(exc)[:500]
@@ -4217,10 +4518,7 @@ async def list_alert_events(fastapi_request: Request, status: str | None = None,
     try:
         user_id = _get_user_id(fastapi_request)
         events = repository.list_events(user_id=user_id, status=status, limit=limit)
-        feedback = {
-            item["event_id"]: item
-            for item in feedback_repository.list_feedback(user_id, limit=max(limit, 100))
-        }
+        feedback = {item["event_id"]: item for item in feedback_repository.list_feedback(user_id, limit=max(limit, 100))}
         for event in events:
             event["feedback"] = feedback.get(event["event_id"])
         return {"events": events}
@@ -4355,6 +4653,7 @@ async def dispatch_pending_alerts(fastapi_request: Request, limit: int = Query(d
 async def get_settings(fastapi_request: Request):
     """Get current user's settings."""
     from competition.db import get_user_settings
+
     user_id = _get_user_id(fastapi_request)
     settings = get_user_settings(user_id)
     return {"user_id": user_id, "settings": settings}
@@ -4364,6 +4663,7 @@ async def get_settings(fastapi_request: Request):
 async def save_settings(body: SettingsUpdateRequest | dict, fastapi_request: Request):
     """Save current user's settings."""
     from competition.db import save_user_settings_if_current
+
     user_id = _get_user_id(fastapi_request)
     if user_id == "default":
         raise HTTPException(status_code=401, detail="Login required to save settings")
@@ -4396,6 +4696,7 @@ async def test_settings_connection(body: SettingsConnectionRequest, fastapi_requ
 async def migrate_data(fastapi_request: Request):
     """Assign all 'default' user data to the current user."""
     from competition.db import migrate_default_data
+
     user_id = _get_user_id(fastapi_request)
     if user_id == "default":
         raise HTTPException(status_code=401, detail="Login required to migrate data")
@@ -4604,17 +4905,19 @@ def _add_token_entry(thread_id: str, label: str) -> None:
     entries: list[dict] = _store[thread_id].setdefault("token_usage", [])
     prev_total = entries[-1].get("stage_total_tokens", entries[-1].get("cumulative", 0)) if entries else 0
     delta = total - prev_total
-    entries.append({
-        "label": label,
-        "tokens": max(delta, 0),
-        "cumulative": total,
-        "agents": agents,
-        "stage_total_tokens": total,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "tool_calls": tool_calls,
-        "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
-    })
+    entries.append(
+        {
+            "label": label,
+            "tokens": max(delta, 0),
+            "cumulative": total,
+            "agents": agents,
+            "stage_total_tokens": total,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "tool_calls": tool_calls,
+            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+        }
+    )
     logger.info("Token entry [%s] for %s: +%d tokens (cumulative %d)", label, thread_id[:12], max(delta, 0), total)
 
 
@@ -4666,7 +4969,8 @@ def _finalize_cancelled(thread_id: str) -> None:
             conn=conn,
         )
         upsert_analysis(
-            thread_id=thread_id, status="interrupted",
+            thread_id=thread_id,
+            status="interrupted",
             user_id=_thread_owners.get(thread_id, "default"),
             query=_store[thread_id].get("query", ""),
             products=_store[thread_id].get("products", []),
@@ -4699,6 +5003,7 @@ def _resolve_and_run_graph(
     Checks _cancel_flags at key points for cooperative cancellation.
     """
     import logging
+
     _log = logging.getLogger(__name__)
 
     def _cancelled() -> bool:
@@ -4706,11 +5011,13 @@ def _resolve_and_run_graph(
 
     # Set per-user context for settings override in executor
     from competition.executor import set_user_context
+
     set_user_context(user_id)
 
     # One opaque ID joins resolving/graph phases to the report version created
     # later. Failed runs retain the ID but intentionally have no report version.
     from uuid import uuid4
+
     generation_id = str(uuid4())
     if thread_id in _store:
         _store[thread_id].setdefault("state", {})["generation_id"] = generation_id
@@ -4718,6 +5025,7 @@ def _resolve_and_run_graph(
 
     # Set cancel checker so LLM calls during product resolution can be interrupted
     from competition.executor import clear_cancel_checker, set_cancel_checker
+
     set_cancel_checker(lambda: _cancel_flags.get(thread_id, False))
 
     try:
@@ -4728,11 +5036,15 @@ def _resolve_and_run_graph(
             return
         # ── Phase 1: ProductResolver (pre-graph) ──
         resolve_start = __import__("datetime").datetime.now(__import__("datetime").UTC)
-        _emit_event(thread_id, "progress", {
-            "phase": "resolving",
-            "message": "正在解析竞品名称...",
-            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
-        })
+        _emit_event(
+            thread_id,
+            "progress",
+            {
+                "phase": "resolving",
+                "message": "正在解析竞品名称...",
+                "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+            },
+        )
 
         products: list[str] = []
 
@@ -4744,10 +5056,7 @@ def _resolve_and_run_graph(
                 if p and p not in products:
                     products.append(p)
 
-        product_audit = [
-            {"requested_name": product, "resolved_name": product, "confidence": "low"}
-            for product in products
-        ]
+        product_audit = [{"requested_name": product, "resolved_name": product, "confidence": "low"} for product in products]
         if products:
             # Verify/correct explicit products via search + LLM judge
             # A confirmed Brief fixes membership; keep user order and spelling
@@ -4756,7 +5065,11 @@ def _resolve_and_run_graph(
                 # Verification may collect evidence and suggest corrections, but
                 # the confirmed Brief owns membership, order, and user spelling.
                 verified = _verify_products_via_search(
-                    products, 1, query, return_audit=True, preserve_membership=True,
+                    products,
+                    1,
+                    query,
+                    return_audit=True,
+                    preserve_membership=True,
                 )
                 products, product_audit = verified
 
@@ -4780,29 +5093,42 @@ def _resolve_and_run_graph(
             _log.warning("ProductResolver found 0 products — marking as failed")
             if thread_id in _store:
                 _store[thread_id]["status"] = "failed"
-                _store[thread_id]["state"]["error"] = (
-                    "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
-                )
+                _store[thread_id]["state"]["error"] = "无法从分析请求中提取竞品名称，请在「竞品名称」输入框中明确指定（逗号分隔）。"
             _emit_event(thread_id, "error", {"error": "无法解析竞品名称", "status": "failed"})
             return
 
         # Emit products resolved event
         resolve_end = __import__("datetime").datetime.now(__import__("datetime").UTC)
-        _emit_event(thread_id, "progress", {
-            "phase": "resolved",
-            "message": f"竞品解析完成: {', '.join(products)}",
-            "products": products,
-            "timestamp": resolve_end.isoformat(),
-        })
+        _emit_event(
+            thread_id,
+            "progress",
+            {
+                "phase": "resolved",
+                "message": f"竞品解析完成: {', '.join(products)}",
+                "products": products,
+                "timestamp": resolve_end.isoformat(),
+            },
+        )
 
         # Persist resolving + resolved phases so history reconstruction has them
         from competition.db import save_phase as _sp
-        _sp(thread_id=thread_id, phase_key="resolving", label="竞品解析", icon="🔎",
-            status="completed", start_time=resolve_start.isoformat(), end_time=resolve_end.isoformat(),
-            tokens=0, content={}, details=[
+
+        _sp(
+            thread_id=thread_id,
+            phase_key="resolving",
+            label="竞品解析",
+            icon="🔎",
+            status="completed",
+            start_time=resolve_start.isoformat(),
+            end_time=resolve_end.isoformat(),
+            tokens=0,
+            content={},
+            details=[
                 {"message": "正在解析竞品名称...", "phase": "resolving"},
                 {"message": f"竞品解析完成: {', '.join(products)}", "phase": "resolved", "products": products},
-            ], generation_id=generation_id)
+            ],
+            generation_id=generation_id,
+        )
 
         # Update store with verified products
         if thread_id in _store:
@@ -4827,6 +5153,7 @@ def _resolve_and_run_graph(
                 title = ""
             if title:
                 from competition.db import upsert_analysis as _ua
+
                 _ua(thread_id=thread_id, title=title, status="running", products=products)
                 _store[thread_id]["title"] = title
                 _emit_event(thread_id, "title", {"title": title, "thread_id": thread_id})
@@ -4849,6 +5176,7 @@ def _resolve_and_run_graph(
             _store[thread_id]["state"]["error"] = str(e)
     finally:
         from competition.executor import clear_user_context
+
         clear_user_context()
 
 
@@ -4877,15 +5205,17 @@ def _run_graph_sync(thread_id: str) -> None:
         from competition.nodes.reviewer import reviewer_node
         from competition.nodes.writer import writer_node
 
-        register_nodes({
-            "orchestrator": orchestrator_node,
-            "collector": collector_node,
-            "analyst": analyst_node,
-            "reviewer": reviewer_node,
-            "writer": writer_node,
-            "hitl_gate": hitl_gate_node,
-            "error_handler": error_handler_node,
-        })
+        register_nodes(
+            {
+                "orchestrator": orchestrator_node,
+                "collector": collector_node,
+                "analyst": analyst_node,
+                "reviewer": reviewer_node,
+                "writer": writer_node,
+                "hitl_gate": hitl_gate_node,
+                "error_handler": error_handler_node,
+            }
+        )
 
         graph = build_competition_graph(checkpointer=_replay_saver)
         initial_state = CompetitionState(**entry["state"])
@@ -4909,19 +5239,27 @@ def _run_graph_sync(thread_id: str) -> None:
         def _stream_chunk(agent_name: str, chunk_text: str) -> None:
             nonlocal _chunk_seq
             _chunk_seq += 1
-            _emit_event(thread_id, "messages-tuple", [{
-                "type": "AIMessageChunk",
-                "name": agent_name or "analysis",
-                "content": chunk_text,
-                "id": f"comp-{thread_id[-8:]}-chunk-{_chunk_seq}",
-            }])
+            _emit_event(
+                thread_id,
+                "messages-tuple",
+                [
+                    {
+                        "type": "AIMessageChunk",
+                        "name": agent_name or "analysis",
+                        "content": chunk_text,
+                        "id": f"comp-{thread_id[-8:]}-chunk-{_chunk_seq}",
+                    }
+                ],
+            )
 
         _current_agent: list = [""]
 
         # Agent display names for the thinking progress events
         _AGENT_LABELS = {
-            "Orchestrator": "解析意图", "Collector": "信息采集",
-            "Analyst": "对比分析", "Reviewer": "质量审查",
+            "Orchestrator": "解析意图",
+            "Collector": "信息采集",
+            "Analyst": "对比分析",
+            "Reviewer": "质量审查",
             "Writer": "报告生成",
         }
 
@@ -4938,20 +5276,22 @@ def _run_graph_sync(thread_id: str) -> None:
             if agent_name and agent_name != _current_agent[0]:
                 _current_agent[0] = agent_name
                 # Emit agent label as a system chunk
-                _emit_event(thread_id, "messages-tuple", [{
-                    "type": "AIMessageChunk",
-                    "name": "system",
-                    "content": f"\n\n**[{agent_name}]** ",
-                    "id": f"comp-{thread_id[-8:]}-label-{_chunk_seq}",
-                }])
+                _emit_event(
+                    thread_id,
+                    "messages-tuple",
+                    [
+                        {
+                            "type": "AIMessageChunk",
+                            "name": "system",
+                            "content": f"\n\n**[{agent_name}]** ",
+                            "id": f"comp-{thread_id[-8:]}-label-{_chunk_seq}",
+                        }
+                    ],
+                )
             _stream_chunk(agent_name, chunk_text)
 
         def _writer_progress(payload: dict) -> None:
-            allowed = {
-                key: payload[key]
-                for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message")
-                if key in payload
-            }
+            allowed = {key: payload[key] for key in ("phase", "task_key", "section_id", "status", "completed", "total", "message") if key in payload}
             _emit_event(thread_id, "progress", allowed)
 
         set_stream_callback(_stream_chunk_labeled)
@@ -4962,9 +5302,12 @@ def _run_graph_sync(thread_id: str) -> None:
         event_num = 0
         prev_state: dict = {}
         _NODE_LABELS = {
-            "orchestrator": "解析意图", "collector": "信息采集",
-            "analyst": "对比分析", "reviewer": "质量审查",
-            "writer": "报告生成", "hitl_gate": "等待审批",
+            "orchestrator": "解析意图",
+            "collector": "信息采集",
+            "analyst": "对比分析",
+            "reviewer": "质量审查",
+            "writer": "报告生成",
+            "hitl_gate": "等待审批",
             "error_handler": "错误处理",
         }
         for event in graph.stream(initial_state, {"configurable": {"thread_id": thread_id}}, stream_mode=["values"]):
@@ -5042,33 +5385,44 @@ def _run_graph_sync(thread_id: str) -> None:
 
                 if current_node:
                     from competition.db import upsert_analysis
+
                     delta_tokens = int((stage_result or {}).get("token_usage", {}).get("total_tokens", 0) or 0)
                     upsert_analysis(
-                        thread_id=thread_id, status="running",
-                        current_node=current_node, progress=progress or _NODE_LABELS.get(current_node, ""),
+                        thread_id=thread_id,
+                        status="running",
+                        current_node=current_node,
+                        progress=progress or _NODE_LABELS.get(current_node, ""),
                     )
                     # SSE event (§19)
-                    _emit_event(thread_id, "node_end", {
-                        "node": current_node,
-                        "status": (stage_result or {}).get("status", "done"),
-                        "progress": progress or _NODE_LABELS.get(current_node, ""),
-                        "tokens": max(delta_tokens, 0),
-                        "duration_ms": (stage_result or {}).get("duration_ms", 0),
-                        "llm_calls": (stage_result or {}).get("llm_calls", 0),
-                        "tool_calls": (stage_result or {}).get("tool_calls", 0),
-                        "error_code": (stage_result or {}).get("error_code"),
-                        "degraded_reason": (stage_result or {}).get("degraded_reason"),
-                        "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
-                    })
+                    _emit_event(
+                        thread_id,
+                        "node_end",
+                        {
+                            "node": current_node,
+                            "status": (stage_result or {}).get("status", "done"),
+                            "progress": progress or _NODE_LABELS.get(current_node, ""),
+                            "tokens": max(delta_tokens, 0),
+                            "duration_ms": (stage_result or {}).get("duration_ms", 0),
+                            "llm_calls": (stage_result or {}).get("llm_calls", 0),
+                            "tool_calls": (stage_result or {}).get("tool_calls", 0),
+                            "error_code": (stage_result or {}).get("error_code"),
+                            "degraded_reason": (stage_result or {}).get("degraded_reason"),
+                            "timestamp": __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+                        },
+                    )
                     # Persist phase content for history reconstruction
                     from competition.db import save_phase as _sp
+
                     _now = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
 
                     _sp(
-                        thread_id=thread_id, phase_key=current_node,
+                        thread_id=thread_id,
+                        phase_key=current_node,
                         label=_NODE_LABELS.get(current_node, current_node),
-                        icon="⚙️", status=(stage_result or {}).get("status", "completed"),
-                        start_time=_node_start_time, end_time=_now,
+                        icon="⚙️",
+                        status=(stage_result or {}).get("status", "completed"),
+                        start_time=_node_start_time,
+                        end_time=_now,
                         tokens=max(delta_tokens, 0),
                         content=dict(_phase_content),
                         details=[stage_result] if stage_result else [],
@@ -5098,6 +5452,7 @@ def _run_graph_sync(thread_id: str) -> None:
             state["run_status"] = "failed"
 
             from competition.db import upsert_analysis
+
             rd = state.get("report_data")
             upsert_analysis(
                 thread_id=thread_id,
@@ -5117,9 +5472,7 @@ def _run_graph_sync(thread_id: str) -> None:
 
         # Emit completion, preserving a partial/degraded terminal state.
         summary = state.get("usage_summary") or {}
-        final_status = "partial" if any(
-            status == "partial" for status in (summary.get("statuses") or {}).values()
-        ) else "completed"
+        final_status = "partial" if any(status == "partial" for status in (summary.get("statuses") or {}).values()) else "completed"
         state["run_status"] = final_status
         _emit_event(thread_id, "end", {"status": final_status})
         clear_stream_callback()
@@ -5131,10 +5484,13 @@ def _run_graph_sync(thread_id: str) -> None:
 
         # Persist completion to DB (§18)
         from competition.db import upsert_analysis
+
         rd = state.get("report_data")
         upsert_analysis(
-            thread_id=thread_id, status="completed",
-            current_node="", progress="分析完成",
+            thread_id=thread_id,
+            status="completed",
+            current_node="",
+            progress="分析完成",
             report_data=rd.model_dump() if hasattr(rd, "model_dump") else rd,
             metrics=(rd.get("metrics") if isinstance(rd, dict) else None),
             token_usage=_store[thread_id].get("token_usage", []),
@@ -5194,6 +5550,7 @@ def _run_graph_sync(thread_id: str) -> None:
             _store[thread_id]["status"] = "failed"
             _store[thread_id]["state"]["error"] = str(e)
             from competition.db import upsert_analysis
+
             upsert_analysis(thread_id=thread_id, status="failed", progress=f"失败: {str(e)[:100]}")
 
 
@@ -5220,24 +5577,28 @@ def _stream_events_sync(thread_id: str, last_event_id: str | None = None):
         # Remember the snapshot IDs so those queued copies are not delivered a
         # second time after replay.  Events emitted after this snapshot have a
         # new ID and are delivered normally.
-        snapshot_event_ids = {
-            event_id
-            for _seq, frame in buffered
-            if (event_id := _frame_event_id(frame)) is not None
-        }
+        snapshot_event_ids = {event_id for _seq, frame in buffered if (event_id := _frame_event_id(frame)) is not None}
 
         if entry:
             init_id = f"{thread_id[-8:]}-init"
-            yield _format_sse("metadata", {
-                "run_id": thread_id,
-                "thread_id": thread_id,
-                "query": entry.get("query", ""),
-                "products": entry.get("products", []),
-            }, event_id=init_id)
-            yield _format_sse("values", {
-                "status": entry.get("status", "unknown"),
-                "thread_id": thread_id,
-            }, event_id=f"{thread_id[-8:]}-values")
+            yield _format_sse(
+                "metadata",
+                {
+                    "run_id": thread_id,
+                    "thread_id": thread_id,
+                    "query": entry.get("query", ""),
+                    "products": entry.get("products", []),
+                },
+                event_id=init_id,
+            )
+            yield _format_sse(
+                "values",
+                {
+                    "status": entry.get("status", "unknown"),
+                    "thread_id": thread_id,
+                },
+                event_id=f"{thread_id[-8:]}-values",
+            )
         else:
             yield _format_sse("error", {"error": "Thread not found"}, event_id=f"{thread_id[-8:]}-err")
             return
@@ -5251,18 +5612,10 @@ def _stream_events_sync(thread_id: str, last_event_id: str | None = None):
         replay_frames: list[str]
         if last_event_id:
             replay_index = next(
-                (
-                    index
-                    for index, (_seq, frame) in enumerate(buffered)
-                    if f"id: {last_event_id}" in frame
-                ),
+                (index for index, (_seq, frame) in enumerate(buffered) if f"id: {last_event_id}" in frame),
                 None,
             )
-            replay_frames = [
-                frame for _seq, frame in (
-                    buffered[replay_index + 1 :] if replay_index is not None else buffered
-                )
-            ]
+            replay_frames = [frame for _seq, frame in (buffered[replay_index + 1 :] if replay_index is not None else buffered)]
         else:
             replay_frames = [frame for _seq, frame in buffered]
 

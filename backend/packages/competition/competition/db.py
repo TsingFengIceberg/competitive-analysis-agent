@@ -434,6 +434,37 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_user ON knowledge_ingestion_jobs(user_id, created_at DESC);
 
+        CREATE TABLE IF NOT EXISTS knowledge_source_connectors (
+            source_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            space_id TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            uri TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'web',
+            product TEXT NOT NULL DEFAULT '',
+            dimension TEXT NOT NULL DEFAULT '',
+            market_scope TEXT NOT NULL DEFAULT 'Global / unspecified',
+            authority_tier TEXT NOT NULL DEFAULT 'primary',
+            media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sync_interval_minutes INTEGER NOT NULL DEFAULT 360,
+            timeout_seconds INTEGER NOT NULL DEFAULT 20,
+            etag TEXT,
+            last_modified TEXT,
+            content_hash TEXT,
+            last_checked_at TEXT,
+            last_success_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'idle',
+            last_error TEXT,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            cooldown_until TEXT,
+            last_job_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, space_id, uri, product, dimension)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_sources_user ON knowledge_source_connectors(user_id, enabled, updated_at DESC);
+
         CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
             retrieval_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL DEFAULT 'default',
@@ -459,6 +490,20 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_evaluation_user ON knowledge_evaluation_runs(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_retrieval_feedback (
+            feedback_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            retrieval_id TEXT,
+            query TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, retrieval_id, chunk_id, action)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_feedback_user ON knowledge_retrieval_feedback(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_feedback_chunk ON knowledge_retrieval_feedback(chunk_id, action);
 
         CREATE TABLE IF NOT EXISTS knowledge_spaces (
             space_id TEXT PRIMARY KEY,
@@ -721,6 +766,14 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     ):
         try:
             conn.execute(f"ALTER TABLE a2a_tasks ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass
+    for col, definition in (
+        ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("cooldown_until", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE knowledge_source_connectors ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
     conn.commit()

@@ -27,7 +27,7 @@ from competition.knowledge_governance import (
     retention_deadline,
 )
 from competition.knowledge_graph import build_relation_candidates, graph_tokens, plan_graph_retrieval
-from competition.knowledge_index import KnowledgeIndex, merge_scores
+from competition.knowledge_index import KnowledgeIndex
 from competition.knowledge_intelligence import (
     build_event_candidate,
     build_long_term_insights,
@@ -45,6 +45,7 @@ from competition.knowledge_query import (
     plan_retrieval_query,
 )
 from competition.knowledge_repo import KnowledgeRepository
+from competition.knowledge_retrieval import RetrievalStrategy, explain_retrieval
 from competition.knowledge_types import AUTHORITY_PRIORS, KnowledgeChunk, KnowledgeHit, RetrievalFilters
 
 logger = logging.getLogger(__name__)
@@ -326,11 +327,7 @@ class KnowledgeService:
             with self._repo() as repository:
                 stale_chunks = repository.list_chunks(document_id=document["document_id"], active_only=True)
                 version_record = next(
-                    (
-                        item
-                        for item in repository.list_versions(document["document_id"])
-                        if int(item["version_no"]) == version_no
-                    ),
+                    (item for item in repository.list_versions(document["document_id"]) if int(item["version_no"]) == version_no),
                     {},
                 )
                 repository.update_job(job_id, progress=55)
@@ -394,12 +391,7 @@ class KnowledgeService:
                 result = repository.get_job(job_id)
                 assert result is not None
             new_point_ids = {chunk.qdrant_point_id for chunk in chunks}
-            stale_point_ids = [
-                str(item["qdrant_point_id"])
-                for item in stale_chunks
-                if int(item.get("version_no") or 0) == version_no
-                and str(item["qdrant_point_id"]) not in new_point_ids
-            ]
+            stale_point_ids = [str(item["qdrant_point_id"]) for item in stale_chunks if int(item.get("version_no") or 0) == version_no and str(item["qdrant_point_id"]) not in new_point_ids]
             try:
                 self.index.delete_points(stale_point_ids)
             except Exception:
@@ -606,19 +598,10 @@ class KnowledgeService:
             namespace=str(metadata.get("space_id") or ""),
         )
         with self._repo() as repository:
-            existing = repository.find_document_by_source(
-                job["user_id"], source_identity, str(metadata.get("space_id") or "")
+            existing = repository.find_document_by_source(job["user_id"], source_identity, str(metadata.get("space_id") or ""))
+            imported_hashes = (
+                {str((((version.get("metadata") or {}).get("document_fields") or {}).get("metadata") or {}).get("intelligence_content_hash") or "") for version in repository.list_versions(existing["document_id"])} if existing else set()
             )
-            imported_hashes = {
-                str(
-                    (
-                        ((version.get("metadata") or {}).get("document_fields") or {}).get("metadata")
-                        or {}
-                    ).get("intelligence_content_hash")
-                    or ""
-                )
-                for version in repository.list_versions(existing["document_id"])
-            } if existing else set()
 
         imported = 0
         skipped = 0
@@ -780,15 +763,16 @@ class KnowledgeService:
         filters: RetrievalFilters | None = None,
         limit: int = 12,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> list[KnowledgeHit]:
         from competition.knowledge_quota import quota
 
         quota.check(user_id, "search")
-        return self.search_many(
-            [(query, filters or RetrievalFilters(), limit)],
-            user_id=user_id,
-            ranking_profile=ranking_profile,
-        )[0]
+        kwargs: dict[str, Any] = {"user_id": user_id, "ranking_profile": ranking_profile}
+        if retrieval_mode != "hybrid" or not rerank:
+            kwargs.update({"retrieval_mode": retrieval_mode, "rerank": rerank})
+        return self.search_many([(query, filters or RetrievalFilters(), limit)], **kwargs)[0]
 
     def search_many(
         self,
@@ -796,6 +780,8 @@ class KnowledgeService:
         *,
         user_id: str,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> list[list[KnowledgeHit]]:
         """Retrieve several scoped queries with batch inference and result caching."""
         if not requests:
@@ -806,11 +792,7 @@ class KnowledgeService:
         for query, filters, limit in requests:
             requested = set(filters.space_ids)
             allowed = accessible.intersection(requested) if requested else accessible
-            scoped_requests.append(
-                (query, replace(filters, space_ids=tuple(sorted(allowed))), limit)
-                if allowed
-                else None
-            )
+            scoped_requests.append((query, replace(filters, space_ids=tuple(sorted(allowed))), limit) if allowed else None)
         started = time.monotonic()
         output: list[list[KnowledgeHit] | None] = [None] * len(requests)
         missing: list[tuple[int, str, RetrievalFilters, int, tuple[Any, ...]]] = []
@@ -820,7 +802,8 @@ class KnowledgeService:
                 continue
             query, filters, limit = scoped
             normalized = normalize_query_text(query)
-            cache_key = self._cache_key(user_id, normalized, filters, limit, ranking_profile)
+            effective_mode = retrieval_mode if retrieval_mode in {"hybrid", "dense", "sparse"} else "hybrid"
+            cache_key = self._cache_key(user_id, normalized, filters, limit, ranking_profile, effective_mode, rerank)
             cached = self._get_cached(cache_key)
             if cached is not None:
                 output[index] = cached
@@ -839,7 +822,12 @@ class KnowledgeService:
         try:
             index_requests = [(query, user_id, filters, limit, max(24, limit * 3)) for _, query, filters, limit, _ in missing]
             if hasattr(self.index, "search_many_ids"):
-                recalled_groups = self.index.search_many_ids(index_requests)
+                try:
+                    recalled_groups = self.index.search_many_ids(index_requests, retrieval_mode=retrieval_mode)
+                except TypeError:
+                    # Third-party/test indexes may implement the original
+                    # five-item request contract; retain compatibility.
+                    recalled_groups = self.index.search_many_ids(index_requests)
             else:
                 recalled_groups = [
                     self.index.search_ids(
@@ -848,14 +836,12 @@ class KnowledgeService:
                         filters=request_filters,
                         limit=request_limit,
                         candidate_limit=candidate_limit,
+                        retrieval_mode=retrieval_mode,
                     )
                     for query, request_user, request_filters, request_limit, candidate_limit in index_requests
                 ]
             all_chunk_ids = list(dict.fromkeys(chunk_id for recalled in recalled_groups for chunk_id, _ in recalled))
-            include_historical = any(
-                filters.temporal_mode != "current"
-                for _, _, filters, _, _ in missing
-            )
+            include_historical = any(filters.temporal_mode != "current" for _, _, filters, _, _ in missing)
             with self._repo() as repository:
                 rows_by_id = repository.get_chunks_by_ids(
                     all_chunk_ids,
@@ -865,13 +851,22 @@ class KnowledgeService:
                 )
             candidate_groups = [[(rows_by_id[chunk_id], score) for chunk_id, score in recalled if chunk_id in rows_by_id] for recalled in recalled_groups]
             rerank_groups = [(query, [row["contextual_text"] for row, _ in candidates]) for (_, query, _, _, _), candidates in zip(missing, candidate_groups, strict=True)]
-            if hasattr(self.index, "rerank_many"):
+            if rerank and hasattr(self.index, "rerank_many"):
                 score_groups = self.index.rerank_many(rerank_groups)
-            else:
+            elif rerank:
                 score_groups = [self.index.rerank(query, texts) for query, texts in rerank_groups]
+            else:
+                score_groups = [[None for _ in texts] for _, texts in rerank_groups]
             for request, candidates, rerank_scores in zip(missing, candidate_groups, score_groups, strict=True):
                 index, query, filters, limit, cache_key = request
-                hits = self._build_hits(candidates, rerank_scores, limit, ranking_profile=ranking_profile)
+                hits = self._build_hits(
+                    candidates,
+                    rerank_scores,
+                    limit,
+                    ranking_profile=ranking_profile,
+                    retrieval_mode=retrieval_mode,
+                    rerank=rerank,
+                )
                 output[index] = hits
                 self._put_cached(cache_key, hits)
                 self._log_retrieval(
@@ -903,10 +898,24 @@ class KnowledgeService:
         rerank_scores: list[float],
         limit: int,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> list[KnowledgeHit]:
         hits: list[KnowledgeHit] = []
         profile = ranking_profile if ranking_profile in {"balanced", "freshness", "authority"} else "balanced"
-        for row, score in merge_scores(candidates, rerank_scores):
+        normalized_mode = retrieval_mode if retrieval_mode in {"hybrid", "dense", "sparse"} else "hybrid"
+        effective_rerank = rerank and any(value is not None for value in rerank_scores)
+        safe_rerank_scores = [float(value or 0.0) for value in rerank_scores]
+        if effective_rerank:
+            ranked: list[tuple[dict[str, Any], float, float | None]] = []
+            for (row, recall_score), rerank_score in zip(candidates, safe_rerank_scores, strict=True):
+                authority_score = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
+                final_score = 0.72 * max(0.0, min(1.0, rerank_score)) + 0.16 * max(0.0, min(1.0, recall_score)) + 0.12 * authority_score
+                ranked.append((row, round(final_score, 6), rerank_score))
+            ranked.sort(key=lambda item: item[1], reverse=True)
+        else:
+            ranked = [(row, score, None) for row, score in sorted(candidates, key=lambda item: item[1], reverse=True)]
+        for row, score, rerank_score in ranked:
             if score < MIN_RETRIEVAL_SCORE:
                 continue
             authority = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
@@ -915,6 +924,17 @@ class KnowledgeService:
                 score = round(0.68 * score + 0.20 * freshness + 0.12 * authority, 6)
             elif profile == "authority":
                 score = round(0.68 * score + 0.20 * authority + 0.12 * freshness, 6)
+            explanation = explain_retrieval(
+                strategy=RetrievalStrategy(
+                    mode=normalized_mode,
+                    ranking_profile=profile,
+                    rerank=effective_rerank,
+                ),
+                recall_score=float(row.get("recall_score") or score),
+                rerank_score=rerank_score,
+                authority_score=authority,
+                freshness_score=freshness,
+            )
             hits.append(
                 KnowledgeHit(
                     chunk_id=row["chunk_id"],
@@ -937,13 +957,14 @@ class KnowledgeService:
                     valid_to=row.get("valid_to"),
                     temporal_status=row.get("temporal_status") or ("current" if row.get("active") else "historical"),
                     score=score,
-                    retrieval_sources=("dense", "sparse", "reranker"),
+                    retrieval_sources=(("dense", "sparse") if normalized_mode == "hybrid" else (normalized_mode,)) + (("reranker",) if effective_rerank else ()),
                     metadata={
                         **(row.get("metadata") or {}),
                         "version_metadata": row.get("version_metadata") or {},
                         "ranking_profile": profile,
                         "freshness_score": freshness,
                         "authority_score": authority,
+                        "retrieval_explanation": explanation,
                     },
                 )
             )
@@ -973,6 +994,8 @@ class KnowledgeService:
         filters: RetrievalFilters,
         limit: int,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> tuple[Any, ...]:
         values = filters.to_dict()
         return (
@@ -991,6 +1014,8 @@ class KnowledgeService:
             tuple(values["space_ids"]),
             limit,
             ranking_profile,
+            retrieval_mode,
+            bool(rerank),
         )
 
     def search_planned(
@@ -1002,6 +1027,8 @@ class KnowledgeService:
         limit: int = 12,
         query_expansion: bool | None = None,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> tuple[list[KnowledgeHit], RetrievalPlan]:
         from competition.knowledge_quota import quota
 
@@ -1011,6 +1038,8 @@ class KnowledgeService:
             user_id=user_id,
             query_expansion=query_expansion,
             ranking_profile=ranking_profile,
+            retrieval_mode=retrieval_mode,
+            rerank=rerank,
         )
         return result[0]
 
@@ -1021,6 +1050,8 @@ class KnowledgeService:
         user_id: str,
         query_expansion: bool | None = None,
         ranking_profile: str = "balanced",
+        retrieval_mode: str = "hybrid",
+        rerank: bool = True,
     ) -> list[tuple[list[KnowledgeHit], RetrievalPlan]]:
         """Execute cost-routed multi-query plans with one batch per hop."""
         if not requests:
@@ -1035,21 +1066,17 @@ class KnowledgeService:
                     continue
                 flat.append((step.query, filters, per_step))
                 owners.append(owner)
-            expansion_enabled = (
-                query_expansion
-                if query_expansion is not None
-                else os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "false").lower()
-                in {"1", "true", "yes", "on"}
-            )
+            expansion_enabled = query_expansion if query_expansion is not None else os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "false").lower() in {"1", "true", "yes", "on"}
             if expansion_enabled:
                 for variant in plan.metadata.get("query_expansions") or expand_query_variants(plan.normalized_query):
                     flat.append((variant, filters, per_step))
                     owners.append(owner)
-        groups = (
-            self.search_many(flat, user_id=user_id)
-            if ranking_profile == "balanced"
-            else self.search_many(flat, user_id=user_id, ranking_profile=ranking_profile)
-        )
+        search_kwargs: dict[str, Any] = {"user_id": user_id}
+        if ranking_profile != "balanced":
+            search_kwargs["ranking_profile"] = ranking_profile
+        if retrieval_mode != "hybrid" or not rerank:
+            search_kwargs.update({"retrieval_mode": retrieval_mode, "rerank": rerank})
+        groups = self.search_many(flat, **search_kwargs)
         accumulated: list[list[KnowledgeHit]] = [[] for _ in requests]
         for owner, hits in zip(owners, groups, strict=True):
             accumulated[owner].extend(hits)
@@ -1061,11 +1088,7 @@ class KnowledgeService:
             bridge_requests.append((build_bridge_query(plan, accumulated[owner][:5]), filters, max(limit, limit * 2)))
             bridge_owners.append(owner)
         if bridge_requests:
-            bridge_groups = (
-                self.search_many(bridge_requests, user_id=user_id)
-                if ranking_profile == "balanced"
-                else self.search_many(bridge_requests, user_id=user_id, ranking_profile=ranking_profile)
-            )
+            bridge_groups = self.search_many(bridge_requests, **search_kwargs)
             for owner, hits in zip(bridge_owners, bridge_groups, strict=True):
                 accumulated[owner].extend(hits)
         output: list[tuple[list[KnowledgeHit], RetrievalPlan]] = []
@@ -1156,11 +1179,19 @@ class KnowledgeService:
     def retrieve_for_analysis(self, state: dict[str, Any], limit: int = 16) -> list[dict[str, Any]]:
         user_id = str(state.get("user_id") or "default")
         queries = build_analysis_queries(state)
+        brief = state.get("analysis_brief") or {}
+        retrieval_mode = str(state.get("rag_retrieval_mode") or brief.get("retrieval_mode") or "hybrid")
+        ranking_profile = str(state.get("rag_ranking_profile") or brief.get("ranking_profile") or "balanced")
         products = list(dict.fromkeys(query.product for query in queries if query.product))
         hits: list[tuple[KnowledgeHit, str, str]] = []
         per_pair = max(2, min(4, limit // max(1, len(queries)) + 1))
         requests = [(query.query, query.filters, per_pair) for query in queries]
-        result_groups = self.search_planned_many(requests, user_id=user_id)
+        result_groups = self.search_planned_many(
+            requests,
+            user_id=user_id,
+            retrieval_mode=retrieval_mode,
+            ranking_profile=ranking_profile,
+        )
         for planned, (result, retrieval_plan) in zip(queries, result_groups, strict=True):
             hits.extend((hit, planned.dimension, retrieval_plan.route) for hit in result)
         unique: dict[tuple[str, str], tuple[KnowledgeHit, str, str]] = {}
@@ -1194,6 +1225,8 @@ class KnowledgeService:
                     "knowledge_valid_to": hit.valid_to,
                     "knowledge_temporal_status": hit.temporal_status,
                     "knowledge_query_route": route,
+                    "knowledge_retrieval_mode": retrieval_mode,
+                    "knowledge_ranking_profile": ranking_profile,
                 }
             )
         return points
@@ -1202,9 +1235,7 @@ class KnowledgeService:
         """Retrieve historical reports as non-citable planning memory."""
         user_id = str(state.get("user_id") or "default")
         brief = state.get("analysis_brief") or {}
-        query = normalize_query_text(
-            str(state.get("user_request") or brief.get("objective") or "competitive analysis history")
-        )
+        query = normalize_query_text(str(state.get("user_request") or brief.get("objective") or "competitive analysis history"))
         filters = RetrievalFilters(
             source_types=("analysis_report",),
             authority_tiers=("report",),
@@ -1213,11 +1244,7 @@ class KnowledgeService:
         )
         hits, plan = self.search_planned(query, user_id=user_id, filters=filters, limit=max(limit * 2, 8))
         current_thread = str(state.get("thread_id") or "")
-        target_products = {
-            canonical_product(str(value)).casefold()
-            for value in (state.get("target_products") or brief.get("target_products") or [])
-            if str(value).strip()
-        }
+        target_products = {canonical_product(str(value)).casefold() for value in (state.get("target_products") or brief.get("target_products") or []) if str(value).strip()}
         memories: list[dict[str, Any]] = []
         seen_documents: set[str] = set()
         for hit in hits:
@@ -1230,11 +1257,7 @@ class KnowledgeService:
                 continue
             if hit.document_id in seen_documents:
                 continue
-            hit_products = {
-                canonical_product(value.strip()).casefold()
-                for value in re.split(r"\s*/\s*|\s*,\s*|\s*，\s*", hit.product)
-                if value.strip()
-            }
+            hit_products = {canonical_product(value.strip()).casefold() for value in re.split(r"\s*/\s*|\s*,\s*|\s*，\s*", hit.product) if value.strip()}
             if target_products and hit_products and not target_products.intersection(hit_products):
                 continue
             governance = document_metadata.get("auto_ingestion") or {}
@@ -1274,11 +1297,7 @@ class KnowledgeService:
             try:
                 with self._repo() as repository:
                     rows = repository.list_chunks(document_id=document["document_id"], active_only=False)
-                    versions = {
-                        int(item["version_no"]): item
-                        for item in repository.list_versions(document["document_id"])
-                        if item.get("status") in {"indexed", "partial"}
-                    }
+                    versions = {int(item["version_no"]): item for item in repository.list_versions(document["document_id"]) if item.get("status") in {"indexed", "partial"}}
                 rows_by_version: dict[int, list[dict[str, Any]]] = {}
                 for row in rows:
                     version_no = int(row["version_no"])
@@ -1837,16 +1856,8 @@ class KnowledgeService:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         user_id = str(state.get("user_id") or "default")
-        targets = {
-            entity_key(str(value))
-            for value in (state.get("target_products") or [])
-            if str(value).strip()
-        }
-        point_ids_by_chunk = {
-            str(item.get("knowledge_chunk_id")): str(item.get("id"))
-            for item in retrieved_points
-            if item.get("knowledge_chunk_id") and item.get("id")
-        }
+        targets = {entity_key(str(value)) for value in (state.get("target_products") or []) if str(value).strip()}
+        point_ids_by_chunk = {str(item.get("knowledge_chunk_id")): str(item.get("id")) for item in retrieved_points if item.get("knowledge_chunk_id") and item.get("id")}
         with self._repo() as repository:
             insights = repository.list_insights(user_id)
             events = repository.list_events(user_id, limit=1000)
@@ -1906,9 +1917,7 @@ class KnowledgeService:
 
     def get_chunk(self, chunk_id: str, user_id: str) -> dict[str, Any] | None:
         with self._repo() as repository:
-            return repository.get_chunks_by_ids(
-                [chunk_id], user_id, include_historical=True
-            ).get(chunk_id)
+            return repository.get_chunks_by_ids([chunk_id], user_id, include_historical=True).get(chunk_id)
 
     def timeline(
         self,

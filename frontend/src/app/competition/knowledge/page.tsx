@@ -35,6 +35,7 @@ import {
   type KnowledgeInsight,
   type KnowledgeJob,
   type KnowledgeQueryPlan,
+  type KnowledgeSourceConnector,
   type KnowledgeSpace,
   type KnowledgeStatus,
 } from "@/components/competition/api-client";
@@ -202,6 +203,13 @@ interface RetrievalLog {
   created_at: string;
 }
 
+interface RetrievalFeedbackSummary {
+  total: number;
+  by_action: Record<string, number>;
+  judged: number;
+  relevance_rate: number | null;
+}
+
 interface EvaluationRun {
   run_id: string;
   dataset_name: string;
@@ -321,6 +329,9 @@ export default function KnowledgePage() {
   const [rankingProfile, setRankingProfile] = useState<
     "balanced" | "freshness" | "authority"
   >("balanced");
+  const [retrievalMode, setRetrievalMode] = useState<
+    "hybrid" | "dense" | "sparse"
+  >("hybrid");
   const [searching, setSearching] = useState(false);
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const [temporalMode, setTemporalMode] = useState<TemporalMode>("current");
@@ -346,6 +357,15 @@ export default function KnowledgePage() {
   const [evaluationRuns, setEvaluationRuns] = useState<EvaluationRun[]>([]);
   const [governance, setGovernance] = useState<GovernanceStats | null>(null);
   const [sources, setSources] = useState<IntelligenceSource[]>([]);
+  const [sourceConnectors, setSourceConnectors] = useState<
+    KnowledgeSourceConnector[]
+  >([]);
+  const [feedbackSummary, setFeedbackSummary] =
+    useState<RetrievalFeedbackSummary | null>(null);
+  const [sourceName, setSourceName] = useState("");
+  const [sourceUri, setSourceUri] = useState("");
+  const [sourceProduct, setSourceProduct] = useState("");
+  const [sourceDimension, setSourceDimension] = useState("");
   const [newSpaceName, setNewSpaceName] = useState("");
   const [newMemberId, setNewMemberId] = useState("");
   const [newMemberRole, setNewMemberRole] = useState<"editor" | "viewer">(
@@ -384,6 +404,8 @@ export default function KnowledgePage() {
           governancePayload,
           sourcePayload,
           evaluationPayload,
+          connectorPayload,
+          retrievalFeedbackPayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
@@ -425,6 +447,12 @@ export default function KnowledgePage() {
           requestJson<{ runs: EvaluationRun[] }>(
             `${API}/knowledge/evaluations?limit=8`,
           ),
+          requestJson<{ sources: KnowledgeSourceConnector[] }>(
+            `${API}/knowledge/sources?limit=100`,
+          ),
+          requestJson<{ summary: RetrievalFeedbackSummary }>(
+            `${API}/knowledge/retrieval-feedback?limit=1`,
+          ),
         ]);
         setStatus(statusPayload);
         setDocuments(documentPayload.documents);
@@ -441,6 +469,8 @@ export default function KnowledgePage() {
         setGovernance(governancePayload.stats ?? null);
         setSources(sourcePayload.sources ?? []);
         setEvaluationRuns(evaluationPayload.runs ?? []);
+        setSourceConnectors(connectorPayload.sources ?? []);
+        setFeedbackSummary(retrievalFeedbackPayload.summary ?? null);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
             statusPayload.spaces.find(
@@ -598,6 +628,8 @@ export default function KnowledgePage() {
           space_ids: spaceId ? [spaceId] : [],
           advanced: true,
           ranking_profile: rankingProfile,
+          retrieval_mode: retrievalMode,
+          rerank: true,
           limit: 12,
         }),
       });
@@ -607,6 +639,95 @@ export default function KnowledgePage() {
       toast.error(error instanceof Error ? error.message : "检索失败");
     } finally {
       setSearching(false);
+    }
+  };
+
+  const submitRetrievalFeedback = async (
+    hit: KnowledgeHit,
+    action: "relevant" | "not_relevant" | "citation_used",
+  ) => {
+    try {
+      await requestJson(`${API}/knowledge/retrieval-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({
+          query: searchQuery,
+          chunk_id: hit.chunk_id,
+          action,
+        }),
+      });
+      toast.success("检索反馈已记录");
+      const payload = await requestJson<{ summary: RetrievalFeedbackSummary }>(
+        `${API}/knowledge/retrieval-feedback?limit=1`,
+      );
+      setFeedbackSummary(payload.summary ?? null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "反馈保存失败");
+    }
+  };
+
+  const createSourceConnector = async () => {
+    if (!sourceName.trim() || !sourceUri.trim()) {
+      toast.error("请填写来源名称和 URL");
+      return;
+    }
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/sources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({
+          name: sourceName.trim(),
+          uri: sourceUri.trim(),
+          product: sourceProduct.trim(),
+          dimension: sourceDimension,
+          space_id: spaceId,
+          authority_tier: "primary",
+          source_type: "web",
+        }),
+      });
+      setSourceName("");
+      setSourceUri("");
+      setSourceProduct("");
+      toast.success("来源连接器已添加");
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "来源添加失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncSourceConnector = async (source: KnowledgeSourceConnector) => {
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/sources/${source.source_id}/sync`, {
+        method: "POST",
+        headers: csrfHeaders(),
+      });
+      toast.success(`${source.name} 已提交同步`);
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "来源同步失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteSourceConnector = async (source: KnowledgeSourceConnector) => {
+    if (!window.confirm(`删除来源连接器“${source.name}”？`)) return;
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/sources/${source.source_id}`, {
+        method: "DELETE",
+        headers: csrfHeaders(),
+      });
+      toast.success("来源连接器已删除");
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "来源删除失败");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1132,6 +1253,143 @@ export default function KnowledgePage() {
             </div>
           </section>
         )}
+
+        <section className="ui-panel overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">自动来源连接器</h2>
+              <p className="text-muted-foreground mt-0.5 text-xs">
+                通过条件请求同步网页；内容未变化时不会创建新版本或触发重建。
+              </p>
+            </div>
+            {feedbackSummary && (
+              <StatusBadge
+                tone="info"
+                label={`反馈 ${feedbackSummary.total} 条${feedbackSummary.relevance_rate != null ? ` · 相关率 ${Math.round(feedbackSummary.relevance_rate * 100)}%` : ""}`}
+              />
+            )}
+          </div>
+          <div className="grid gap-2 border-b p-4 sm:grid-cols-[1fr_1.4fr_1fr_auto]">
+            <Input
+              value={sourceName}
+              onChange={(event) => setSourceName(event.target.value)}
+              placeholder="来源名称"
+              aria-label="来源名称"
+            />
+            <Input
+              value={sourceUri}
+              onChange={(event) => setSourceUri(event.target.value)}
+              placeholder="https://example.com/docs"
+              aria-label="来源 URL"
+            />
+            <div className="flex gap-2">
+              <Input
+                value={sourceProduct}
+                onChange={(event) => setSourceProduct(event.target.value)}
+                placeholder="竞品（可选）"
+                aria-label="来源竞品"
+              />
+              <Select
+                value={sourceDimension || "general"}
+                onValueChange={(value) =>
+                  setSourceDimension(value === "general" ? "" : value)
+                }
+              >
+                <SelectTrigger aria-label="来源维度">
+                  <SelectValue placeholder="维度" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="general">通用</SelectItem>
+                  {DIMENSIONS.filter(([value]) => value).map(
+                    ([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              disabled={busy}
+              onClick={() => void createSourceConnector()}
+            >
+              <Plus className="size-3.5" /> 添加来源
+            </Button>
+          </div>
+          <div className="divide-y">
+            {sourceConnectors.map((source) => (
+              <div
+                key={source.source_id}
+                className="flex min-w-0 flex-wrap items-center gap-2 px-4 py-2.5 text-xs"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium" title={source.uri}>
+                      {source.name}
+                    </span>
+                    <StatusBadge
+                      tone={
+                        source.last_status === "failed"
+                          ? "danger"
+                          : source.last_status === "unchanged"
+                            ? "neutral"
+                            : "success"
+                      }
+                      label={
+                        source.last_status === "unchanged"
+                          ? "无变化"
+                          : source.last_status === "queued"
+                            ? "同步中"
+                            : source.last_status === "failed"
+                              ? "失败"
+                              : "待同步"
+                      }
+                    />
+                  </div>
+                  <div
+                    className="text-muted-foreground mt-1 truncate"
+                    title={source.uri}
+                  >
+                    {source.product || "通用"} · {source.dimension || "跨维度"}{" "}
+                    · {source.uri}
+                  </div>
+                  {source.last_error && (
+                    <div
+                      className="text-destructive mt-1 truncate"
+                      title={source.last_error}
+                    >
+                      {source.last_error}
+                    </div>
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void syncSourceConnector(source)}
+                >
+                  <RefreshCw className="size-3" /> 立即同步
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="删除来源连接器"
+                  aria-label="删除来源连接器"
+                  disabled={busy}
+                  onClick={() => void deleteSourceConnector(source)}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            ))}
+            {!sourceConnectors.length && (
+              <div className="text-muted-foreground px-4 py-5 text-center text-xs">
+                尚未配置自动来源；已有观察情报和手动上传资料不受影响。
+              </div>
+            )}
+          </div>
+        </section>
 
         <section className="ui-panel min-w-0 overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
@@ -2038,6 +2296,21 @@ export default function KnowledgePage() {
                       <SelectItem value="authority">优先高可信来源</SelectItem>
                     </SelectContent>
                   </Select>
+                  <Select
+                    value={retrievalMode}
+                    onValueChange={(value) =>
+                      setRetrievalMode(value as typeof retrievalMode)
+                    }
+                  >
+                    <SelectTrigger aria-label="检索融合策略">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hybrid">混合检索（推荐）</SelectItem>
+                      <SelectItem value="dense">语义向量检索</SelectItem>
+                      <SelectItem value="sparse">关键词检索</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <label className="hover:bg-muted flex cursor-pointer items-center gap-2 border-y px-1 py-2 text-xs">
                   <input
@@ -2076,35 +2349,74 @@ export default function KnowledgePage() {
                 )}
                 <div className="space-y-2">
                   {hits.map((hit) => (
-                    <button
+                    <div
                       key={hit.chunk_id}
-                      type="button"
-                      onClick={() => void loadChunk(hit.chunk_id)}
-                      className="hover:bg-muted w-full border-t px-1 py-2 text-left first:border-t-0"
+                      className="border-t px-1 py-2 first:border-t-0"
                     >
-                      <div className="flex items-start justify-between gap-2 text-xs">
-                        <span className="min-w-0 truncate font-medium">
-                          {hit.title}
-                        </span>
-                        <span className="shrink-0 tabular-nums">
-                          {Math.round(hit.score * 100)}%
-                        </span>
+                      <button
+                        type="button"
+                        onClick={() => void loadChunk(hit.chunk_id)}
+                        className="hover:bg-muted w-full text-left"
+                      >
+                        <div className="flex items-start justify-between gap-2 text-xs">
+                          <span className="min-w-0 truncate font-medium">
+                            {hit.title}
+                          </span>
+                          <span className="shrink-0 tabular-nums">
+                            {Math.round(hit.score * 100)}%
+                          </span>
+                        </div>
+                        <div className="text-muted-foreground mt-1 line-clamp-2 text-xs">
+                          {hit.text}
+                        </div>
+                        <div className="text-muted-foreground mt-1 text-[10px]">
+                          {hit.product || "通用"} · {hit.section_path || "正文"}
+                          {hit.page_no ? ` · 第 ${hit.page_no} 页` : ""}
+                          {` · v${hit.version_no}`}
+                          {hit.temporal_status === "historical"
+                            ? " · 历史版本"
+                            : ""}
+                          {hit.metadata?.ranking_profile
+                            ? ` · ${hit.metadata.ranking_profile === "freshness" ? "时效优先" : hit.metadata.ranking_profile === "authority" ? "可信优先" : "综合"}`
+                            : ""}
+                        </div>
+                      </button>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          title="标记命中相关"
+                          onClick={() =>
+                            void submitRetrievalFeedback(hit, "relevant")
+                          }
+                        >
+                          <Check className="size-3" /> 相关
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          title="标记命中不相关"
+                          onClick={() =>
+                            void submitRetrievalFeedback(hit, "not_relevant")
+                          }
+                        >
+                          <X className="size-3" /> 不相关
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          title="标记已用于引用"
+                          onClick={() =>
+                            void submitRetrievalFeedback(hit, "citation_used")
+                          }
+                        >
+                          已引用
+                        </Button>
                       </div>
-                      <div className="text-muted-foreground mt-1 line-clamp-2 text-xs">
-                        {hit.text}
-                      </div>
-                      <div className="text-muted-foreground mt-1 text-[10px]">
-                        {hit.product || "通用"} · {hit.section_path || "正文"}
-                        {hit.page_no ? ` · 第 ${hit.page_no} 页` : ""}
-                        {` · v${hit.version_no}`}
-                        {hit.temporal_status === "historical"
-                          ? " · 历史版本"
-                          : ""}
-                        {hit.metadata?.ranking_profile
-                          ? ` · ${hit.metadata.ranking_profile === "freshness" ? "时效优先" : hit.metadata.ranking_profile === "authority" ? "可信优先" : "综合"}`
-                          : ""}
-                      </div>
-                    </button>
+                    </div>
                   ))}
                   {!searching && searchQuery && !hits.length && (
                     <div className="text-muted-foreground py-4 text-center text-xs">

@@ -50,6 +50,7 @@ class _WriterTaskResult:
     tokens: int = 0
     elapsed_ms: int = 0
 
+
 # Report section structure (§3.7.3) — baseline always 6 sections
 REQUIRED_SECTIONS = [
     "sec-executive-summary",
@@ -70,9 +71,9 @@ OPTIONAL_SECTIONS = {
 
 # v4: Deep mode additional sections — generated only when schema_profile="deep"
 DEEP_SECTIONS = [
-    "sec-trends",        # market/product trends
-    "sec-forecast",      # prediction + what-if
-    "appendix-industry", # industry-specific dimensions (extra_fields)
+    "sec-trends",  # market/product trends
+    "sec-forecast",  # prediction + what-if
+    "appendix-industry",  # industry-specific dimensions (extra_fields)
 ]
 
 
@@ -80,8 +81,6 @@ def _get_schema_mode(state: dict) -> str:
     """Return the active schema profile from Orchestrator, default baseline."""
     orch = state.get("orchestration_result") or {}
     return orch.get("schema_profile", "baseline")
-
-
 
 
 def writer_node(state: dict) -> dict:
@@ -124,11 +123,7 @@ def writer_node(state: dict) -> dict:
 
     traceability = _build_traceability_map(collected)
     _annotate_traceability(traceability, claim_verification)
-    writer_traceability = {
-        citation_id: source
-        for citation_id, source in traceability.items()
-        if not restrict_citations or citation_id in set(citation_index.values())
-    }
+    writer_traceability = {citation_id: source for citation_id, source in traceability.items() if not restrict_citations or citation_id in set(citation_index.values())}
     persona = state.get("persona") if state.get("persona") in ("pm", "entrepreneur") else "pm"
     brief = state.get("analysis_brief") or {}
     task_specs = _build_writer_task_specs(
@@ -147,10 +142,7 @@ def writer_node(state: dict) -> dict:
 
     industry_sections = _merge_industry_sections(task_specs, task_results)
     selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
-    has_industry_dimension = any(
-        isinstance(item, dict) and item.get("source") == "industry"
-        for item in selected_dimensions
-    )
+    has_industry_dimension = any(isinstance(item, dict) and item.get("source") == "industry" for item in selected_dimensions)
     if brief and not has_industry_dimension:
         industry_sections = []
     if industry_sections:
@@ -175,6 +167,15 @@ def writer_node(state: dict) -> dict:
         traceability=traceability,
     )
     context_pack = state.get("analysis_context_pack")
+    rag_context = state.get("rag_context")
+    if not isinstance(rag_context, dict):
+        try:
+            from competition.rag_context import build_agent_evidence_bundle
+
+            rag_context = build_agent_evidence_bundle({**state, "analysis_context_pack": context_pack}, role="writer")
+        except Exception:
+            logger.exception("RAG evidence bundle build failed in Writer")
+            rag_context = None
 
     report_data = {
         "persona": persona,
@@ -197,8 +198,11 @@ def writer_node(state: dict) -> dict:
             "evidence_policy": brief.get("evidence_policy"),
             "output_focus": brief.get("output_focus"),
             "confirmation_source": brief.get("confirmation_source"),
-        } if brief else None,
+        }
+        if brief
+        else None,
         "analysis_context": _build_context_overview(context_pack),
+        "rag_context": _build_rag_context_overview(rag_context),
         "quality_gate": quality_gate,
         "claim_verification": claim_verification,
         "long_term_insights": state.get("long_term_insights") or [],
@@ -227,6 +231,23 @@ def writer_node(state: dict) -> dict:
         "traceability_map": traceability,
         "review_package": review_package,
         "writer_self_assessment": self_assessment,
+        "rag_context": rag_context,
+    }
+
+
+def _build_rag_context_overview(bundle: dict | None) -> dict | None:
+    if not isinstance(bundle, dict):
+        return None
+    return {
+        "schema_version": bundle.get("schema_version"),
+        "role": bundle.get("role"),
+        "quality_state": bundle.get("quality_state"),
+        "candidate_count": int(bundle.get("candidate_count", 0) or 0),
+        "selected_count": int(bundle.get("selected_count", 0) or 0),
+        "used_tokens": int(bundle.get("used_tokens", 0) or 0),
+        "budget_tokens": int(bundle.get("budget_tokens", 0) or 0),
+        "abstain": bool(bundle.get("abstain")),
+        "abstain_reasons": list(bundle.get("abstain_reasons") or []),
     }
 
 
@@ -247,17 +268,19 @@ def _build_context_overview(context_pack: dict | None) -> dict | None:
         for dimension_id, value in raw_dimensions.items():
             if not isinstance(value, dict):
                 continue
-            dimensions.append({
-                "id": str(value.get("id") or dimension_id),
-                "label": str(value.get("label") or dimension_id),
-                "quality_state": str(value.get("quality_state") or "missing"),
-                "evidence_count": int(value.get("evidence_count", 0) or 0),
-                "source_domain_count": int(value.get("source_domain_count", 0) or 0),
-                "official_source_count": int(value.get("official_source_count", 0) or 0),
-                "stale_evidence_count": int(value.get("stale_evidence_count", 0) or 0),
-                "fallback_reason": str(value.get("fallback_reason") or ""),
-                "conflict_count": len(value.get("conflicts") or []) if isinstance(value.get("conflicts"), list) else 0,
-            })
+            dimensions.append(
+                {
+                    "id": str(value.get("id") or dimension_id),
+                    "label": str(value.get("label") or dimension_id),
+                    "quality_state": str(value.get("quality_state") or "missing"),
+                    "evidence_count": int(value.get("evidence_count", 0) or 0),
+                    "source_domain_count": int(value.get("source_domain_count", 0) or 0),
+                    "official_source_count": int(value.get("official_source_count", 0) or 0),
+                    "stale_evidence_count": int(value.get("stale_evidence_count", 0) or 0),
+                    "fallback_reason": str(value.get("fallback_reason") or ""),
+                    "conflict_count": len(value.get("conflicts") or []) if isinstance(value.get("conflicts"), list) else 0,
+                }
+            )
     return {
         "schema_version": str(context_pack.get("schema_version") or "analysis-context-pack.v1"),
         "generated_at": context_pack.get("generated_at"),
@@ -302,11 +325,7 @@ def _citation_index(
         if not isinstance(point, dict):
             continue
         point_id = point.get("id")
-        if (
-            point_id
-            and (allowed_point_ids is None or str(point_id) in allowed_point_ids)
-            and str(point_id) not in index
-        ):
+        if point_id and (allowed_point_ids is None or str(point_id) in allowed_point_ids) and str(point_id) not in index:
             index[str(point_id)] = str(i + 1)
     return index
 
@@ -318,9 +337,7 @@ def _verified_evidence_ids(summary: dict[str, Any]) -> set[str]:
         for claim in summary.get("claims") or []
         if isinstance(claim, dict) and claim.get("status") == "supported"
         for evidence in claim.get("evidence") or []
-        if isinstance(evidence, dict)
-        and evidence.get("relation") == "supports"
-        and evidence.get("data_point_id")
+        if isinstance(evidence, dict) and evidence.get("relation") == "supports" and evidence.get("data_point_id")
     }
 
 
@@ -434,11 +451,17 @@ def _build_sections(
     matrix = analysis.get("comparison_matrix", {})
     summary_text = matrix.get("summary", f"{' vs '.join(products)} 竞品分析")
     exec_content = _fallback_summary(summary_text, products, analysis, citation_index)
-    sections.append({
-        "id": "sec-executive-summary", "title": "执行摘要",
-        "content": exec_content, "content_type": "text",
-        "source_ids": list(dict.fromkeys(re.findall(r"\[(\d+)\]", exec_content))), "chart_path": None, "subsections": None,
-    })
+    sections.append(
+        {
+            "id": "sec-executive-summary",
+            "title": "执行摘要",
+            "content": exec_content,
+            "content_type": "text",
+            "source_ids": list(dict.fromkeys(re.findall(r"\[(\d+)\]", exec_content))),
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     # 2. Comparison Matrix (required)
     cells = matrix.get("cells", [])
@@ -452,17 +475,25 @@ def _build_sections(
             src_ids = cell.get("source_data_point_ids", [])
             _, stable_ids = _resolve_citations(src_ids, citation_index)
             comparison_source_ids.extend(stable_ids)
-            table_rows.append({
-                "product": cell.get("product", ""),
-                "dimension": cell.get("dimension", ""),
-                "rating": rating,
-                "evidence": f"{evidence} {_src_ref(src_ids)}".strip(),
-            })
-    sections.append({
-        "id": "sec-comparison-matrix", "title": "对比矩阵",
-        "content": _render_comparison_table(table_rows, products, dims),
-        "content_type": "table", "source_ids": list(dict.fromkeys(comparison_source_ids)), "chart_path": None, "subsections": None,
-    })
+            table_rows.append(
+                {
+                    "product": cell.get("product", ""),
+                    "dimension": cell.get("dimension", ""),
+                    "rating": rating,
+                    "evidence": f"{evidence} {_src_ref(src_ids)}".strip(),
+                }
+            )
+    sections.append(
+        {
+            "id": "sec-comparison-matrix",
+            "title": "对比矩阵",
+            "content": _render_comparison_table(table_rows, products, dims),
+            "content_type": "table",
+            "source_ids": list(dict.fromkeys(comparison_source_ids)),
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     # 3. SWOT (required)
     swot = analysis.get("swot", {})
@@ -479,11 +510,17 @@ def _build_sections(
             _, stable_ids = _resolve_citations(src_ids, citation_index)
             swot_source_ids.extend(stable_ids)
             swot_content += f"- **{item.get('category', '?')}**: {item.get('statement', '')} {_src_ref(src_ids)}\n  - 证据: {item.get('evidence', '')}\n"
-    sections.append({
-        "id": "sec-swot", "title": "SWOT 分析",
-        "content": swot_content or "_暂无 SWOT 数据_", "content_type": "text",
-        "source_ids": list(dict.fromkeys(swot_source_ids)), "chart_path": None, "subsections": None,
-    })
+    sections.append(
+        {
+            "id": "sec-swot",
+            "title": "SWOT 分析",
+            "content": swot_content or "_暂无 SWOT 数据_",
+            "content_type": "text",
+            "source_ids": list(dict.fromkeys(swot_source_ids)),
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     # 4. Trends (conditional)
     trends = analysis.get("trends", [])
@@ -500,11 +537,17 @@ def _build_sections(
                 except (TypeError, ValueError):
                     confidence_text = "0%"
                 trend_text += f"- {t.get('dimension', '?')}: {t.get('direction', '?')} (置信度: {confidence_text}) — {t.get('evidence', '')} {_src_ref(src_ids)}\n"
-        sections.append({
-            "id": "sec-trends", "title": "趋势与洞察",
-            "content": trend_text, "content_type": "text",
-            "source_ids": list(dict.fromkeys(trend_source_ids)), "chart_path": None, "subsections": None,
-        })
+        sections.append(
+            {
+                "id": "sec-trends",
+                "title": "趋势与洞察",
+                "content": trend_text,
+                "content_type": "text",
+                "source_ids": list(dict.fromkeys(trend_source_ids)),
+                "chart_path": None,
+                "subsections": None,
+            }
+        )
 
     # 5. Forecast (conditional, §3.5.7)
     forecast = analysis.get("forecast")
@@ -519,11 +562,17 @@ def _build_sections(
                 forecast_source_ids.extend(stable_ids)
                 fc_text += f"- **{fi.get('product', '?')}** ({fi.get('dimension', '?')}): 6个月预测 {fi.get('forecast_6m', '?')}, 12个月预测 {fi.get('forecast_12m', '?')} {_src_ref(src_ids)}\n"
         fc_text += f"\n*{forecast.get('disclaimer', '')}*"
-        sections.append({
-            "id": "sec-forecast", "title": "预测推演",
-            "content": fc_text, "content_type": "text",
-            "source_ids": list(dict.fromkeys(forecast_source_ids)), "chart_path": None, "subsections": None,
-        })
+        sections.append(
+            {
+                "id": "sec-forecast",
+                "title": "预测推演",
+                "content": fc_text,
+                "content_type": "text",
+                "source_ids": list(dict.fromkeys(forecast_source_ids)),
+                "chart_path": None,
+                "subsections": None,
+            }
+        )
 
     # What-if section — temporarily disabled
 
@@ -551,21 +600,31 @@ def _build_sections(
                 ef_lines.append(line)
             else:
                 ef_lines.append(f"- **{field_name}**: {field_data}")
-        sections.append({
-            "id": "appendix-extra-fields", "title": "附录 B: 行业特有维度（动态 Schema）",
-            "content": "\n".join(ef_lines) or "_无行业特有维度_", "content_type": "text",
-            "source_ids": list(dict.fromkeys(ef_source_ids)), "chart_path": None, "subsections": None,
-        })
+        sections.append(
+            {
+                "id": "appendix-extra-fields",
+                "title": "附录 B: 行业特有维度（动态 Schema）",
+                "content": "\n".join(ef_lines) or "_无行业特有维度_",
+                "content_type": "text",
+                "source_ids": list(dict.fromkeys(ef_source_ids)),
+                "chart_path": None,
+                "subsections": None,
+            }
+        )
 
     # 6. Recommendations (required)
     rec_content = _fallback_recommendations(analysis, products, citation_index)
-    sections.append({
-        "id": "sec-recommendations", "title": "建议",
-        "content": rec_content,
-        "content_type": "text",
-        "source_ids": list(dict.fromkeys(re.findall(r"\[(\d+)\]", rec_content))),
-        "chart_path": None, "subsections": None,
-    })
+    sections.append(
+        {
+            "id": "sec-recommendations",
+            "title": "建议",
+            "content": rec_content,
+            "content_type": "text",
+            "source_ids": list(dict.fromkeys(re.findall(r"\[(\d+)\]", rec_content))),
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     # 7. Sources (required)
     sources_text = ""
@@ -575,30 +634,39 @@ def _build_sections(
             citation_id = citation_index[str(dp["id"])]
             source_ids.append(citation_id)
             sources_text += f"[{citation_id}] {dp.get('source_url', '?')} — {dp.get('collected_at', '?')} — {dp.get('label', '')}\n"
-    sections.append({
-        "id": "sec-sources", "title": "数据来源",
-        "content": sources_text or "_暂无来源_", "content_type": "table",
-        "source_ids": source_ids, "chart_path": None, "subsections": None,
-    })
+    sections.append(
+        {
+            "id": "sec-sources",
+            "title": "数据来源",
+            "content": sources_text or "_暂无来源_",
+            "content_type": "table",
+            "source_ids": source_ids,
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     # 8. Appendix: Quality (required)
     q_text = f"总数据点: {quality.get('total_data_points', 0)}\n"
     q_text += f"已验证: {quality.get('verified_count', 0)} | 多源交叉: {quality.get('multi_source_count', 0)} | 单源: {quality.get('single_source_count', 0)}\n"
     q_text += f"事实错误: {quality.get('fact_errors_count', 0)} | 质量分: {quality.get('overall_quality_score', 0):.0%}\n"
-    sections.append({
-        "id": "appendix-quality", "title": "附录 A: 数据质量报告",
-        "content": q_text, "content_type": "text",
-        "source_ids": [], "chart_path": None, "subsections": None,
-    })
+    sections.append(
+        {
+            "id": "appendix-quality",
+            "title": "附录 A: 数据质量报告",
+            "content": q_text,
+            "content_type": "text",
+            "source_ids": [],
+            "chart_path": None,
+            "subsections": None,
+        }
+    )
 
     return sections
 
 
 def _has_narrative_context(analysis: dict) -> bool:
-    return bool(analysis and any(
-        analysis.get(key)
-        for key in ("comparison_matrix", "swot", "trends", "forecast", "dynamic_blocks")
-    ))
+    return bool(analysis and any(analysis.get(key) for key in ("comparison_matrix", "swot", "trends", "forecast", "dynamic_blocks")))
 
 
 def _build_industry_section_specs(state: dict) -> list[dict[str, Any]]:
@@ -616,12 +684,14 @@ def _build_industry_section_specs(state: dict) -> list[dict[str, Any]]:
             logger.warning("Skipping duplicate or empty industry section ID: %s", section_id)
             continue
         seen.add(section_id)
-        specs.append({
-            "section_id": section_id,
-            "title": str(titles.get(section_id, section_id)),
-            "prompt_bias": str(bias),
-            "order": order,
-        })
+        specs.append(
+            {
+                "section_id": section_id,
+                "title": str(titles.get(section_id, section_id)),
+                "prompt_bias": str(bias),
+                "order": order,
+            }
+        )
     return specs
 
 
@@ -645,37 +715,42 @@ def _build_writer_task_specs(
     """Build independent Writer tasks without mutating report sections."""
     specs: list[_WriterTaskSpec] = []
     if _has_narrative_context(analysis):
-        specs.append(_WriterTaskSpec(
-            key="narrative",
-            kind="narrative",
-            order=0,
-            label="摘要与建议",
-            section_id=None,
-            max_tokens=WRITER_NARRATIVE_MAX_TOKENS,
-            runner=lambda: _generate_narrative_patch(
-                analysis, products, persona, traceability, citation_index,
-                hitl_action=hitl_action,
-                hitl_focus=hitl_focus,
-                hitl_comment=hitl_comment,
-                brief=brief,
-            ),
-        ))
+        specs.append(
+            _WriterTaskSpec(
+                key="narrative",
+                kind="narrative",
+                order=0,
+                label="摘要与建议",
+                section_id=None,
+                max_tokens=WRITER_NARRATIVE_MAX_TOKENS,
+                runner=lambda: _generate_narrative_patch(
+                    analysis,
+                    products,
+                    persona,
+                    traceability,
+                    citation_index,
+                    hitl_action=hitl_action,
+                    hitl_focus=hitl_focus,
+                    hitl_comment=hitl_comment,
+                    brief=brief,
+                ),
+            )
+        )
 
     selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
-    include_industry = not brief or any(
-        isinstance(item, dict) and item.get("source") == "industry"
-        for item in selected_dimensions
-    )
+    include_industry = not brief or any(isinstance(item, dict) and item.get("source") == "industry" for item in selected_dimensions)
     for spec in _build_industry_section_specs(state) if include_industry else []:
-        specs.append(_WriterTaskSpec(
-            key=f"industry:{spec['section_id']}",
-            kind="industry",
-            order=int(spec["order"]),
-            label=str(spec["title"]),
-            section_id=str(spec["section_id"]),
-            max_tokens=WRITER_INDUSTRY_MAX_TOKENS,
-            runner=lambda spec=spec: _generate_industry_section_result(state, analysis, spec),
-        ))
+        specs.append(
+            _WriterTaskSpec(
+                key=f"industry:{spec['section_id']}",
+                kind="industry",
+                order=int(spec["order"]),
+                label=str(spec["title"]),
+                section_id=str(spec["section_id"]),
+                max_tokens=WRITER_INDUSTRY_MAX_TOKENS,
+                runner=lambda spec=spec: _generate_industry_section_result(state, analysis, spec),
+            )
+        )
     return specs
 
 
@@ -698,13 +773,15 @@ def _run_one_writer_task(spec: _WriterTaskSpec) -> _WriterTaskResult:
         return _WriterTaskResult(spec.key, spec.kind, spec.order, spec.section_id, "saturated", None)
 
     try:
-        emit_progress({
-            "phase": "writer",
-            "task_key": spec.key,
-            "section_id": spec.section_id,
-            "status": "running",
-            "message": f"正在生成报告章节：{spec.label}",
-        })
+        emit_progress(
+            {
+                "phase": "writer",
+                "task_key": spec.key,
+                "section_id": spec.section_id,
+                "status": "running",
+                "message": f"正在生成报告章节：{spec.label}",
+            }
+        )
         if _writer_is_cancelled():
             status = "cancelled"
             payload, tokens = None, 0
@@ -748,15 +825,17 @@ def _run_writer_tasks(task_specs: list[_WriterTaskSpec]) -> dict[str, _WriterTas
         nonlocal completed
         results[result.key] = result
         completed += 1
-        emit_progress({
-            "phase": "writer",
-            "task_key": result.key,
-            "section_id": result.section_id,
-            "status": result.status,
-            "completed": completed,
-            "total": len(task_specs),
-            "message": f"报告章节生成进度：{completed}/{len(task_specs)}",
-        })
+        emit_progress(
+            {
+                "phase": "writer",
+                "task_key": result.key,
+                "section_id": result.section_id,
+                "status": result.status,
+                "completed": completed,
+                "total": len(task_specs),
+                "message": f"报告章节生成进度：{completed}/{len(task_specs)}",
+            }
+        )
 
     if len(task_specs) == 1:
         record_result(_run_one_writer_task(task_specs[0]))
@@ -780,15 +859,28 @@ def _run_writer_tasks(task_specs: list[_WriterTaskSpec]) -> dict[str, _WriterTas
                 try:
                     record_result(future.result())
                 except CancelledError:
-                    record_result(_WriterTaskResult(
-                        spec.key, spec.kind, spec.order, spec.section_id, "cancelled", None,
-                    ))
+                    record_result(
+                        _WriterTaskResult(
+                            spec.key,
+                            spec.kind,
+                            spec.order,
+                            spec.section_id,
+                            "cancelled",
+                            None,
+                        )
+                    )
                 except Exception as exc:
                     logger.warning("Writer worker crashed [%s]: %s", spec.key, type(exc).__name__)
-                    record_result(_WriterTaskResult(
-                        spec.key, spec.kind, spec.order, spec.section_id,
-                        "cancelled" if _writer_is_cancelled() else "fallback", None,
-                    ))
+                    record_result(
+                        _WriterTaskResult(
+                            spec.key,
+                            spec.kind,
+                            spec.order,
+                            spec.section_id,
+                            "cancelled" if _writer_is_cancelled() else "fallback",
+                            None,
+                        )
+                    )
 
     status_counts: dict[str, int] = {}
     token_total = 0
@@ -797,7 +889,10 @@ def _run_writer_tasks(task_specs: list[_WriterTaskSpec]) -> dict[str, _WriterTas
         token_total += result.tokens
     logger.info(
         "Writer parallel tasks: total=%d statuses=%s tokens=%d elapsed_ms=%d",
-        len(task_specs), status_counts, token_total, round((time.monotonic() - started) * 1000),
+        len(task_specs),
+        status_counts,
+        token_total,
+        round((time.monotonic() - started) * 1000),
     )
     return results
 
@@ -809,20 +904,18 @@ def _merge_industry_sections(
     sections: list[dict] = []
     for spec in sorted((item for item in task_specs if item.kind == "industry"), key=lambda item: item.order):
         result = results.get(spec.key)
-        content = (
-            result.payload.strip()
-            if result and result.status == "success" and isinstance(result.payload, str) and result.payload.strip()
-            else _industry_fallback_content(spec.label)
+        content = result.payload.strip() if result and result.status == "success" and isinstance(result.payload, str) and result.payload.strip() else _industry_fallback_content(spec.label)
+        sections.append(
+            {
+                "id": spec.section_id,
+                "title": spec.label,
+                "content": content,
+                "content_type": "text",
+                "source_ids": [],
+                "chart_path": None,
+                "subsections": None,
+            }
         )
-        sections.append({
-            "id": spec.section_id,
-            "title": spec.label,
-            "content": content,
-            "content_type": "text",
-            "source_ids": [],
-            "chart_path": None,
-            "subsections": None,
-        })
     return sections
 
 
@@ -836,11 +929,7 @@ def _generate_industry_section_result(
 
     products = state.get("target_products", [])
     user_request = state.get("user_request", "")
-    data_summary = "".join(
-        f"- {dp.get('product', '?')} | {dp.get('category', '?')} | {dp.get('label', '?')} | {dp.get('value', '?')}\n"
-        for dp in (state.get("collected_data") or [])[:10]
-        if isinstance(dp, dict)
-    )
+    data_summary = "".join(f"- {dp.get('product', '?')} | {dp.get('category', '?')} | {dp.get('label', '?')} | {dp.get('value', '?')}\n" for dp in (state.get("collected_data") or [])[:10] if isinstance(dp, dict))
     task = (
         f"Query: {user_request}\n"
         f"Products: {', '.join(products) if products else 'unknown'}\n"
@@ -850,10 +939,7 @@ def _generate_industry_section_result(
         f"section '{spec['section_id']}'. Focus on quantitative comparisons and cite data points. "
         "Output markdown text only, no JSON."
     )
-    system = (
-        "You are a competitive analysis writer specializing in industry-specific analysis. "
-        "Write concise, data-driven sections. Cite specific data points."
-    )
+    system = "You are a competitive analysis writer specializing in industry-specific analysis. Write concise, data-driven sections. Cite specific data points."
     raw, tokens = execute_agent(
         system,
         task,
@@ -907,7 +993,7 @@ def _render_dynamic_blocks(blocks: list[dict], _src_ref: Callable[[list[str]], s
         if block.get("included", True) is False:
             continue
         bt = block.get("block_type", "kv_list")
-        title = block.get("title", f"动态分析 {i+1}")
+        title = block.get("title", f"动态分析 {i + 1}")
         data = block.get("data", {})
         if not isinstance(data, dict):
             data = {"value": data}
@@ -917,15 +1003,17 @@ def _render_dynamic_blocks(blocks: list[dict], _src_ref: Callable[[list[str]], s
         content = _format_block_content(bt, data, src_ids, _src_ref)
         if bt in ("comparison_table", "stat_chart") and not content:
             content = f"{title}（结构化数据）{_src_ref(src_ids)}".strip()
-        sections.append({
-            "id": f"dynamic-block-{i}",
-            "title": TYPE_TO_TITLE_PREFIX.get(bt, "") + title,
-            "content": content,
-            "content_type": TYPE_TO_CONTENT.get(bt, "text"),
-            "source_ids": stable_source_ids,
-            "chart_path": _extract_chart_config(bt, data),
-            "subsections": None,
-        })
+        sections.append(
+            {
+                "id": f"dynamic-block-{i}",
+                "title": TYPE_TO_TITLE_PREFIX.get(bt, "") + title,
+                "content": content,
+                "content_type": TYPE_TO_CONTENT.get(bt, "text"),
+                "source_ids": stable_source_ids,
+                "chart_path": _extract_chart_config(bt, data),
+                "subsections": None,
+            }
+        )
 
     return sections
 
@@ -1004,6 +1092,7 @@ def _build_traceability_map(collected: list[dict]) -> dict:
     domain_scores: dict[str, float] = {}
     try:
         from competition.db import get_all_credibilities, init_db
+
         conn = init_db()
         rows = get_all_credibilities(conn)
         conn.close()
@@ -1036,6 +1125,7 @@ def _build_traceability_map(collected: list[dict]) -> dict:
                     import hashlib
 
                     from competition.db import get_content, init_db
+
                     content_ref = hashlib.sha256(url.encode()).hexdigest()[:16]
                     if content_ref not in content_cache:
                         conn = init_db()
@@ -1047,6 +1137,7 @@ def _build_traceability_map(collected: list[dict]) -> dict:
             snapshot_fields = {}
             if snapshot:
                 import hashlib
+
                 snapshot_fields = {
                     "content_ref": snapshot.get("content_ref"),
                     "snapshot_fetched_at": snapshot.get("fetched_at"),
@@ -1126,15 +1217,8 @@ def _build_quality_gate(
     if policy not in {"balanced", "official_preferred", "strict_multi_source"}:
         policy = "balanced"
     point_by_id = {str(dp.get("id")): dp for dp in collected if isinstance(dp, dict) and dp.get("id")}
-    citation_by_point = {
-        str(entry.get("data_point_id")): citation_id
-        for citation_id, entry in traceability.items()
-        if isinstance(entry, dict) and entry.get("data_point_id")
-    }
-    section_source_map = {
-        str(section.get("id")): {str(value) for value in section.get("source_ids", []) or []}
-        for section in sections if isinstance(section, dict)
-    }
+    citation_by_point = {str(entry.get("data_point_id")): citation_id for citation_id, entry in traceability.items() if isinstance(entry, dict) and entry.get("data_point_id")}
+    section_source_map = {str(section.get("id")): {str(value) for value in section.get("source_ids", []) or []} for section in sections if isinstance(section, dict)}
 
     issues: list[dict] = []
     issue_keys: set[tuple] = set()
@@ -1172,19 +1256,21 @@ def _build_quality_gate(
         severity = severity if severity in {"critical", "major", "minor"} else "major"
         data_point_ids = [str(value) for value in gap.get("related_data_point_ids", []) or []]
         issue_id = f"reviewer-{gap.get('gap_id') or len(issues) + 1}"
-        add_issue({
-            "id": issue_id,
-            "level": "blocking" if severity in {"critical", "major"} else "warning",
-            "severity": severity,
-            "type": str(gap.get("type") or "reviewer_gap"),
-            "check_method": str(gap.get("check_method") or gap.get("method") or "reviewer"),
-            "description": str(gap.get("description") or "Reviewer identified an unresolved issue"),
-            "remediation": str(gap.get("target_collect_task") or gap.get("task") or "补充证据并重新审查"),
-            "product_names": list(dict.fromkeys(str(point_by_id[item].get("product")) for item in data_point_ids if item in point_by_id)),
-            "data_point_ids": data_point_ids,
-            "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
-            "section_ids": section_ids_for(data_point_ids, str(gap.get("check_method") or gap.get("method") or "reviewer")),
-        })
+        add_issue(
+            {
+                "id": issue_id,
+                "level": "blocking" if severity in {"critical", "major"} else "warning",
+                "severity": severity,
+                "type": str(gap.get("type") or "reviewer_gap"),
+                "check_method": str(gap.get("check_method") or gap.get("method") or "reviewer"),
+                "description": str(gap.get("description") or "Reviewer identified an unresolved issue"),
+                "remediation": str(gap.get("target_collect_task") or gap.get("task") or "补充证据并重新审查"),
+                "product_names": list(dict.fromkeys(str(point_by_id[item].get("product")) for item in data_point_ids if item in point_by_id)),
+                "data_point_ids": data_point_ids,
+                "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
+                "section_ids": section_ids_for(data_point_ids, str(gap.get("check_method") or gap.get("method") or "reviewer")),
+            }
+        )
 
     # Some legacy/recovery states expose fact_errors separately from `gaps`.
     # Preserve those as blocking diagnostics instead of silently treating them
@@ -1193,15 +1279,20 @@ def _build_quality_gate(
         if not isinstance(fact_error, dict):
             continue
         data_point_ids = [str(value) for value in fact_error.get("related_data_point_ids", []) or []]
-        add_issue({
-            "id": f"reviewer-fact-error-{index}", "level": "blocking", "severity": "critical",
-            "type": "fact_error", "check_method": str(fact_error.get("check_method") or "fact_error"),
-            "description": str(fact_error.get("description") or fact_error.get("error") or "Reviewer reported a fact error"),
-            "remediation": str(fact_error.get("target_collect_task") or "核对事实并补充可核验来源"),
-            "data_point_ids": data_point_ids,
-            "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
-            "section_ids": section_ids_for(data_point_ids, "fact_error"),
-        })
+        add_issue(
+            {
+                "id": f"reviewer-fact-error-{index}",
+                "level": "blocking",
+                "severity": "critical",
+                "type": "fact_error",
+                "check_method": str(fact_error.get("check_method") or "fact_error"),
+                "description": str(fact_error.get("description") or fact_error.get("error") or "Reviewer reported a fact error"),
+                "remediation": str(fact_error.get("target_collect_task") or "核对事实并补充可核验来源"),
+                "data_point_ids": data_point_ids,
+                "citation_ids": [citation_by_point[item] for item in data_point_ids if item in citation_by_point],
+                "section_ids": section_ids_for(data_point_ids, "fact_error"),
+            }
+        )
 
     selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
     matrix = analysis.get("comparison_matrix") if isinstance(analysis.get("comparison_matrix"), dict) else {}
@@ -1220,11 +1311,7 @@ def _build_quality_gate(
         matrix_covered = {
             str(cell.get("product"))
             for cell in matrix.get("cells", []) or []
-            if isinstance(cell, dict)
-            and str(cell.get("dimension")) in {dim_id, label}
-            and cell.get("rating") is not None
-            and str(cell.get("evidence_source", "")) != "insufficient"
-            and cell.get("product") in target_products
+            if isinstance(cell, dict) and str(cell.get("dimension")) in {dim_id, label} and cell.get("rating") is not None and str(cell.get("evidence_source", "")) != "insufficient" and cell.get("product") in target_products
         }
         # A selected product/dimension is covered only when the final matrix
         # has a usable cell. Raw collected data alone cannot make a missing
@@ -1234,26 +1321,37 @@ def _build_quality_gate(
         status = "blocked" if missing else ("pass" if dim_points else "warning")
         issue_ids: list[str] = []
         for product in missing:
-            issue_ids.append(add_issue({
-                "id": f"coverage-{dim_id}-{len(issue_ids) + 1}",
-                "level": "blocking",
-                "severity": "major",
-                "type": "missing_data",
-                "check_method": "dimension_coverage",
-                "description": f"未找到产品 {product} 在 {label} 维度的有效数据",
-                "remediation": f"为 {product} 补采 {label} 维度的可核验来源",
-                "dimension_ids": [dim_id],
-                "product_names": [product],
-                "section_ids": section_ids_for([], "dimension_coverage"),
-            }))
-        dimensions.append({
-            "dimension_id": dim_id, "label": label, "selected": True,
-            "products_total": len(target_products), "products_covered": covered,
-            "missing_products": missing, "data_point_count": len(dim_points),
-            "source_domain_count": len({str(dp.get("source_url", "")).split("/")[2] for dp in dim_points if "://" in str(dp.get("source_url", ""))}),
-            "coverage_ratio": len(covered) / max(len(target_products), 1),
-            "status": status, "issue_ids": issue_ids,
-        })
+            issue_ids.append(
+                add_issue(
+                    {
+                        "id": f"coverage-{dim_id}-{len(issue_ids) + 1}",
+                        "level": "blocking",
+                        "severity": "major",
+                        "type": "missing_data",
+                        "check_method": "dimension_coverage",
+                        "description": f"未找到产品 {product} 在 {label} 维度的有效数据",
+                        "remediation": f"为 {product} 补采 {label} 维度的可核验来源",
+                        "dimension_ids": [dim_id],
+                        "product_names": [product],
+                        "section_ids": section_ids_for([], "dimension_coverage"),
+                    }
+                )
+            )
+        dimensions.append(
+            {
+                "dimension_id": dim_id,
+                "label": label,
+                "selected": True,
+                "products_total": len(target_products),
+                "products_covered": covered,
+                "missing_products": missing,
+                "data_point_count": len(dim_points),
+                "source_domain_count": len({str(dp.get("source_url", "")).split("/")[2] for dp in dim_points if "://" in str(dp.get("source_url", ""))}),
+                "coverage_ratio": len(covered) / max(len(target_products), 1),
+                "status": status,
+                "issue_ids": issue_ids,
+            }
+        )
 
     # Source diagnostics. `timestamp` remains collection time; publication dates
     # are parsed independently and never inferred from collection time.
@@ -1274,28 +1372,36 @@ def _build_quality_gate(
         elif status == "outside_range":
             outside_range += 1
         if tier == "weak":
-            add_issue({
-                "id": f"weak-source-{citation_id}", "level": "warning", "severity": "minor",
-                "type": "weak_source", "check_method": "source_credibility",
-                "description": f"来源 [{citation_id}] 的域名可信度较低",
-                "remediation": "优先补充官方或高可信来源进行交叉验证",
-                "citation_ids": [str(citation_id)], "section_ids": section_ids_for(
-                    [str(entry.get("data_point_id"))], "source_credibility"
-                ),
-            })
+            add_issue(
+                {
+                    "id": f"weak-source-{citation_id}",
+                    "level": "warning",
+                    "severity": "minor",
+                    "type": "weak_source",
+                    "check_method": "source_credibility",
+                    "description": f"来源 [{citation_id}] 的域名可信度较低",
+                    "remediation": "优先补充官方或高可信来源进行交叉验证",
+                    "citation_ids": [str(citation_id)],
+                    "section_ids": section_ids_for([str(entry.get("data_point_id"))], "source_credibility"),
+                }
+            )
 
     if policy != "balanced":
         for citation_id, entry in traceability.items():
             if not entry.get("published_at"):
-                add_issue({
-                    "id": f"publication-date-{citation_id}", "level": "warning", "severity": "minor",
-                    "type": "publication_date_unknown", "check_method": "publication_date",
-                    "description": f"来源 [{citation_id}] 缺少公开发布时间",
-                    "remediation": "核对来源页面的发布时间或补充带日期的来源",
-                    "citation_ids": [str(citation_id)], "section_ids": section_ids_for(
-                        [str(entry.get("data_point_id"))], "publication_date"
-                    ),
-                })
+                add_issue(
+                    {
+                        "id": f"publication-date-{citation_id}",
+                        "level": "warning",
+                        "severity": "minor",
+                        "type": "publication_date_unknown",
+                        "check_method": "publication_date",
+                        "description": f"来源 [{citation_id}] 缺少公开发布时间",
+                        "remediation": "核对来源页面的发布时间或补充带日期的来源",
+                        "citation_ids": [str(citation_id)],
+                        "section_ids": section_ids_for([str(entry.get("data_point_id"))], "publication_date"),
+                    }
+                )
 
     # Claims: comparison cells and SWOT entries are the current bounded claim set.
     claim_total = claim_multi = claim_single = claim_unsupported = 0
@@ -1303,7 +1409,7 @@ def _build_quality_gate(
     claim_items: list[tuple[dict, str, str]] = [(item, "comparison_claim", "comparison") for item in cells if isinstance(item, dict)]
     swot = analysis.get("swot") if isinstance(analysis.get("swot"), dict) else {}
     for product, swot_data in swot.items():
-        for item in (swot_data.get("items", []) if isinstance(swot_data, dict) else []):
+        for item in swot_data.get("items", []) if isinstance(swot_data, dict) else []:
             if isinstance(item, dict):
                 claim_items.append((item, "swot_claim", "swot"))
     for index, (claim, method, kind) in enumerate(claim_items, start=1):
@@ -1319,32 +1425,45 @@ def _build_quality_gate(
         deficiency = "unsupported_claim" if not domains else ("single_source" if len(domains) == 1 else "")
         if deficiency:
             level = "blocking" if policy == "strict_multi_source" and deficiency == "single_source" else "warning"
-            issue_id = add_issue({
-                "id": f"{kind}-{deficiency}-{index}", "level": level,
-                "severity": "major" if level == "blocking" else "minor", "type": deficiency,
-                "check_method": method, "description": "声明缺少两个独立来源的交叉支持" if deficiency == "single_source" else "声明没有可追溯来源",
-                "remediation": "补充不同域名的独立来源并重新审查" if deficiency == "single_source" else "为该声明补充数据点引用",
-                "product_names": [str(claim.get("product"))] if claim.get("product") else [],
-                "dimension_ids": [str(claim.get("dimension"))] if claim.get("dimension") else [],
-                "data_point_ids": ids, "citation_ids": [citation_by_point[item] for item in ids if item in citation_by_point],
-                "section_ids": section_ids_for(ids, kind),
-            })
+            issue_id = add_issue(
+                {
+                    "id": f"{kind}-{deficiency}-{index}",
+                    "level": level,
+                    "severity": "major" if level == "blocking" else "minor",
+                    "type": deficiency,
+                    "check_method": method,
+                    "description": "声明缺少两个独立来源的交叉支持" if deficiency == "single_source" else "声明没有可追溯来源",
+                    "remediation": "补充不同域名的独立来源并重新审查" if deficiency == "single_source" else "为该声明补充数据点引用",
+                    "product_names": [str(claim.get("product"))] if claim.get("product") else [],
+                    "dimension_ids": [str(claim.get("dimension"))] if claim.get("dimension") else [],
+                    "data_point_ids": ids,
+                    "citation_ids": [citation_by_point[item] for item in ids if item in citation_by_point],
+                    "section_ids": section_ids_for(ids, kind),
+                }
+            )
 
     blocking_count = sum(1 for issue in issues if issue.get("level") == "blocking")
     warning_count = sum(1 for issue in issues if issue.get("level") == "warning")
     status = "blocked" if blocking_count else ("warning" if warning_count else "pass")
     quality = verdict.get("quality_summary") if isinstance(verdict.get("quality_summary"), dict) else {}
     return {
-        "schema_version": 1, "status": status, "generated_at": datetime.now(UTC).isoformat(),
-        "policy": policy, "blocking_count": blocking_count, "warning_count": warning_count,
+        "schema_version": 1,
+        "status": status,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "policy": policy,
+        "blocking_count": blocking_count,
+        "warning_count": warning_count,
         "dimensions": dimensions,
         "sources": {"total": len(traceability), **source_counts, "unknown_publication_date": unknown_dates, "outside_requested_range": outside_range},
         "claims": {"total": claim_total, "multi_source": claim_multi, "single_source": claim_single, "unsupported": claim_unsupported},
         "issues": issues,
         "rework": {
-            "review_round": int(verdict.get("round") or 0), "reviewer_notes": str(verdict.get("reviewer_notes") or ""),
-            "improvement_ratio": quality.get("improvement_ratio"), "repair_delta": quality.get("repair_delta"),
-            "current_round_metrics": quality.get("round_metrics"), "previous_round_metrics": quality.get("round_metrics_prev"),
+            "review_round": int(verdict.get("round") or 0),
+            "reviewer_notes": str(verdict.get("reviewer_notes") or ""),
+            "improvement_ratio": quality.get("improvement_ratio"),
+            "repair_delta": quality.get("repair_delta"),
+            "current_round_metrics": quality.get("round_metrics"),
+            "previous_round_metrics": quality.get("round_metrics_prev"),
         },
     }
 
@@ -1482,6 +1601,7 @@ def _build_writer_self_assessment(report_data: dict, target_products: list[str],
     # Source annotation rate: count [n] references in report content
     all_content = " ".join(s.get("content", "") for s in sections)
     import re
+
     annotation_count = len(re.findall(r"\[\d+\]", all_content))
 
     # Count total factual claims (heuristic: lines with evidence markers or bullet points)
@@ -1499,15 +1619,17 @@ def _build_writer_self_assessment(report_data: dict, target_products: list[str],
     # Section list for display
     section_status = []
     for rid in REQUIRED_SECTIONS:
-        section_status.append({
-            "id": rid,
-            "present": rid in section_ids,
-            "has_content": bool(next((s.get("content", "").strip() for s in sections if s.get("id") == rid), "")),
-        })
+        section_status.append(
+            {
+                "id": rid,
+                "present": rid in section_ids,
+                "has_content": bool(next((s.get("content", "").strip() for s in sections if s.get("id") == rid), "")),
+            }
+        )
 
     # Overall score: weighted average
     schema_score = 1.0 if required_present else 0.0
-    overall_score = (schema_score * 0.4 + section_completeness * 0.3 + min(source_annotation_rate, 1.0) * 0.3)
+    overall_score = schema_score * 0.4 + section_completeness * 0.3 + min(source_annotation_rate, 1.0) * 0.3
 
     return {
         "schema_compliance": required_present,
@@ -1543,12 +1665,14 @@ def _narrative_digest(analysis: dict, citation_index: dict[str, str]) -> dict[st
         for item in group.get("items", [])[:20]:
             if not isinstance(item, dict):
                 continue
-            swot_digest.append({
-                "product": product,
-                "category": item.get("category", ""),
-                "statement": item.get("statement", ""),
-                "evidence": f"{item.get('evidence', '')} {_resolve_citations(item.get('source_data_point_ids', []), citation_index)[0]}".strip(),
-            })
+            swot_digest.append(
+                {
+                    "product": product,
+                    "category": item.get("category", ""),
+                    "statement": item.get("statement", ""),
+                    "evidence": f"{item.get('evidence', '')} {_resolve_citations(item.get('source_data_point_ids', []), citation_index)[0]}".strip(),
+                }
+            )
     digest["swot"] = swot_digest
     digest["trends"] = [
         {
@@ -1590,9 +1714,16 @@ def _valid_narrative_text(value: Any, valid_keys: set[str]) -> str | None:
 
 
 def _generate_narrative_patch(
-    analysis: dict, products: list[str], persona: str,
-    traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str,
-    hitl_focus: list[str] | None, hitl_comment: str, brief: dict | None = None,
+    analysis: dict,
+    products: list[str],
+    persona: str,
+    traceability: dict[str, dict],
+    citation_index: dict[str, str],
+    *,
+    hitl_action: str,
+    hitl_focus: list[str] | None,
+    hitl_comment: str,
+    brief: dict | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Generate a validated narrative patch without mutating report sections."""
     if not _has_narrative_context(analysis):
@@ -1643,8 +1774,7 @@ def _generate_narrative_patch(
     recommendations = result.get("recommendations")
     if isinstance(recommendations, list):
         lines = [item.strip() for item in recommendations if isinstance(item, str)]
-        if (lines and len(lines) == len(recommendations)
-                and all(item and _valid_narrative_text(item, valid_keys) for item in lines)):
+        if lines and len(lines) == len(recommendations) and all(item and _valid_narrative_text(item, valid_keys) for item in lines):
             patch["recommendations"] = "\n".join(f"- {item}" for item in lines)
     return (patch or None), max(int(tokens or 0), 0)
 
@@ -1672,14 +1802,25 @@ def _apply_narrative_result(
 
 
 def _apply_narrative_generation(
-    sections: list[dict], analysis: dict, products: list[str], persona: str,
-    traceability: dict[str, dict], citation_index: dict[str, str], *, hitl_action: str, hitl_focus: list[str] | None,
+    sections: list[dict],
+    analysis: dict,
+    products: list[str],
+    persona: str,
+    traceability: dict[str, dict],
+    citation_index: dict[str, str],
+    *,
+    hitl_action: str,
+    hitl_focus: list[str] | None,
     hitl_comment: str,
     brief: dict | None = None,
 ) -> None:
     """Compatibility wrapper for one inline narrative task."""
     patch, tokens = _generate_narrative_patch(
-        analysis, products, persona, traceability, citation_index,
+        analysis,
+        products,
+        persona,
+        traceability,
+        citation_index,
         hitl_action=hitl_action,
         hitl_focus=hitl_focus,
         hitl_comment=hitl_comment,
@@ -1707,8 +1848,8 @@ def _generate_whatif(comment: str, analysis: dict, products: list[str], persona:
 
     context = f"""现有竞品分析数据:
 
-对比矩阵: {matrix.get('summary', '')}
-产品: {', '.join(products)}
+对比矩阵: {matrix.get("summary", "")}
+产品: {", ".join(products)}
 SWOT: {str(swot)[:800]}
 趋势: {str(trends)[:400]}
 预测: {str(forecast)[:400]}"""

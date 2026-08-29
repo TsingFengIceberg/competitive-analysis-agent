@@ -39,6 +39,7 @@ def analyst_node(state: dict) -> dict:
     if not isinstance(context_pack, dict):
         try:
             from competition.context_pack import build_analysis_context_pack
+
             context_pack = build_analysis_context_pack(state)
         except Exception:
             logger.exception("AnalysisContextPack build failed; using run-level evidence")
@@ -46,19 +47,26 @@ def analyst_node(state: dict) -> dict:
 
     # ── Primary analysis ──
     try:
-        task_state = {**state, "analysis_context_pack": context_pack} if context_pack else state
+        from competition.rag_context import build_agent_evidence_bundle
+
+        rag_context = build_agent_evidence_bundle(
+            {**state, "analysis_context_pack": context_pack},
+            role="analyst",
+        )
+    except Exception:
+        logger.exception("RAG evidence bundle build failed in Analyst")
+        rag_context = None
+    try:
+        task_state = {**state, "analysis_context_pack": context_pack, "rag_context": rag_context} if context_pack or rag_context else state
         task = _build_analyst_task(task_state)
         raw_output, _tokens = _execute_analyst(task, state)
     except Exception:
         logger.exception("Analyst execute_structured_agent failed, using empty result")
-        return {"analysis_result": _empty_analysis_result(state),
-                "coverage_warning": None,
-                "analysis_context_pack": context_pack}
+        return {"analysis_result": _empty_analysis_result(state), "coverage_warning": None, "analysis_context_pack": context_pack, "rag_context": rag_context}
 
     result = _build_analysis_result(raw_output, state)
     if not result.get("comparison_matrix", {}).get("cells"):
-        logger.warning("Analyst produced empty comparison_matrix — raw output type=%s, sample=%s",
-                       type(raw_output).__name__, str(raw_output)[:200] if raw_output else "None")
+        logger.warning("Analyst produced empty comparison_matrix — raw output type=%s, sample=%s", type(raw_output).__name__, str(raw_output)[:200] if raw_output else "None")
 
     errors = self_check(result, target_products)
     if errors:
@@ -71,10 +79,7 @@ def analyst_node(state: dict) -> dict:
             task_retry = _build_analyst_task(task_state)
             # Add explicit focus on missing products
             mp_names = [e.split(": ")[1].split(" has ")[0] for e in missing_products]
-            task_retry += (
-                f"\n\n⚠ RETRY — Missing products from matrix: {', '.join(mp_names)}. "
-                "You MUST include cells for these products in ALL dimensions."
-            )
+            task_retry += f"\n\n⚠ RETRY — Missing products from matrix: {', '.join(mp_names)}. You MUST include cells for these products in ALL dimensions."
             try:
                 raw_retry, _retry_tokens = _execute_analyst(task_retry, state)
                 result_retry = _build_analysis_result(raw_retry, state)
@@ -111,20 +116,23 @@ def analyst_node(state: dict) -> dict:
         if product not in products_in_matrix:
             logger.warning("Forcing placeholder cells for missing product: %s", product)
             for dim in dims:
-                cells.append({
-                    "product": product,
-                    "dimension": dim,
-                    "rating": None,
-                    "evidence": "数据不足-系统自动补全占位（搜索和LLM分析均未覆盖该竞品该维度）",
-                    "evidence_source": "insufficient",
-                    "source_data_point_ids": [],
-                })
+                cells.append(
+                    {
+                        "product": product,
+                        "dimension": dim,
+                        "rating": None,
+                        "evidence": "数据不足-系统自动补全占位（搜索和LLM分析均未覆盖该竞品该维度）",
+                        "evidence_source": "insufficient",
+                        "source_data_point_ids": [],
+                    }
+                )
     matrix["cells"] = cells
     result["comparison_matrix"] = matrix
 
     return {
         "analysis_result": result,
         "analysis_context_pack": context_pack,
+        "rag_context": rag_context,
         "coverage_warning": coverage if coverage["na_products"] or coverage.get("low_coverage_products") else None,
         "analyst_self_assessment": self_assessment,
     }
@@ -163,11 +171,7 @@ def _build_analyst_task(state: dict) -> str:
     brief = state.get("analysis_brief") or {}
     selected_dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
     if selected_dimensions:
-        dimensions = [
-            str(item.get("label") or CATEGORY_DIMENSION_MAP.get(item.get("id"), item.get("id", "")))
-            for item in selected_dimensions
-            if isinstance(item, dict) and item.get("id")
-        ]
+        dimensions = [str(item.get("label") or CATEGORY_DIMENSION_MAP.get(item.get("id"), item.get("id", ""))) for item in selected_dimensions if isinstance(item, dict) and item.get("id")]
         dimensions = [dim for dim in dimensions if dim]
         dim_weight_hint += (
             f"\nBRIEF SCOPE: market={brief.get('market_scope', 'Global / unspecified')}; "
@@ -183,6 +187,7 @@ def _build_analyst_task(state: dict) -> str:
 
     # Industry dimensions (Layer 2 of §3.20)
     from competition.industry import get_industry_profile
+
     industry = state.get("industry", "general")
     industry_profile = get_industry_profile(industry)
     industry_dims = industry_profile.get("analyst_dimensions", [])
@@ -190,18 +195,11 @@ def _build_analyst_task(state: dict) -> str:
         for dim in industry_dims:
             if dim not in dimensions:
                 dimensions.append(dim)
-    selected_industry_labels = [
-        str(item.get("label"))
-        for item in selected_dimensions
-        if isinstance(item, dict) and item.get("source") == "industry" and item.get("label")
-    ]
+    selected_industry_labels = [str(item.get("label")) for item in selected_dimensions if isinstance(item, dict) and item.get("source") == "industry" and item.get("label")]
     industry_bias = industry_profile.get("prompt_bias", "")
     if selected_dimensions:
         if selected_industry_labels:
-            emphasis_hint = (emphasis_hint or "") + (
-                f"\nCONFIRMED INDUSTRY DIMENSIONS: {', '.join(selected_industry_labels)}. "
-                "Do not add industry dimensions that are not in this confirmed list.\n"
-            )
+            emphasis_hint = (emphasis_hint or "") + (f"\nCONFIRMED INDUSTRY DIMENSIONS: {', '.join(selected_industry_labels)}. Do not add industry dimensions that are not in this confirmed list.\n")
     elif industry_bias:
         emphasis_hint = (emphasis_hint or "") + f"\nINDUSTRY FOCUS ({industry_profile['label']}): {industry_bias}\n"
 
@@ -228,7 +226,7 @@ OUTPUT JSON WITH THESE SECTIONS:
 1. comparison_matrix — EVERY product × EVERY dimension. Each cell has:
    - rating (1-5): numeric rating, or null only if Tier 3
    - evidence: specific data backing the rating
-   - evidence_source: one of "direct_data" | "cross_inference" | "insufficient"{' | "estimated"' if review_round >= 1 else ''}
+   - evidence_source: one of "direct_data" | "cross_inference" | "insufficient"{' | "estimated"' if review_round >= 1 else ""}
    - source_data_point_ids: list of referenced data point IDs from the input
 
 2. swot — per product, ≥2 items: category, statement, evidence, source_data_point_ids (≥1)
@@ -340,15 +338,24 @@ Scoring: Quantitative → quantile mapping | Qualitative → LLM judgment with c
 
 
 def _context_excerpt(state: dict) -> str:
+    rag_context = state.get("rag_context")
+    if isinstance(rag_context, dict):
+        try:
+            from competition.rag_context import prompt_excerpt
+
+            return prompt_excerpt(rag_context)
+        except Exception:
+            logger.debug("Unable to serialize RAG evidence bundle", exc_info=True)
     pack = state.get("analysis_context_pack")
     if not isinstance(pack, dict):
-        return "{\"quality_state\": \"fallback\", \"evidence\": []}"
+        return '{"quality_state": "fallback", "evidence": []}'
     try:
         from competition.context_pack import context_pack_prompt_excerpt
+
         return context_pack_prompt_excerpt(pack)
     except Exception:
         logger.debug("Unable to serialize AnalysisContextPack", exc_info=True)
-        return "{\"quality_state\": \"fallback\", \"evidence\": []}"
+        return '{"quality_state": "fallback", "evidence": []}'
 
 
 def _repair_json(text: str) -> str:
@@ -450,8 +457,7 @@ def _build_analysis_result(raw: dict | str | None, state: dict) -> dict:
         import re
 
         text = _repair_json(raw)
-        logger.warning("Analyst JSON parse attempt: first 200 chars=%s, last 100 chars=%s",
-                       text[:200], text[-100:])
+        logger.warning("Analyst JSON parse attempt: first 200 chars=%s, last 100 chars=%s", text[:200], text[-100:])
         try:
             raw = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -699,10 +705,7 @@ def recommend_charts(result: dict) -> list[str]:
     products = matrix.get("products", [])
     dimensions = matrix.get("dimensions", [])
 
-    has_ratings = all(
-        any(c.get("product") == p and c.get("dimension") == d and c.get("rating") is not None for c in cells)
-        for p in products for d in dimensions
-    ) if products and dimensions else False
+    has_ratings = all(any(c.get("product") == p and c.get("dimension") == d and c.get("rating") is not None for c in cells) for p in products for d in dimensions) if products and dimensions else False
 
     if has_ratings and len(products) >= 2 and len(dimensions) >= 3:
         charts.append("radar")  # Multi-product multi-dim comparison

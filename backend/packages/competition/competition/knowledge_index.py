@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from competition.knowledge_retrieval import RETRIEVAL_MODES
 from competition.knowledge_types import KnowledgeChunk, RetrievalFilters
 
 logger = logging.getLogger(__name__)
@@ -497,15 +498,23 @@ class KnowledgeIndex:
         filters: RetrievalFilters,
         limit: int = 12,
         candidate_limit: int = 40,
+        retrieval_mode: str = "hybrid",
     ) -> list[tuple[str, float]]:
-        return self.search_many_ids([(query, user_id, filters, limit, candidate_limit)])[0]
+        return self.search_many_ids(
+            [(query, user_id, filters, limit, candidate_limit)],
+            retrieval_mode=retrieval_mode,
+        )[0]
 
     def search_many_ids(
         self,
         requests: list[tuple[str, str, RetrievalFilters, int, int]],
+        *,
+        retrieval_mode: str = "hybrid",
     ) -> list[list[tuple[str, float]]]:
         """Batch query encoding while retaining request-specific Qdrant filters."""
         from qdrant_client import models
+
+        retrieval_mode = retrieval_mode if retrieval_mode in RETRIEVAL_MODES else "hybrid"
 
         if not requests:
             return []
@@ -519,29 +528,40 @@ class KnowledgeIndex:
         output: list[list[tuple[str, float]]] = []
         for dense, sparse, (_, user_id, filters, limit, candidate_limit) in zip(dense_vectors, sparse_vectors, requests, strict=True):
             query_filter = self._filter(user_id, filters)
-            result = self._get_client().query_points(
-                collection_name=self.collection,
-                prefetch=[
-                    models.Prefetch(
-                        query=dense,
-                        using="dense",
-                        filter=query_filter,
-                        limit=max(limit, candidate_limit),
-                    ),
-                    models.Prefetch(
-                        query=models.SparseVector(
-                            indices=[int(value) for value in sparse.indices.tolist()],
-                            values=[float(value) for value in sparse.values.tolist()],
-                        ),
-                        using="sparse",
-                        filter=query_filter,
-                        limit=max(limit, candidate_limit),
-                    ),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=max(limit, candidate_limit),
-                with_payload=True,
+            sparse_query = models.SparseVector(
+                indices=[int(value) for value in sparse.indices.tolist()],
+                values=[float(value) for value in sparse.values.tolist()],
             )
+            query_limit = max(limit, candidate_limit)
+            if retrieval_mode == "dense":
+                result = self._get_client().query_points(
+                    collection_name=self.collection,
+                    query=dense,
+                    using="dense",
+                    query_filter=query_filter,
+                    limit=query_limit,
+                    with_payload=True,
+                )
+            elif retrieval_mode == "sparse":
+                result = self._get_client().query_points(
+                    collection_name=self.collection,
+                    query=sparse_query,
+                    using="sparse",
+                    query_filter=query_filter,
+                    limit=query_limit,
+                    with_payload=True,
+                )
+            else:
+                result = self._get_client().query_points(
+                    collection_name=self.collection,
+                    prefetch=[
+                        models.Prefetch(query=dense, using="dense", filter=query_filter, limit=query_limit),
+                        models.Prefetch(query=sparse_query, using="sparse", filter=query_filter, limit=query_limit),
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    limit=query_limit,
+                    with_payload=True,
+                )
             output.append([(str(point.payload.get("chunk_id")), float(point.score)) for point in result.points if point.payload and point.payload.get("chunk_id")])
         return output
 

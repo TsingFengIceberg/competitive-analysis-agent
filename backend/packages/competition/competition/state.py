@@ -72,6 +72,12 @@ class CompetitionState(AgentState):
     """Historical report excerpts used for planning only and never as citable evidence."""
     relationship_context: NotRequired[list[dict] | None]
     """Evidence-linked GraphRAG paths plus navigation-only relationship leads."""
+    rag_context: NotRequired[dict | None]
+    """Role-aware, budget-bounded evidence bundle shared by analysis agents."""
+    rag_retrieval_mode: NotRequired[str | None]
+    """Retrieval strategy selected for the current run: hybrid, dense, or sparse."""
+    rag_ranking_profile: NotRequired[str | None]
+    """Evidence ranking profile selected for the current run."""
     analysis_result: NotRequired[dict | None]
     """AnalysisResult: comparison_matrix + swot + trends + forecast + visualization_paths (§3.13.3)."""
 
