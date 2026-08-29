@@ -3575,6 +3575,24 @@ async def list_intelligence_items(
     return {"items": await asyncio.to_thread(load)}
 
 
+@router.get("/intelligence/sources")
+async def list_intelligence_sources(
+    fastapi_request: Request,
+    product: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    """Expose source health and fallback diagnostics without raw credentials."""
+    del fastapi_request
+    from competition.intelligence_repo import IntelligenceRepository
+
+    def load() -> list[dict]:
+        with IntelligenceRepository() as repository:
+            return repository.list_sources(product=product, status=status, limit=limit)
+
+    return {"sources": await asyncio.to_thread(load)}
+
+
 def _build_observation_brief(schedule: dict, *, complexity: str) -> dict:
     """Build the canonical analysis scope shared by observation runs."""
     from datetime import UTC, datetime

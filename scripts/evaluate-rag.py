@@ -26,6 +26,7 @@ from competition.knowledge_eval import (
     evaluate_governance_cases,
     evaluate_graph_cases,
     evaluate_memory_cases,
+    evaluate_query_expansion,
     evaluate_queries,
     evaluate_verification_cases,
 )
@@ -193,6 +194,13 @@ def main() -> int:
             k=k,
             document_labels=document_labels,
         )
+        query_expansion_metrics = evaluate_query_expansion(
+            service,
+            dataset.get("queries", []),
+            user_id=user_id,
+            k=k,
+            document_labels=document_labels,
+        )
         verification_cases = evaluate_verification_cases(
             service,
             dataset.get("verification_cases", []),
@@ -217,6 +225,7 @@ def main() -> int:
         metrics["governance"] = compute_governance_metrics(governance_cases)
         metrics["memory"] = compute_memory_metrics(memory_cases, k=k)
         metrics["graph"] = compute_graph_metrics(graph_cases, k=k)
+        metrics["query_expansion"] = query_expansion_metrics
         configured = dataset.get("thresholds") or {}
         thresholds = EvaluationThresholds(
             recall_at_k=float(configured.get("recall_at_k", 0.8)),

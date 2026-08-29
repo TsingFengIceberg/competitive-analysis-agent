@@ -13,6 +13,7 @@ from competition.knowledge_eval import (
     compute_graph_metrics,
     compute_memory_metrics,
     evaluate_governance_cases,
+    evaluate_query_expansion,
 )
 from competition.knowledge_governance import assess_intelligence_item, assess_report
 from competition.knowledge_query import expand_query_variants, plan_retrieval_query
@@ -78,6 +79,40 @@ def test_query_expansion_can_be_disabled(monkeypatch, tmp_path):
     monkeypatch.setenv("CI_AGENT_RAG_QUERY_EXPANSION", "false")
     service.search_planned("Cursor pricing", user_id="owner", filters=RetrievalFilters())
     assert [query for query, _, _ in calls] == ["Cursor pricing"]
+
+
+def test_query_expansion_is_opt_in_by_default(monkeypatch, tmp_path):
+    service = build_service(tmp_path)
+    calls = []
+
+    def fake_search_many(requests, *, user_id):
+        calls.extend(requests)
+        return [[] for _ in requests]
+
+    monkeypatch.delenv("CI_AGENT_RAG_QUERY_EXPANSION", raising=False)
+    monkeypatch.setattr(service, "search_many", fake_search_many)
+    service.search_planned("Cursor pricing", user_id="owner", filters=RetrievalFilters())
+    assert [query for query, _, _ in calls] == ["Cursor pricing"]
+
+
+def test_query_expansion_evaluation_reports_before_after_delta(tmp_path):
+    service = build_service(tmp_path)
+    observed = []
+
+    def fake_search_planned(query, *, user_id, filters, limit, query_expansion=None):
+        observed.append(query_expansion)
+        return [], plan_retrieval_query(query, filters)
+
+    service.search_planned = fake_search_planned
+    report = evaluate_query_expansion(
+        service,
+        [{"id": "q1", "query": "Cursor pricing", "relevant": []}],
+        user_id="owner",
+    )
+    assert observed == [False, True]
+    assert report["case_count"] == 1
+    assert report["baseline"]["abstention_accuracy"] == 1.0
+    assert set(report["delta"]) == {"recall_at_5", "mrr", "ndcg_at_5", "p95_latency_ms"}
 
 
 def test_space_approval_permissions_and_shared_retrieval(tmp_path):
@@ -641,6 +676,7 @@ def test_p1_feedback_api_contract_is_registered():
     assert ("/api/competition/knowledge/reviews", "GET") in contracts
     assert ("/api/competition/knowledge/retrieval-logs", "GET") in contracts
     assert ("/api/competition/knowledge/governance/stats", "GET") in contracts
+    assert ("/api/competition/intelligence/sources", "GET") in contracts
     request = KnowledgeReviewRequest(
         decision="rejected",
         feedback_type="conflict",

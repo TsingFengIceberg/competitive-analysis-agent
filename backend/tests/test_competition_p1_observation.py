@@ -39,6 +39,23 @@ def test_intelligence_repo_classifies_material_and_page_changes():
         repository.close()
 
 
+def test_intelligence_repo_exposes_source_health_without_credentials():
+    conn = init_db(":memory:")
+    repository = IntelligenceRepository(conn=conn)
+    try:
+        repository.ingest_collected_points([_point()])
+        sources = repository.list_sources()
+        assert len(sources) == 1
+        assert sources[0]["status"] == "healthy"
+        assert "api_key" not in sources[0]
+        repository.mark_source_failure(sources[0]["source_key"], "upstream timeout")
+        degraded = repository.list_sources(status="degraded")
+        assert degraded[0]["failure_count"] == 1
+        assert degraded[0]["last_error"] == "upstream timeout"
+    finally:
+        repository.close()
+
+
 def test_schedule_calculates_next_run_and_skips_without_material_change():
     conn = init_db(":memory:")
     repository = ScheduleRepository(conn=conn)

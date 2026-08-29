@@ -438,6 +438,7 @@ def evaluate_queries(
     user_id: str,
     k: int = 5,
     document_labels: dict[str, str] | None = None,
+    query_expansion: bool | None = None,
 ) -> list[dict[str, Any]]:
     labels = document_labels or {}
     cases: list[dict[str, Any]] = []
@@ -453,8 +454,11 @@ def evaluate_queries(
         )
         started = time.perf_counter()
         plan = None
-        if item.get("expected_route"):
-            hits, plan = service.search_planned(str(item["query"]), user_id=user_id, filters=filters, limit=k)
+        if item.get("expected_route") or query_expansion is not None:
+            hits, plan = service.search_planned(
+                str(item["query"]), user_id=user_id, filters=filters, limit=k,
+                query_expansion=query_expansion,
+            )
         else:
             hits = service.search(str(item["query"]), user_id=user_id, filters=filters, limit=k)
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -482,6 +486,43 @@ def evaluate_queries(
             }
         )
     return cases
+
+
+def evaluate_query_expansion(
+    service: Any,
+    queries: list[dict[str, Any]],
+    *,
+    user_id: str,
+    k: int = 5,
+    document_labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Compare retrieval quality with the bounded expansion switch off/on."""
+    baseline_cases = evaluate_queries(
+        service, queries, user_id=user_id, k=k, document_labels=document_labels,
+        query_expansion=False,
+    )
+    invalidate = getattr(service, "_invalidate_result_cache", None)
+    if callable(invalidate):
+        invalidate(user_id)
+    expanded_cases = evaluate_queries(
+        service, queries, user_id=user_id, k=k, document_labels=document_labels,
+        query_expansion=True,
+    )
+    baseline = compute_retrieval_metrics(baseline_cases, k=k)
+    expanded = compute_retrieval_metrics(expanded_cases, k=k)
+    return {
+        "baseline": baseline,
+        "expanded": expanded,
+        "delta": {
+            f"recall_at_{k}": round(expanded[f"recall_at_{k}"] - baseline[f"recall_at_{k}"], 6),
+            "mrr": round(expanded["mrr"] - baseline["mrr"], 6),
+            f"ndcg_at_{k}": round(expanded[f"ndcg_at_{k}"] - baseline[f"ndcg_at_{k}"], 6),
+            "p95_latency_ms": round(
+                expanded["latency_ms"]["p95"] - baseline["latency_ms"]["p95"], 3,
+            ),
+        },
+        "case_count": len(queries),
+    }
 
 
 def evaluate_verification_cases(

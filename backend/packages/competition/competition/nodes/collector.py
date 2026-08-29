@@ -825,6 +825,8 @@ def _get_search_info() -> dict:
         "total_queries": stats.get("total_queries", 0),
         "total_results": stats.get("total_results", 0),
         "queries": stats.get("queries", []),
+        "backend_attempts": stats.get("backend_attempts", []),
+        "fallback_used": bool(stats.get("fallback_used", False)),
     }
 
 

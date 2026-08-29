@@ -163,6 +163,40 @@ class IntelligenceRepository:
         )
         self.conn.commit()
 
+    def list_sources(
+        self,
+        *,
+        product: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return source health records for operational diagnostics."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if product:
+            clauses.append("product = ?")
+            params.append(product)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 500)))
+        rows = self.conn.execute(
+            f"""SELECT source_key, source_url, canonical_url, source_domain, source_type,
+                       product, scope, status, last_success_at, last_fetched_at,
+                       failure_count, last_error, avg_latency_ms, created_at, updated_at
+                FROM intelligence_sources {where}
+                ORDER BY CASE status WHEN 'healthy' THEN 0 ELSE 1 END, updated_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        keys = (
+            "source_key", "source_url", "canonical_url", "source_domain", "source_type",
+            "product", "scope", "status", "last_success_at", "last_fetched_at",
+            "failure_count", "last_error", "avg_latency_ms", "created_at", "updated_at",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
     def _record_change(self, item: IntelligenceItem, *, change_type: str, material: bool,
                        old_hash: str | None = None, old_value: Any = None,
                        old_payload: dict | None = None) -> dict:

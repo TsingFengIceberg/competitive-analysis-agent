@@ -495,7 +495,14 @@ def calculate_budget(model_name: str = "") -> ContextBudget:
     )
 
 # Track search stats for visibility in UI
-_search_stats: dict = {"total_queries": 0, "total_results": 0, "backend": "", "queries": []}
+_search_stats: dict = {
+    "total_queries": 0,
+    "total_results": 0,
+    "backend": "",
+    "queries": [],
+    "backend_attempts": [],
+    "fallback_used": False,
+}
 
 
 def _get_search_config() -> dict:
@@ -625,7 +632,14 @@ def get_search_stats() -> dict:
 
 
 def _reset_search_stats() -> None:
-    _search_stats.update({"total_queries": 0, "total_results": 0, "backend": "", "queries": []})
+    _search_stats.update({
+        "total_queries": 0,
+        "total_results": 0,
+        "backend": "",
+        "queries": [],
+        "backend_attempts": [],
+        "fallback_used": False,
+    })
 
 
 @dataclass
@@ -664,6 +678,7 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
     logger.debug("Provider search: name=%s key=%s base=%s",
                 prov_name, "SET" if prov_key else "EMPTY", prov_base[:50] if prov_base else "EMPTY")
     if prov_name:
+        _search_stats["backend_attempts"].append(f"provider:{prov_name}")
         if prov_name == "doubao" or prov_name == "":
             response = _doubao_search(query, max_results, prov_key, prov_base)
         elif prov_name == "qwen":
@@ -682,6 +697,7 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
     logger.debug("Tavily: enabled=%s key=%s",
                 cfg.get("tavily"), "SET" if tavily_key and tavily_key not in ("your-tavily-api-key", "") else "EMPTY")
     if cfg.get("tavily", True) and tavily_key and tavily_key not in ("your-tavily-api-key", ""):
+        _search_stats["backend_attempts"].append("tavily")
         response = _tavily_search(query, max_results)
         if response.results:
             _search_stats["total_results"] += len(response.results)
@@ -690,12 +706,15 @@ def search(query: str, max_results: int = 5) -> SearchResponse:
 
     # 3. DDG (free fallback)
     if cfg.get("ddg", True):
+        _search_stats["backend_attempts"].append("ddg")
+        _search_stats["fallback_used"] = bool(prov_name or tavily_key)
         response = _ddg_search(query, max_results)
         _search_stats["total_results"] += len(response.results)
         _search_stats["backend"] = "ddg 🦆"
         return response
 
     logger.warning("No search backend enabled — returning empty results")
+    _search_stats["fallback_used"] = bool(prov_name or tavily_key)
     _search_stats["backend"] = "none"
     return SearchResponse(query=query, backend="none")
 

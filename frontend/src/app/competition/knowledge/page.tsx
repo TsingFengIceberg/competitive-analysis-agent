@@ -190,6 +190,45 @@ interface KnowledgeDeletion {
   deleted_at: string;
 }
 
+interface RetrievalLog {
+  retrieval_id: string;
+  query: string;
+  filters: Record<string, unknown>;
+  result_count: number;
+  selected_chunk_ids: string[];
+  duration_ms: number;
+  status: string;
+  error?: string | null;
+  created_at: string;
+}
+
+interface GovernanceStats {
+  document_reviews: { total: number; approved: number; rejected: number };
+  feedback_by_type: Record<string, number>;
+  relation_reviews: {
+    total: number;
+    approved: number;
+    rejected: number;
+    overrides: number;
+  };
+  hypotheses: Record<string, number>;
+  approval_rate?: number | null;
+}
+
+interface IntelligenceSource {
+  source_key: string;
+  source_domain: string;
+  source_type: string;
+  product: string;
+  scope: string;
+  status: string;
+  last_success_at: string | null;
+  last_fetched_at: string | null;
+  failure_count: number;
+  last_error: string | null;
+  avg_latency_ms: number | null;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     credentials: "include",
@@ -291,6 +330,9 @@ export default function KnowledgePage() {
     useState<GraphTemporalMode>("current");
   const [deletions, setDeletions] = useState<KnowledgeDeletion[]>([]);
   const [queryPlan, setQueryPlan] = useState<KnowledgeQueryPlan | null>(null);
+  const [retrievalLogs, setRetrievalLogs] = useState<RetrievalLog[]>([]);
+  const [governance, setGovernance] = useState<GovernanceStats | null>(null);
+  const [sources, setSources] = useState<IntelligenceSource[]>([]);
   const [newSpaceName, setNewSpaceName] = useState("");
   const [newMemberId, setNewMemberId] = useState("");
   const [newMemberRole, setNewMemberRole] = useState<"editor" | "viewer">(
@@ -325,6 +367,9 @@ export default function KnowledgePage() {
           graphPayload,
           deletionPayload,
           hypothesisPayload,
+          retrievalLogPayload,
+          governancePayload,
+          sourcePayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
@@ -354,6 +399,15 @@ export default function KnowledgePage() {
           requestJson<{ hypotheses: KnowledgeHypothesis[] }>(
             `${API}/knowledge/graph/hypotheses?${scope}limit=100`,
           ),
+          requestJson<{ logs: RetrievalLog[] }>(
+            `${API}/knowledge/retrieval-logs?limit=12`,
+          ),
+          requestJson<{ stats: GovernanceStats }>(
+            `${API}/knowledge/governance/stats${spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ""}`,
+          ),
+          requestJson<{ sources: IntelligenceSource[] }>(
+            `${API}/intelligence/sources?limit=40`,
+          ),
         ]);
         setStatus(statusPayload);
         setDocuments(documentPayload.documents);
@@ -366,6 +420,9 @@ export default function KnowledgePage() {
         setGraph(graphPayload);
         setDeletions(deletionPayload.records);
         setHypotheses(hypothesisPayload.hypotheses);
+        setRetrievalLogs(retrievalLogPayload.logs ?? []);
+        setGovernance(governancePayload.stats ?? null);
+        setSources(sourcePayload.sources ?? []);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
             statusPayload.spaces.find(
@@ -876,6 +933,101 @@ export default function KnowledgePage() {
             </div>
           ))}
         </section>
+
+        <section className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+          <div className="ui-panel min-w-0 overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold">检索可解释性</h2>
+                <p className="text-muted-foreground mt-0.5 text-xs">
+                  回放最近的查询、命中分块和延迟，帮助判断证据是否真正参与分析。
+                </p>
+              </div>
+              <StatusBadge
+                tone={retrievalLogs.length ? "info" : "neutral"}
+                label={`${retrievalLogs.length} 条记录`}
+              />
+            </div>
+            <div className="divide-y">
+              {retrievalLogs.slice(0, 6).map((log) => (
+                <div key={log.retrieval_id} className="min-w-0 px-4 py-2.5 text-xs">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <span className="min-w-0 flex-1 break-words font-medium">{log.query}</span>
+                    <span className="text-muted-foreground shrink-0 tabular-nums">
+                      {log.duration_ms} ms
+                    </span>
+                  </div>
+                  <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                    <span>{log.result_count} 个命中</span>
+                    <span>{log.selected_chunk_ids.length} 个证据分块</span>
+                    <span>{new Date(log.created_at).toLocaleString("zh-CN")}</span>
+                    {log.status !== "completed" && (
+                      <StatusBadge tone="danger" label={log.status || "失败"} />
+                    )}
+                  </div>
+                  {log.error && (
+                    <div className="text-destructive mt-1 break-words">{log.error}</div>
+                  )}
+                </div>
+              ))}
+              {!retrievalLogs.length && (
+                <div className="text-muted-foreground px-4 py-6 text-center text-xs">
+                  完成一次知识库检索后，这里会显示检索诊断记录。
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="ui-panel min-w-0 overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold">治理质量</h2>
+                <p className="text-muted-foreground mt-0.5 text-xs">当前空间的审核和证据质量概览。</p>
+              </div>
+              {governance?.approval_rate != null && (
+                <StatusBadge
+                  tone={governance.approval_rate >= 0.8 ? "success" : "warning"}
+                  label={`通过率 ${Math.round(governance.approval_rate * 100)}%`}
+                />
+              )}
+            </div>
+            <div className="grid grid-cols-2 divide-x divide-y text-xs">
+              <div className="p-3"><div className="text-muted-foreground">资料审核</div><div className="mt-1 text-lg font-semibold tabular-nums">{governance?.document_reviews.total ?? 0}</div><div className="text-muted-foreground">{governance?.document_reviews.approved ?? 0} 通过 · {governance?.document_reviews.rejected ?? 0} 驳回</div></div>
+              <div className="p-3"><div className="text-muted-foreground">关系审核</div><div className="mt-1 text-lg font-semibold tabular-nums">{governance?.relation_reviews.total ?? 0}</div><div className="text-muted-foreground">{governance?.relation_reviews.overrides ?? 0} 次覆盖</div></div>
+              <div className="p-3"><div className="text-muted-foreground">待验证假设</div><div className="mt-1 text-lg font-semibold tabular-nums">{governance?.hypotheses.proposed ?? 0}</div><div className="text-muted-foreground">共 {Object.values(governance?.hypotheses ?? {}).reduce((sum, value) => sum + value, 0)} 条</div></div>
+              <div className="p-3"><div className="text-muted-foreground">来源状态</div><div className="mt-1 text-lg font-semibold tabular-nums">{sources.filter((source) => source.status === "healthy").length}/{sources.length}</div><div className="text-muted-foreground">健康来源</div></div>
+            </div>
+          </div>
+        </section>
+
+        {sources.length > 0 && (
+          <section className="ui-panel overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold">来源健康</h2>
+                <p className="text-muted-foreground mt-0.5 text-xs">来源失败会被记录，备用来源不会静默提升证据等级。</p>
+              </div>
+              <StatusBadge
+                tone={sources.some((source) => source.status !== "healthy") ? "warning" : "success"}
+                label={sources.some((source) => source.status !== "healthy") ? "有来源需要关注" : "全部正常"}
+              />
+            </div>
+            <div className="grid gap-x-4 divide-y sm:grid-cols-2 sm:divide-y-0 sm:divide-x">
+              {sources.slice(0, 8).map((source) => (
+                <div key={source.source_key} className="min-w-0 px-4 py-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate font-medium" title={source.source_domain}>{source.source_domain || "未知来源"}</span>
+                    <StatusBadge tone={source.status === "healthy" ? "success" : "warning"} label={source.status === "healthy" ? "健康" : source.status} />
+                  </div>
+                  <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                    <span>{source.product || "通用"}</span><span>{source.failure_count} 次失败</span>{source.avg_latency_ms != null && <span>{source.avg_latency_ms} ms</span>}
+                  </div>
+                  {source.last_error && <div className="text-destructive mt-1 truncate" title={source.last_error}>{source.last_error}</div>}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {status && !status.index.available && (
           <StatusNotice tone="warning" title="本地检索当前不可用">

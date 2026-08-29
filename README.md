@@ -253,7 +253,9 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 
 模型默认写入 `.ci-agent/models`，原始资料、规范化 Markdown 和 Qdrant 索引默认写入 `.ci-agent/knowledge`，两者均被 Git 忽略。运行时只加载本地资产，不会自动联网下载模型。知识库入口为 `/competition/knowledge`，默认单文件上限 50 MB；可将服务器本地资料放入 `.ci-agent/knowledge/inbox` 后，通过界面填写相对路径导入。
 
-FastAPI 默认在后台预热本地检索模型，避免第一次分析承担完整模型加载时间。分析检索会规范化常见竞品别名与中英文维度名，将多个“竞品 × 维度”查询批量编码，并缓存重复的查询向量和检索结果；默认对命中明确语义维度的查询追加有限的中英文词组扩展，不额外调用 LLM，且可通过 `CI_AGENT_RAG_QUERY_EXPANSION=false` 关闭。资料新版本激活、删除或索引重建后会自动清除对应用户的结果缓存。
+FastAPI 默认在后台预热本地检索模型，避免第一次分析承担完整模型加载时间。分析检索会规范化常见竞品别名与中英文维度名，将多个“竞品 × 维度”查询批量编码，并缓存重复的查询向量和检索结果；受控的中英文词组扩展默认关闭，只有设置 `CI_AGENT_RAG_QUERY_EXPANSION=true` 才会启用，且不会额外调用 LLM。资料新版本激活、删除或索引重建后会自动清除对应用户的结果缓存。
+
+评测报告同时包含 `query_expansion.baseline`、`query_expansion.expanded` 和 `query_expansion.delta`，用于比较关闭/开启受控查询扩展后的 Recall、MRR、NDCG 与 P95 延迟；只有在评测集显示收益时才应保持开启。
 
 默认严格评测集 `evals/rag/real-v1.json` 由带来源 URL、采集时间和人工预期标签的公开一手竞品文档快照组成；`basic-v1.json` 保留为明确标记的合成单元回归集。评测数据不会写入业务知识库。以下命令会在临时 SQLite 和内存 Qdrant 中完成摄取、分级查询规划、检索、关系构建和主张核验，输出 Recall@5、MRR、NDCG@5、无答案拒答率、追溯完整率、P50/P95 延迟、直查/多跳路由准确率、问题拆解覆盖率、主张状态准确率、矛盾召回率、引用精确率、数字一致性准确率、结论有据率、治理准入准确率、隔离召回率、历史报告记忆召回率、记忆与事实证据隔离率、当前线程自排除率、图检索路由准确率、关系 Recall@5、关系证据追溯率、时序关系准确率及无依据关系率，并将详细报告写入已忽略的 `.ci-agent/evaluations/`：
 
@@ -277,7 +279,7 @@ make rag-eval
 | `CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE` | `256` | 进程内查询向量 LRU 缓存容量，设为 `0` 可禁用 |
 | `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | 按用户和过滤条件隔离的检索结果 LRU 缓存容量 |
 | `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | 检索结果缓存有效期，设为 `0` 可禁用 |
-| `CI_AGENT_RAG_QUERY_EXPANSION` | `true` | 是否启用受控的中英文查询词组扩展，不触发额外 LLM 调用 |
+| `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | 是否启用受控的中英文查询词组扩展，不触发额外 LLM 调用 |
 
 ### DB 模式（默认）
 
@@ -794,6 +796,7 @@ uv run --locked pytest tests/test_a2a_provider.py
 | GET | `/api/competition/intelligence/changes` | 查询增量情报变化时间线 |
 | GET | `/api/competition/intelligence/changes/{change_id}` | 查询单条变化详情、当前事实、来源和版本历史 |
 | GET | `/api/competition/intelligence/items` | 查询可显式沉淀到知识库的情报事实 |
+| GET | `/api/competition/intelligence/sources` | 查询来源健康、失败次数、延迟和备用来源诊断 |
 | GET | `/api/competition/knowledge/status` | 获取知识库、模型与索引状态 |
 | GET | `/api/competition/knowledge/retrieval-logs` | 查询当前用户的检索规划、过滤条件、命中分块、耗时与状态 |
 | GET / POST / PATCH | `/api/competition/knowledge/spaces` | 管理项目知识空间、审批和保留策略 |
@@ -832,9 +835,17 @@ uv run --locked pytest tests/test_a2a_provider.py
 
 当前系统基于实时搜索 + 本地混合 RAG，并使用 SQLite、Qdrant Local 和文件存储持久化业务、知识与证据数据，满足竞赛阶段端到端分析需求。以下方向为产品化迭代预留的架构设计：
 
+### RAG P1 已完成
+
+- 检索日志和治理统计已接入知识库页面，可查看查询、命中分块、延迟、审核结果和来源健康。
+- 查询扩展评测会对比关闭/开启状态下的 Recall、MRR、NDCG 和 P95 延迟，避免无评测依据地增加召回成本。
+- 竞品情报池支持内容版本、来源健康和失败记录；观察任务仅在检测到实质变化时触发深度分析。
+- 告警支持内容去重、冷却、静默时段、摘要/即时模式；报告、告警和系统错误统一经过隔离失败的通知路由。
+
 ### RAG 深化
 
 - **检索反馈与可解释性闭环**：通过检索日志接口回放查询规划、过滤条件、命中分块和延迟，并汇总文档、关系和假设治理结果，支持前端展示和后续质量优化
+- **前端诊断面板**：知识库页面展示最近检索记录、治理质量和来源健康；来源异常只会降低证据质量，不会被静默标记为官方来源
 
 - **受评测约束的生成式查询增强**：在当前零 LLM 的直查/多跳规划器之上，对确有收益的复杂问题增加可关闭的模型改写或 HyDE，并继续用真实黄金集约束成本和召回
 - **关系与假设治理深化**：在现有可追溯 GraphRAG、三层洞察和资料审核反馈之上，增加人工关系修订、假设批准/驳回及历史准确率统计

@@ -965,10 +965,12 @@ class KnowledgeService:
         user_id: str,
         filters: RetrievalFilters | None = None,
         limit: int = 12,
+        query_expansion: bool | None = None,
     ) -> tuple[list[KnowledgeHit], RetrievalPlan]:
         result = self.search_planned_many(
             [(query, filters or RetrievalFilters(), limit)],
             user_id=user_id,
+            query_expansion=query_expansion,
         )
         return result[0]
 
@@ -977,6 +979,7 @@ class KnowledgeService:
         requests: list[tuple[str, RetrievalFilters, int]],
         *,
         user_id: str,
+        query_expansion: bool | None = None,
     ) -> list[tuple[list[KnowledgeHit], RetrievalPlan]]:
         """Execute cost-routed multi-query plans with one batch per hop."""
         if not requests:
@@ -991,7 +994,13 @@ class KnowledgeService:
                     continue
                 flat.append((step.query, filters, per_step))
                 owners.append(owner)
-            if os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "true").lower() in {"1", "true", "yes", "on"}:
+            expansion_enabled = (
+                query_expansion
+                if query_expansion is not None
+                else os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "false").lower()
+                in {"1", "true", "yes", "on"}
+            )
+            if expansion_enabled:
                 for variant in plan.metadata.get("query_expansions") or expand_query_variants(plan.normalized_query):
                     flat.append((variant, filters, per_step))
                     owners.append(owner)

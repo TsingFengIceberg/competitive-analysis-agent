@@ -241,7 +241,9 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 
 Models are stored under `.ci-agent/models`; originals, normalized Markdown, and the Qdrant index are stored under `.ci-agent/knowledge`. Both locations are ignored by Git. Runtime loading is local-only and never downloads models automatically. Open `/competition/knowledge` to manage documents. The default per-file limit is 50 MB; server-side files may be placed in `.ci-agent/knowledge/inbox` and imported by relative path.
 
-FastAPI warms the local retrieval models in the background by default so the first analysis does not pay the full model-loading cost. Analysis retrieval normalizes common product aliases and bilingual dimension names, batch-encodes multiple product-by-dimension queries, and caches repeated query vectors and retrieval results. Queries that match a known semantic dimension also receive a bounded bilingual term expansion by default, without an additional LLM call; set `CI_AGENT_RAG_QUERY_EXPANSION=false` to disable it. Activating a new document version, deleting a document, or rebuilding the index automatically invalidates the affected user's result cache.
+FastAPI warms the local retrieval models in the background by default so the first analysis does not pay the full model-loading cost. Analysis retrieval normalizes common product aliases and bilingual dimension names, batch-encodes multiple product-by-dimension queries, and caches repeated query vectors and retrieval results. Bounded bilingual term expansion is opt-in; set `CI_AGENT_RAG_QUERY_EXPANSION=true` to enable it, without an additional LLM call. Activating a new document version, deleting a document, or rebuilding the index automatically invalidates the affected user's result cache.
+
+Evaluation reports also include `query_expansion.baseline`, `query_expansion.expanded`, and `query_expansion.delta` to compare Recall, MRR, NDCG, and P95 latency with bounded query expansion disabled/enabled; keep it enabled only when the golden set demonstrates a gain.
 
 The default strict set, `evals/rag/real-v1.json`, contains human-curated snapshots of public first-party competitor documentation with source URLs, capture times, and expected labels. `basic-v1.json` remains an explicitly synthetic unit-regression set. Neither enters the business knowledge base. The command below runs ingestion, cost-routed query planning, retrieval, relationship construction, and claim verification against temporary SQLite and in-memory Qdrant stores. It reports Recall@5, MRR, NDCG@5, no-answer abstention accuracy, traceability completeness, P50/P95 latency, direct/multi-hop route accuracy, decomposition coverage, claim-status accuracy, contradiction recall, citation precision, numeric-consistency accuracy, groundedness, governance admission accuracy, quarantine recall, historical-memory recall, memory-to-evidence isolation, current-thread exclusion, graph-route accuracy, relation Recall@5, relation traceability, temporal-relation accuracy, and unsupported-relation rate, then writes the detailed report under the ignored `.ci-agent/evaluations/` directory:
 
@@ -265,7 +267,7 @@ The following environment variables override storage and retrieval defaults:
 | `CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE` | `256` | In-process query-vector LRU capacity; set to `0` to disable |
 | `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | User- and filter-isolated retrieval-result LRU capacity |
 | `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | Retrieval-result cache lifetime; set to `0` to disable |
-| `CI_AGENT_RAG_QUERY_EXPANSION` | `true` | Enable bounded bilingual query-term expansion without an extra LLM call |
+| `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | Enable bounded bilingual query-term expansion without an extra LLM call |
 
 ### DB mode
 
@@ -436,6 +438,7 @@ uv run --locked pytest tests/test_a2a_provider.py
 | GET | `/api/competition/intelligence/changes` | List the incremental intelligence change timeline |
 | GET | `/api/competition/intelligence/changes/{change_id}` | Get one change with its current fact, sources, and version history |
 | GET | `/api/competition/intelligence/items` | List intelligence facts available for explicit knowledge ingestion |
+| GET | `/api/competition/intelligence/sources` | Inspect source health, failures, latency, and fallback diagnostics |
 | GET | `/api/competition/knowledge/status` | Get knowledge database, model, and index status |
 | GET | `/api/competition/knowledge/retrieval-logs` | List the current user's retrieval plans, filters, selected chunks, latency, and status |
 | GET / POST / PATCH | `/api/competition/knowledge/spaces` | Manage project knowledge spaces, approval, and retention policies |
@@ -470,9 +473,17 @@ Use `?summary=true` on report polling requests for a lightweight active-state re
 
 The current system combines realtime search with local hybrid RAG and persists business, knowledge, and evidence data in SQLite, Qdrant Local, and file storage. It is ready for an end-to-end competition demonstration. Productization directions reserved by the architecture include:
 
+### Completed RAG P1
+
+- Retrieval logs and governance statistics are integrated into the knowledge workspace for inspecting queries, selected chunks, latency, review outcomes, and source health.
+- Query-expansion evaluation compares Recall, MRR, NDCG, and P95 latency with the bounded expansion switch disabled/enabled before accepting additional recall cost.
+- The competitive-intelligence pool keeps content versions, source health, and failure records; observation runs trigger deep analysis only after material changes.
+- Alerts support content deduplication, cooldowns, quiet hours, digest/immediate delivery, and a failure-isolated notification router for reports, alerts, and system errors.
+
 ### Advanced RAG
 
 - **Retrieval feedback and explainability loop**: expose retrieval plans, filters, selected chunks, latency, and governance aggregates for UI inspection and future quality tuning.
+- **Frontend diagnostics**: the knowledge workspace shows recent retrieval traces, governance quality, and source health; source degradation lowers evidence quality instead of being silently presented as an official source.
 
 - Add optional model-based rewriting or HyDE only for complex requests where the real golden set demonstrates gains over the current zero-LLM direct/multi-hop planner.
 - Extend the current traceable GraphRAG, three-layer insights, and document-review feedback with manual relationship correction, hypothesis approval/rejection, and historical accuracy tracking.
