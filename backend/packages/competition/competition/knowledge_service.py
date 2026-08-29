@@ -43,6 +43,7 @@ from competition.knowledge_query import (
     expand_query_variants,
     normalize_query_text,
     plan_retrieval_query,
+    rewrite_query_with_aliases,
 )
 from competition.knowledge_repo import KnowledgeRepository
 from competition.knowledge_retrieval import RetrievalStrategy, adaptive_strategy, explain_retrieval, feedback_adjustment
@@ -794,8 +795,13 @@ class KnowledgeService:
         with self._repo() as repository:
             accessible = set(repository.accessible_space_ids(user_id))
             feedback_scores = repository.retrieval_feedback_scores(user_id)
+            alias_map = repository.entity_alias_map(user_id)
+            from competition.db import get_all_credibilities
+
+            credibility_scores = get_all_credibilities(repository.conn)
         scoped_requests: list[tuple[str, RetrievalFilters, int] | None] = []
         for query, filters, limit in requests:
+            query = rewrite_query_with_aliases(query, alias_map)
             requested = set(filters.space_ids)
             allowed = accessible.intersection(requested) if requested else accessible
             scoped_requests.append((query, replace(filters, space_ids=tuple(sorted(allowed))), limit) if allowed else None)
@@ -873,6 +879,7 @@ class KnowledgeService:
                     retrieval_mode=retrieval_mode,
                     rerank=rerank,
                     feedback_scores=feedback_scores,
+                    credibility_scores=credibility_scores,
                 )
                 output[index] = hits
                 self._put_cached(cache_key, hits)
@@ -908,6 +915,7 @@ class KnowledgeService:
         retrieval_mode: str = "hybrid",
         rerank: bool = True,
         feedback_scores: dict[str, dict[str, int]] | None = None,
+        credibility_scores: dict[str, float] | None = None,
     ) -> list[KnowledgeHit]:
         hits: list[KnowledgeHit] = []
         profile = ranking_profile if ranking_profile in {"balanced", "freshness", "authority"} else "balanced"
@@ -917,7 +925,7 @@ class KnowledgeService:
         if effective_rerank:
             ranked: list[tuple[dict[str, Any], float, float | None]] = []
             for (row, recall_score), rerank_score in zip(candidates, safe_rerank_scores, strict=True):
-                authority_score = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
+                authority_score = self._authority_score(row, credibility_scores)
                 final_score = 0.72 * max(0.0, min(1.0, rerank_score)) + 0.16 * max(0.0, min(1.0, recall_score)) + 0.12 * authority_score
                 counts = (feedback_scores or {}).get(str(row.get("chunk_id")), {})
                 final_score += feedback_adjustment(
@@ -932,7 +940,7 @@ class KnowledgeService:
         for row, score, rerank_score in ranked:
             if score < MIN_RETRIEVAL_SCORE:
                 continue
-            authority = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
+            authority = self._authority_score(row, credibility_scores)
             freshness = self._freshness_score(row)
             if profile == "freshness":
                 score = round(0.68 * score + 0.20 * freshness + 0.12 * authority, 6)
@@ -978,6 +986,7 @@ class KnowledgeService:
                         "ranking_profile": profile,
                         "freshness_score": freshness,
                         "authority_score": authority,
+                        "source_credibility": (credibility_scores or {}).get(self._source_domain(row.get("source_uri") or "")),
                         "retrieval_explanation": explanation,
                         "feedback_prior": feedback_adjustment(
                             relevant=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("relevant", 0),
@@ -1002,9 +1011,36 @@ class KnowledgeService:
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=UTC)
             age_days = max(0.0, (datetime.now(UTC) - stamp.astimezone(UTC)).total_seconds() / 86400)
-            return round(max(0.0, min(1.0, math.exp(-age_days / 365.0))), 6)
+            score = math.exp(-age_days / 365.0)
+            valid_to = row.get("valid_to")
+            if valid_to:
+                try:
+                    expiry = datetime.fromisoformat(str(valid_to).replace("Z", "+00:00"))
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=UTC)
+                    if expiry.astimezone(UTC) <= datetime.now(UTC):
+                        score *= 0.35
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            return round(max(0.0, min(1.0, score)), 6)
         except (TypeError, ValueError, OverflowError):
             return 0.35
+
+    @staticmethod
+    def _source_domain(uri: str) -> str:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(str(uri or ""))
+        return (parsed.hostname or parsed.netloc or "").casefold()
+
+    @staticmethod
+    def _authority_score(row: dict[str, Any], credibility_scores: dict[str, float] | None = None) -> float:
+        prior = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
+        domain = KnowledgeService._source_domain(row.get("source_uri") or "")
+        credibility = (credibility_scores or {}).get(domain)
+        if credibility is None:
+            return prior
+        return round(max(0.0, min(1.0, 0.72 * prior + 0.28 * float(credibility))), 6)
 
     def _cache_key(
         self,
@@ -1080,6 +1116,9 @@ class KnowledgeService:
         """Execute cost-routed multi-query plans with one batch per hop."""
         if not requests:
             return []
+        with self._repo() as repository:
+            aliases = repository.entity_alias_map(user_id)
+        requests = [(rewrite_query_with_aliases(query, aliases), filters, limit) for query, filters, limit in requests]
         plans = [plan_retrieval_query(query, filters) for query, filters, _ in requests]
         flat: list[tuple[str, RetrievalFilters, int]] = []
         owners: list[int] = []
@@ -1090,7 +1129,12 @@ class KnowledgeService:
                     continue
                 flat.append((step.query, filters, per_step))
                 owners.append(owner)
-            expansion_enabled = query_expansion if query_expansion is not None else os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "false").lower() in {"1", "true", "yes", "on"}
+            classification = plan.metadata.get("classification") or {}
+            adaptive_expansion = classification.get("complexity") in {"medium", "high"} or classification.get("needs_multi_hop")
+            expansion_enabled = query_expansion if query_expansion is not None else (
+                adaptive_expansion
+                or os.getenv("CI_AGENT_RAG_QUERY_EXPANSION", "false").lower() in {"1", "true", "yes", "on"}
+            )
             if expansion_enabled:
                 for variant in plan.metadata.get("query_expansions") or expand_query_variants(plan.normalized_query):
                     flat.append((variant, filters, per_step))
@@ -1433,6 +1477,18 @@ class KnowledgeService:
     def add_entity_alias(self, user_id: str, entity_id: str, alias: str) -> dict[str, Any]:
         with self._repo() as repository:
             return repository.add_entity_alias(entity_id, user_id=user_id, alias=alias)
+
+    def merge_entities(self, user_id: str, source_entity_id: str, target_entity_id: str, *, reason: str = "") -> dict[str, Any]:
+        with self._repo() as repository:
+            merged = repository.merge_entities(source_entity_id, target_entity_id, user_id=user_id, reason=reason)
+        self._invalidate_result_cache(user_id)
+        return merged
+
+    def list_entity_merge_audits(self, user_id: str, *, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_entity_merge_audits(user_id, space_id=space_id, limit=limit)
 
     def update_space(self, user_id: str, space_id: str, **values: Any) -> dict[str, Any]:
         self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)

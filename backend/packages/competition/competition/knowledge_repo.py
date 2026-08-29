@@ -779,6 +779,21 @@ class KnowledgeRepository:
             scores.setdefault(chunk_id, {})[action] = int(row[2] or 0)
         return scores
 
+    def entity_alias_map(self, user_id: str, *, space_ids: tuple[str, ...] = ()) -> dict[str, str]:
+        """Return caller-scoped aliases mapped to canonical entity names."""
+        spaces = tuple(space_ids) or tuple(self.accessible_space_ids(user_id))
+        if not spaces:
+            return {}
+        placeholders = ",".join("?" for _ in spaces)
+        rows = self.conn.execute(
+            f"""SELECT a.alias, e.canonical_name
+                    FROM knowledge_entity_aliases a
+                    JOIN knowledge_entities e ON e.entity_id = a.entity_id
+                   WHERE a.space_id IN ({placeholders})""",
+            list(spaces),
+        ).fetchall()
+        return {str(row[0]): str(row[1]) for row in rows if str(row[0] or "").strip() and str(row[1] or "").strip()}
+
     def governance_stats(self, user_id: str, *, space_id: str | None = None) -> dict[str, Any]:
         """Aggregate durable review outcomes for a knowledge-space quality view."""
         spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
@@ -1041,7 +1056,7 @@ class KnowledgeRepository:
         spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
         if not spaces:
             return []
-        clauses = [f"e.space_id IN ({','.join('?' for _ in spaces)})"]
+        clauses = [f"e.space_id IN ({','.join('?' for _ in spaces)})", "e.merged_into IS NULL"]
         params: list[Any] = [*spaces]
         if entity_type:
             clauses.append("e.entity_type = ?")
@@ -1095,6 +1110,116 @@ class KnowledgeRepository:
             (entity_id,),
         ).fetchall()]
         return item
+
+    def merge_entities(self, source_entity_id: str, target_entity_id: str, *, user_id: str, reason: str = "") -> dict[str, Any]:
+        """Merge duplicate entities while preserving references and an audit trail."""
+        if source_entity_id == target_entity_id:
+            raise ValueError("Source and target entities must differ")
+        source_row = self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (source_entity_id,)).fetchone()
+        target_row = self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (target_entity_id,)).fetchone()
+        if source_row is None or target_row is None:
+            raise KeyError("Knowledge entity not found")
+        if str(source_row["space_id"]) != str(target_row["space_id"]):
+            raise ValueError("Entities must belong to the same knowledge space")
+        space = self.get_space(str(source_row["space_id"]), user_id)
+        if not space or space.get("role") not in {"owner", "editor"}:
+            raise PermissionError("Knowledge-space edit permission is required")
+        source_before = _json_row(source_row) or {}
+        target_before = _json_row(target_row) or {}
+        space_id = str(source_row["space_id"])
+        now = _now()
+
+        aliases = self.conn.execute(
+            "SELECT alias_key, alias FROM knowledge_entity_aliases WHERE space_id = ? AND entity_id = ?",
+            (space_id, source_entity_id),
+        ).fetchall()
+        for alias_row in aliases:
+            conflict = self.conn.execute(
+                "SELECT entity_id FROM knowledge_entity_aliases WHERE space_id = ? AND alias_key = ? AND entity_id <> ?",
+                (space_id, alias_row["alias_key"], source_entity_id),
+            ).fetchone()
+            if conflict is not None:
+                self.conn.execute(
+                    "DELETE FROM knowledge_entity_aliases WHERE space_id = ? AND alias_key = ?",
+                    (space_id, alias_row["alias_key"]),
+                )
+                continue
+            self.conn.execute(
+                "UPDATE knowledge_entity_aliases SET entity_id = ? WHERE space_id = ? AND alias_key = ?",
+                (target_entity_id, space_id, alias_row["alias_key"]),
+            )
+
+        self.conn.execute("UPDATE knowledge_events SET entity_id = ? WHERE entity_id = ?", (target_entity_id, source_entity_id))
+        relation_rows = self.conn.execute(
+            "SELECT relation_id, source_entity_id, target_entity_id, metadata_json FROM knowledge_relations WHERE space_id = ? AND (source_entity_id = ? OR target_entity_id = ?)",
+            (space_id, source_entity_id, source_entity_id),
+        ).fetchall()
+        for relation in relation_rows:
+            new_source = target_entity_id if relation["source_entity_id"] == source_entity_id else relation["source_entity_id"]
+            new_target = target_entity_id if relation["target_entity_id"] == source_entity_id else relation["target_entity_id"]
+            if new_source == new_target:
+                self.conn.execute(
+                    "UPDATE knowledge_relations SET status = 'rejected', metadata_json = ? WHERE relation_id = ?",
+                    (json.dumps({**_loads(relation["metadata_json"], {}), "merged_duplicate": True, "merged_into": target_entity_id}, ensure_ascii=False), relation["relation_id"]),
+                )
+                continue
+            try:
+                self.conn.execute(
+                    "UPDATE knowledge_relations SET source_entity_id = ?, target_entity_id = ? WHERE relation_id = ?",
+                    (new_source, new_target, relation["relation_id"]),
+                )
+            except sqlite3.IntegrityError:
+                self.conn.execute(
+                    "UPDATE knowledge_relations SET status = 'rejected', metadata_json = ? WHERE relation_id = ?",
+                    (json.dumps({**_loads(relation["metadata_json"], {}), "merged_duplicate": True, "merged_into": target_entity_id}, ensure_ascii=False), relation["relation_id"]),
+                )
+        self.conn.execute("UPDATE knowledge_insights SET entity_id = ? WHERE entity_id = ?", (target_entity_id, source_entity_id))
+        merged_metadata = {**_loads(source_row["metadata_json"], {}), "merged_into": target_entity_id, "merged_at": now}
+        self.conn.execute(
+            "UPDATE knowledge_entities SET merged_into = ?, metadata_json = ?, updated_at = ? WHERE entity_id = ?",
+            (target_entity_id, json.dumps(merged_metadata, ensure_ascii=False), now, source_entity_id),
+        )
+        target_after = _json_row(self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (target_entity_id,)).fetchone()) or target_before
+        self.conn.execute(
+            """INSERT INTO knowledge_entity_merge_audits (
+                   audit_id, space_id, actor_id, source_entity_id, target_entity_id,
+                   reason, before_json, after_json, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"kmerge-{uuid.uuid4().hex}",
+                space_id,
+                user_id,
+                source_entity_id,
+                target_entity_id,
+                reason.strip()[:1000],
+                json.dumps({"source": source_before, "target": target_before}, ensure_ascii=False, default=str),
+                json.dumps({"source_merged_into": target_entity_id, "target": target_after}, ensure_ascii=False, default=str),
+                now,
+            ),
+        )
+        self.conn.commit()
+        result = target_after
+        result["merged_source_entity_id"] = source_entity_id
+        result["merge_reason"] = reason.strip()[:1000]
+        result["aliases"] = [dict(row) for row in self.conn.execute("SELECT alias, alias_key, created_at FROM knowledge_entity_aliases WHERE entity_id = ? ORDER BY created_at", (target_entity_id,)).fetchall()]
+        return result
+
+    def list_entity_merge_audits(self, user_id: str, *, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        placeholders = ",".join("?" for _ in spaces)
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_entity_merge_audits WHERE space_id IN ({placeholders}) ORDER BY created_at DESC LIMIT ?",
+            [*spaces, max(1, min(int(limit), 500))],
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["before"] = _loads(item.pop("before_json", "{}"), {})
+            item["after"] = _loads(item.pop("after_json", "{}"), {})
+            result.append(item)
+        return result
 
     def upsert_relation(self, values: dict[str, Any]) -> dict[str, Any]:
         now = _now()

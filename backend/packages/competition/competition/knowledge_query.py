@@ -33,6 +33,25 @@ def normalize_query_text(value: str) -> str:
     return _SPACE.sub(" ", unicodedata.normalize("NFKC", value or "")).strip()
 
 
+def rewrite_query_with_aliases(query: str, aliases: dict[str, str] | None = None, *, max_aliases: int = 6) -> str:
+    """Add canonical entity names for caller-scoped aliases without an LLM call."""
+    normalized = normalize_query_text(query)
+    if not normalized or not aliases:
+        return normalized
+    lowered = normalized.casefold()
+    matched: list[str] = []
+    for alias, canonical in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        alias_text = normalize_query_text(alias)
+        canonical_text = normalize_query_text(canonical)
+        if not alias_text or not canonical_text or alias_text.casefold() not in lowered:
+            continue
+        if canonical_text.casefold() not in lowered and canonical_text.casefold() not in {item.casefold() for item in matched}:
+            matched.append(canonical_text)
+        if len(matched) >= max(1, max_aliases):
+            break
+    return normalize_query_text(" ".join([normalized, *matched]))
+
+
 def _key(value: str) -> str:
     return normalize_query_text(value).casefold()
 

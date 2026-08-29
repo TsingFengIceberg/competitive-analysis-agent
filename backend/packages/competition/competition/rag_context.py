@@ -26,6 +26,13 @@ def evidence_coverage(bundle: dict[str, Any], *, products: list[str] | None = No
     expected_dimensions = {str(value).casefold() for value in dimensions or [] if str(value).strip()}
     covered_products = {str(item.get("product") or "").casefold() for item in evidence if item.get("product")}
     covered_dimensions = {str(item.get("dimension") or "").casefold() for item in evidence if item.get("dimension")}
+    covered_pairs = {
+        (str(item.get("product") or "").casefold(), str(item.get("dimension") or "").casefold())
+        for item in evidence
+        if item.get("product") and item.get("dimension")
+    }
+    expected_pairs = {(product, dimension) for product in expected_products for dimension in expected_dimensions}
+    missing_pairs = sorted(expected_pairs - covered_pairs)
     missing_products = sorted(expected_products - covered_products)
     missing_dimensions = sorted(expected_dimensions - covered_dimensions)
     return {
@@ -35,12 +42,21 @@ def evidence_coverage(bundle: dict[str, Any], *, products: list[str] | None = No
         "covered_dimensions": sorted(covered_dimensions),
         "missing_products": missing_products,
         "missing_dimensions": missing_dimensions,
+        "expected_pairs": [list(pair) for pair in sorted(expected_pairs)],
+        "covered_pairs": [list(pair) for pair in sorted(covered_pairs & expected_pairs)],
+        "missing_pairs": [list(pair) for pair in missing_pairs],
+        "targeted_tasks": [
+            {"product": product, "dimension": dimension, "task": f"Collect authoritative {dimension} evidence for {product}"}
+            for product, dimension in missing_pairs[:24]
+        ],
         "coverage_ratio": round(
-            (len(expected_products & covered_products) + len(expected_dimensions & covered_dimensions))
+            len(covered_pairs & expected_pairs) / max(1, len(expected_pairs))
+            if expected_pairs
+            else (len(expected_products & covered_products) + len(expected_dimensions & covered_dimensions))
             / max(1, len(expected_products) + len(expected_dimensions)),
             6,
         ),
-        "needs_targeted_collection": bool(missing_products or missing_dimensions or bundle.get("abstain")),
+        "needs_targeted_collection": bool(missing_products or missing_dimensions or missing_pairs or bundle.get("abstain")),
     }
 
 

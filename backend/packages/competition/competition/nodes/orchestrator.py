@@ -295,7 +295,7 @@ def orchestrator_node(state: dict) -> dict:
         "following the format in your system prompt. "
         "Do NOT wrap in markdown code blocks — output raw JSON only."
     )
-    if rag_context and rag_context.get("evidence"):
+    if rag_context:
         task += "\n\nRAG COVERAGE SIGNALS (planning only; do not treat as final facts):\n" + prompt_excerpt(rag_context)
 
     # ── Invoke LLM ──
@@ -357,4 +357,5 @@ def _build_return(orch: OrchestrationResult, brief: dict | None = None, *, rag_c
         "orchestration_result": orch.model_dump(),
         "complexity": orch.complexity,
         "rag_context": rag_context,
+        "rag_coverage": (rag_context or {}).get("coverage") if isinstance(rag_context, dict) else None,
     }

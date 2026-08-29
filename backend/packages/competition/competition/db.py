@@ -214,6 +214,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             task_type TEXT NOT NULL,
             idempotency_key TEXT,
             status TEXT NOT NULL DEFAULT 'queued',
+            priority INTEGER NOT NULL DEFAULT 50,
             progress INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL DEFAULT '{}',
             result_json TEXT NOT NULL DEFAULT '{}',
@@ -449,6 +450,9 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             enabled INTEGER NOT NULL DEFAULT 1,
             sync_interval_minutes INTEGER NOT NULL DEFAULT 360,
             timeout_seconds INTEGER NOT NULL DEFAULT 20,
+            priority INTEGER NOT NULL DEFAULT 50,
+            max_pages INTEGER NOT NULL DEFAULT 1,
+            page_param TEXT NOT NULL DEFAULT '',
             etag TEXT,
             last_modified TEXT,
             content_hash TEXT,
@@ -464,6 +468,41 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             UNIQUE(user_id, space_id, uri, product, dimension)
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_sources_user ON knowledge_source_connectors(user_id, enabled, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_source_items (
+            source_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            entry_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            source_uri TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'discovered',
+            document_id TEXT,
+            last_seen_at TEXT NOT NULL,
+            last_changed_at TEXT,
+            last_error TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (source_id, entry_id),
+            FOREIGN KEY (source_id) REFERENCES knowledge_source_connectors(source_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_source_items_user ON knowledge_source_items(user_id, source_id, last_seen_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_source_sync_runs (
+            sync_run_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            status TEXT NOT NULL DEFAULT 'running',
+            pages_fetched INTEGER NOT NULL DEFAULT 0,
+            items_seen INTEGER NOT NULL DEFAULT 0,
+            items_changed INTEGER NOT NULL DEFAULT 0,
+            items_queued INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (source_id) REFERENCES knowledge_source_connectors(source_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_source_sync_runs_user ON knowledge_source_sync_runs(user_id, source_id, started_at DESC);
 
         CREATE TABLE IF NOT EXISTS knowledge_retrieval_logs (
             retrieval_id TEXT PRIMARY KEY,
@@ -516,6 +555,32 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_online_metrics_user ON knowledge_online_metrics(user_id, metric_name, observed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_evaluation_datasets (
+            dataset_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            dataset_name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            cases_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, dataset_name, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_evaluation_datasets_user ON knowledge_evaluation_datasets(user_id, dataset_name, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_retrieval_experiments (
+            experiment_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            baseline_json TEXT NOT NULL DEFAULT '{}',
+            candidate_json TEXT NOT NULL DEFAULT '{}',
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_experiments_user ON knowledge_retrieval_experiments(user_id, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS knowledge_spaces (
             space_id TEXT PRIMARY KEY,
@@ -578,6 +643,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             entity_type TEXT NOT NULL DEFAULT 'product',
             normalized_key TEXT NOT NULL,
             metadata_json TEXT NOT NULL DEFAULT '{}',
+            merged_into TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(space_id, normalized_key)
@@ -593,6 +659,20 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             PRIMARY KEY (space_id, alias_key),
             FOREIGN KEY (entity_id) REFERENCES knowledge_entities(entity_id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS knowledge_entity_merge_audits (
+            audit_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            source_entity_id TEXT NOT NULL,
+            target_entity_id TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (space_id) REFERENCES knowledge_spaces(space_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_entity_merge_audits_space ON knowledge_entity_merge_audits(space_id, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS knowledge_events (
             event_id TEXT PRIMARY KEY,
@@ -781,13 +861,27 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
     for col, definition in (
+        ("priority", "INTEGER NOT NULL DEFAULT 50"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE background_tasks ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass
+    for col, definition in (
         ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
         ("cooldown_until", "TEXT"),
+        ("priority", "INTEGER NOT NULL DEFAULT 50"),
+        ("max_pages", "INTEGER NOT NULL DEFAULT 1"),
+        ("page_param", "TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             conn.execute(f"ALTER TABLE knowledge_source_connectors ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
+    try:
+        conn.execute("ALTER TABLE knowledge_entities ADD COLUMN merged_into TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 

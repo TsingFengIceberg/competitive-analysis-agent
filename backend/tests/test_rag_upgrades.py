@@ -14,6 +14,7 @@ from competition.knowledge_sources import (
     SourceRepository,
     parse_feed_items,
     parse_json_api_items,
+    parse_json_api_page,
     parse_sitemap_urls,
     sync_source,
     validate_source_uri,
@@ -122,6 +123,58 @@ def test_source_formats_are_normalized_and_private_hosts_are_rejected():
     assert parse_json_api_items(payload, source_uri="https://example.test/api")[0]["entry_id"] == "p1"
     with pytest.raises(ValueError, match="Private or local"):
         validate_source_uri("http://127.0.0.1/internal")
+
+
+def test_json_pagination_and_item_level_source_sync_only_register_changes(tmp_path: Path):
+    payload = b'{"items":[{"id":"one","title":"One","summary":"Initial"}],"links":{"next":"https://example.test/feed?page=2"}}'
+    page = parse_json_api_page(payload, source_uri="https://example.test/feed", media_type="application/json")
+    assert page["items"][0]["entry_id"] == "one"
+    assert page["next_uri"].endswith("page=2")
+    with SourceRepository(db_path=tmp_path / "source-items.db") as repository:
+        source = KnowledgeSourceConnector(name="API", uri="https://example.test/feed", source_type="json_api", user_id="owner", max_pages=2)
+        saved = repository.save(source)
+        calls = []
+
+        def register(**kwargs):
+            calls.append(kwargs)
+            return {"document": {"document_id": f"doc-{len(calls)}"}, "job": {"job_id": f"job-{len(calls)}"}}
+
+        result = sync_source(
+            saved,
+            user_id="owner",
+            repository=repository,
+            fetcher=lambda _source: SourceFetchResult(
+                status="changed",
+                data=payload,
+                media_type="application/json",
+                content_hash="first",
+                items=({"entry_id": "one", "title": "One", "summary": "Initial", "source_uri": "https://example.test/one"},),
+                pages_fetched=1,
+            ),
+            register=register,
+        )
+        assert result["status"] == "queued"
+        assert len(calls) == 1
+        assert repository.list_items(source.source_id, "owner")[0]["status"] == "queued"
+
+        current = repository.get(source.source_id, "owner")
+        assert current
+        unchanged = sync_source(
+            current,
+            user_id="owner",
+            repository=repository,
+            fetcher=lambda _source: SourceFetchResult(
+                status="changed",
+                data=payload,
+                media_type="application/json",
+                content_hash="second",
+                items=({"entry_id": "one", "title": "One", "summary": "Initial", "source_uri": "https://example.test/one"},),
+                pages_fetched=1,
+            ),
+            register=register,
+        )
+        assert unchanged["changed"] is False
+        assert len(calls) == 1
 
 
 def test_adaptive_retrieval_and_feedback_prior_are_bounded():

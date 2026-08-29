@@ -37,11 +37,13 @@ def reviewer_node(state: dict) -> dict:
         except Exception:
             logger.exception("RAG evidence bundle build failed in Reviewer")
             rag_context = None
+    gaps_from_rag = _rag_coverage_gaps(rag_context, state)
     prev_gaps = _gaps_from_verdict(state.get("review_verdict"))
     review_round = state.get("review_round", 0)
 
     # Run 8 gap checks (§3.6.1) — v4: always run all checks
     gaps: list[dict] = []
+    gaps.extend(gaps_from_rag)
     gaps.extend(check_url_reachability(collected))  # G1
     gaps.extend(check_multi_source_consistency(collected))  # G2
     brief = state.get("analysis_brief") or {}
@@ -144,7 +146,35 @@ def reviewer_node(state: dict) -> dict:
         "review_round": new_round,
         "gap_coverage_improvement": improvement,
         "round_metrics": round_metrics,
+        "rag_coverage": (rag_context or {}).get("coverage") if isinstance(rag_context, dict) else None,
     }
+
+
+def _rag_coverage_gaps(rag_context: dict | None, state: dict) -> list[dict]:
+    """Turn missing product/dimension evidence pairs into targeted work items."""
+    if not isinstance(rag_context, dict):
+        return []
+    coverage = rag_context.get("coverage")
+    if not isinstance(coverage, dict):
+        return []
+    gaps: list[dict] = []
+    for index, pair in enumerate(coverage.get("missing_pairs") or []):
+        if not isinstance(pair, list) or len(pair) != 2:
+            continue
+        product, dimension = str(pair[0]), str(pair[1])
+        gaps.append(
+            _make_gap(
+                gid=f"gap-rag-coverage-{product}-{dimension}-{index}",
+                gap_type="missing_data",
+                method="rag_coverage",
+                desc=f"Local evidence coverage is missing {product} × {dimension}",
+                evidence=json.dumps(coverage.get("targeted_tasks") or [], ensure_ascii=False)[:1000],
+                task=f"Collect targeted evidence for {product} in {dimension}",
+                severity="major",
+                related_ids=[],
+            )
+        )
+    return gaps
 
 
 def _run_claim_verification(

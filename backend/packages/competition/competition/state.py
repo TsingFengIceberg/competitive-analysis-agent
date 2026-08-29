@@ -74,6 +74,8 @@ class CompetitionState(AgentState):
     """Evidence-linked GraphRAG paths plus navigation-only relationship leads."""
     rag_context: NotRequired[dict | None]
     """Role-aware, budget-bounded evidence bundle shared by analysis agents."""
+    rag_coverage: NotRequired[dict | None]
+    """Product/dimension coverage and targeted collection tasks for the current run."""
     rag_retrieval_mode: NotRequired[str | None]
     """Retrieval strategy selected for the current run: hybrid, dense, or sparse."""
     rag_ranking_profile: NotRequired[str | None]

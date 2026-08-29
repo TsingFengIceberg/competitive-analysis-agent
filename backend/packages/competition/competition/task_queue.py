@@ -74,6 +74,7 @@ class TaskRepository:
         idempotency_key: str | None = None,
         max_attempts: int = 3,
         available_at: str | None = None,
+        priority: int = 50,
     ) -> dict[str, Any]:
         task_id = f"task-{uuid.uuid4().hex}"
         now = _iso()
@@ -81,14 +82,15 @@ class TaskRepository:
             self.conn.execute(
                 """INSERT INTO background_tasks (
                     task_id, user_id, task_type, idempotency_key, status,
-                    payload_json, result_json, attempts, max_attempts,
+                    priority, payload_json, result_json, attempts, max_attempts,
                     available_at, created_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, '{}', 0, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', 0, ?, ?, ?)""",
                 (
                     task_id,
                     user_id,
                     task_type,
                     idempotency_key,
+                    max(0, min(int(priority), 1000)),
                     json.dumps(payload or {}, ensure_ascii=False, default=str),
                     max(1, min(int(max_attempts), 20)),
                     available_at or now,
@@ -147,7 +149,7 @@ class TaskRepository:
                 """SELECT * FROM background_tasks
                    WHERE (status = 'queued' AND available_at <= ?)
                       OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?)
-                   ORDER BY available_at ASC, created_at ASC LIMIT 1""",
+                   ORDER BY priority DESC, available_at ASC, created_at ASC LIMIT 1""",
                 (now_iso, now_iso),
             ).fetchone()
             if row is None:

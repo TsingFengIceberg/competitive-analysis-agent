@@ -209,6 +209,24 @@ class KnowledgeEvaluationRequest(BaseModel):
     thresholds: dict[str, float] = Field(default_factory=dict)
 
 
+class KnowledgeDatasetRequest(BaseModel):
+    dataset_name: str = Field(..., min_length=1, max_length=120)
+    version: str = Field(default="v1", min_length=1, max_length=40)
+    cases: list[dict] = Field(default_factory=list, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeExperimentRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    baseline: dict[str, Any] = Field(default_factory=dict)
+    candidate: dict[str, Any] = Field(default_factory=dict)
+    dataset_name: str = Field(default="", max_length=120)
+    dataset_version: str = Field(default="", max_length=40)
+    baseline_cases: list[dict] = Field(default_factory=list, max_length=500)
+    candidate_cases: list[dict] = Field(default_factory=list, max_length=500)
+    k: int = Field(default=5, ge=1, le=50)
+
+
 class KnowledgeSourceRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     uri: str = Field(..., min_length=8, max_length=2000)
@@ -222,6 +240,9 @@ class KnowledgeSourceRequest(BaseModel):
     enabled: bool = True
     sync_interval_minutes: int = Field(default=360, ge=5, le=10080)
     timeout_seconds: int = Field(default=20, ge=3, le=120)
+    priority: int = Field(default=50, ge=0, le=1000)
+    max_pages: int = Field(default=1, ge=1, le=20)
+    page_param: str = Field(default="", max_length=40)
 
 
 class KnowledgeRetrievalFeedbackRequest(BaseModel):
@@ -242,6 +263,11 @@ class KnowledgeOnlineMetricRequest(BaseModel):
 
 class KnowledgeEntityAliasRequest(BaseModel):
     alias: str = Field(..., min_length=1, max_length=200)
+
+
+class KnowledgeEntityMergeRequest(BaseModel):
+    target_entity_id: str = Field(..., min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=1000)
 
 
 class KnowledgeSpaceCreateRequest(BaseModel):
@@ -1318,10 +1344,120 @@ def _run_background_source_sync_task(task: dict) -> dict:
             repository=repository,
             register=lambda **kwargs: get_knowledge_service().register_bytes(user_id=user_id, **kwargs),
         )
-    registration = result.get("registration") if isinstance(result, dict) else None
-    if registration and registration.get("job"):
+    registrations = result.get("registrations") if isinstance(result, dict) else None
+    if not isinstance(registrations, list):
+        registration = result.get("registration") if isinstance(result, dict) else None
+        registrations = [registration] if registration else []
+    queued_jobs = []
+    for registration in registrations:
+        if isinstance(registration, dict) and registration.get("job"):
+            queued_jobs.append(_queue_knowledge_job(registration))
+    queued_items = []
+    for item in result.get("needs_fetch") or []:
+        queued_items.append(_queue_knowledge_source_item_sync(source, item, user_id))
+    return {
+        "source_id": source_id,
+        "status": result.get("status"),
+        "changed": bool(result.get("changed")),
+        "source": result.get("source"),
+        "sync_run_id": result.get("sync_run_id"),
+        "item_changes": result.get("item_changes") or [],
+        "background_jobs": queued_jobs,
+        "background_item_tasks": queued_items,
+    }
+
+
+def _run_background_source_item_sync_task(task: dict) -> dict:
+    """Fetch one sitemap-discovered page and register it independently."""
+    from competition.knowledge_service import get_knowledge_service
+    from competition.knowledge_sources import SourceRepository, _source_item_filename, fetch_http_source
+
+    payload = task.get("payload") or {}
+    source_id = str(payload.get("source_id") or "")
+    entry_id = str(payload.get("entry_id") or "")
+    user_id = str(payload.get("user_id") or task.get("user_id") or "default")
+    if not source_id or not entry_id:
+        raise ValueError("source item task is missing source_id or entry_id")
+    with SourceRepository() as repository:
+        source = repository.get(source_id, user_id)
+        item = repository.get_item(source_id, entry_id, user_id)
+        if source is None or item is None:
+            raise KeyError("Knowledge source item not found")
+        child_source = {**source, "uri": item.get("source_uri") or source.get("uri"), "source_type": "web", "max_pages": 1}
+        fetched = fetch_http_source(child_source)
+        if not fetched.changed:
+            repository.upsert_item(
+                source_id=source_id,
+                user_id=user_id,
+                entry_id=entry_id,
+                title=item.get("title") or "Source item",
+                source_uri=item.get("source_uri") or source.get("uri") or "",
+                content_hash=item.get("content_hash") or "",
+                status="failed" if fetched.status == "failed" else "unchanged",
+                error=fetched.error,
+                metadata=item.get("metadata") or {},
+            )
+            if fetched.status == "failed":
+                raise RuntimeError(fetched.error or "Source item fetch failed")
+            return {"source_id": source_id, "entry_id": entry_id, "status": "unchanged"}
+        service = get_knowledge_service()
+        registration = service.register_bytes(
+            user_id=user_id,
+            filename=_source_item_filename(item),
+            data=fetched.data,
+            title=item.get("title") or source.get("name") or "Source item",
+            media_type=fetched.media_type or "text/html",
+            source_type="web",
+            source_uri=item.get("source_uri") or source.get("uri") or "",
+            product=source.get("product") or "",
+            dimension=source.get("dimension") or "",
+            market_scope=source.get("market_scope") or "Global / unspecified",
+            authority_tier=source.get("authority_tier") or "primary",
+            published_at=(item.get("metadata") or {}).get("published_at"),
+            metadata={
+                "connector_kind": source.get("source_type") or "sitemap",
+                "source_id": source_id,
+                "source_entry_id": entry_id,
+                "sync_run_id": payload.get("sync_run_id"),
+            },
+            space_id=source.get("space_id") or None,
+        )
+        document_id = (registration.get("document") or {}).get("document_id")
+        repository.upsert_item(
+            source_id=source_id,
+            user_id=user_id,
+            entry_id=entry_id,
+            title=item.get("title") or "Source item",
+            source_uri=item.get("source_uri") or source.get("uri") or "",
+            content_hash=fetched.content_hash or item.get("content_hash") or "",
+            status="queued",
+            document_id=document_id,
+            changed=True,
+            metadata=item.get("metadata") or {},
+        )
+    if registration.get("job"):
         _queue_knowledge_job(registration)
-    return {"source_id": source_id, "status": result.get("status"), "changed": bool(result.get("changed")), "source": result.get("source")}
+    return {"source_id": source_id, "entry_id": entry_id, "status": "queued", "document_id": document_id}
+
+
+def _queue_knowledge_source_item_sync(source: dict, item: dict, user_id: str) -> dict:
+    from competition.task_queue import TaskRepository
+
+    source_id = str(source.get("source_id") or item.get("source_id") or "")
+    entry_id = str(item.get("entry_id") or "")
+    key_digest = __import__("hashlib").sha256(f"{source_id}:{entry_id}:{item.get('content_hash', '')}".encode()).hexdigest()
+    repository = TaskRepository()
+    try:
+        return repository.enqueue(
+            user_id=user_id,
+            task_type="knowledge.source_item_sync",
+            payload={"source_id": source_id, "entry_id": entry_id, "user_id": user_id, "sync_run_id": item.get("sync_run_id")},
+            idempotency_key=f"knowledge-source-item:{key_digest}",
+            max_attempts=3,
+            priority=int(source.get("priority") or 50),
+        )
+    finally:
+        repository.close()
 
 
 def _enqueue_observation_task(schedule: dict, manual: bool = False) -> dict:
@@ -1377,6 +1513,7 @@ def start_task_runtime() -> None:
                 "knowledge.rebuild": _run_background_knowledge_task,
                 "knowledge.reindex": _run_background_knowledge_task,
                 "knowledge.source_sync": _run_background_knowledge_task,
+                "knowledge.source_item_sync": _run_background_source_item_sync_task,
             },
             poll_seconds=float(os.getenv("CI_AGENT_TASK_POLL_SECONDS", "1")),
         )
@@ -1436,7 +1573,7 @@ def _queue_knowledge_job(result: dict) -> dict:
     return result
 
 
-def _queue_knowledge_source_sync(source_id: str, user_id: str, *, manual: bool = False) -> dict:
+def _queue_knowledge_source_sync(source_id: str, user_id: str, *, manual: bool = False, priority: int = 50) -> dict:
     """Enqueue connector I/O and return immediately to the caller."""
     from competition.task_queue import TaskRepository
 
@@ -1449,6 +1586,7 @@ def _queue_knowledge_source_sync(source_id: str, user_id: str, *, manual: bool =
             payload={"source_id": source_id, "user_id": user_id, "operation": "source_sync"},
             idempotency_key=key,
             max_attempts=3,
+            priority=priority,
         )
     finally:
         repository.close()
@@ -1565,6 +1703,7 @@ def _sync_due_knowledge_sources(limit: int = 10) -> list[dict[str, Any]]:
                 task = _queue_knowledge_source_sync(
                     str(source.get("source_id") or ""),
                     str(source.get("user_id") or "default"),
+                    priority=int(source.get("priority") or 50),
                 )
                 results.append({"source_id": source.get("source_id"), "status": "queued", "task_id": task.get("task_id")})
             except Exception as exc:
@@ -1592,6 +1731,28 @@ async def knowledge_source_health(fastapi_request: Request, limit: int = Query(d
 
     with SourceRepository() as repository:
         return {"health": repository.health(_get_user_id(fastapi_request), limit=limit)}
+
+
+@router.get("/knowledge/sources/{source_id}/items")
+async def list_knowledge_source_items(source_id: str, fastapi_request: Request, limit: int = Query(default=200, ge=1, le=1000)) -> dict:
+    from competition.knowledge_sources import SourceRepository
+
+    with SourceRepository() as repository:
+        user_id = _get_user_id(fastapi_request)
+        if repository.get(source_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+        return {"items": repository.list_items(source_id, user_id, limit=limit)}
+
+
+@router.get("/knowledge/sources/{source_id}/sync-runs")
+async def list_knowledge_source_sync_runs(source_id: str, fastapi_request: Request, limit: int = Query(default=50, ge=1, le=500)) -> dict:
+    from competition.knowledge_sources import SourceRepository
+
+    with SourceRepository() as repository:
+        user_id = _get_user_id(fastapi_request)
+        if repository.get(source_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+        return {"runs": repository.list_sync_runs(user_id, source_id=source_id, limit=limit)}
 
 
 @router.post("/knowledge/upload", status_code=202)
@@ -1952,6 +2113,80 @@ async def list_knowledge_evaluations(fastapi_request: Request, limit: int = Quer
         return {"runs": repository.list(_get_user_id(fastapi_request), limit=limit)}
 
 
+@router.post("/knowledge/evaluation-datasets", status_code=201)
+async def save_knowledge_evaluation_dataset(body: KnowledgeDatasetRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    if not body.cases:
+        raise HTTPException(status_code=422, detail="At least one evaluation case is required")
+    with KnowledgeEvaluationRepository() as repository:
+        dataset = repository.save_dataset(
+            user_id=_get_user_id(fastapi_request),
+            dataset_name=body.dataset_name,
+            version=body.version,
+            cases=body.cases,
+            metadata=body.metadata,
+        )
+    return {"dataset": dataset}
+
+
+@router.get("/knowledge/evaluation-datasets")
+async def list_knowledge_evaluation_datasets(fastapi_request: Request, dataset_name: str | None = None, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        return {"datasets": repository.list_datasets(_get_user_id(fastapi_request), dataset_name=dataset_name, limit=limit)}
+
+
+@router.post("/knowledge/retrieval-experiments", status_code=201)
+async def create_knowledge_retrieval_experiment(body: KnowledgeExperimentRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_eval import compute_retrieval_metrics
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+    from competition.knowledge_quota import QuotaExceeded, quota
+
+    user_id = _get_user_id(fastapi_request)
+    try:
+        quota.check(user_id, "evaluation")
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after)}) from exc
+    with KnowledgeEvaluationRepository() as repository:
+        baseline_cases = list(body.baseline_cases)
+        candidate_cases = list(body.candidate_cases)
+        if body.dataset_name and (not baseline_cases or not candidate_cases):
+            dataset = repository.get_dataset(user_id, body.dataset_name, body.dataset_version or "v1")
+            if dataset:
+                baseline_cases = baseline_cases or list(dataset.get("cases") or [])
+                candidate_cases = candidate_cases or list(dataset.get("cases") or [])
+        metrics: dict[str, Any] = {"baseline_strategy": body.baseline, "candidate_strategy": body.candidate}
+        if baseline_cases:
+            metrics["baseline"] = compute_retrieval_metrics(baseline_cases, k=body.k)
+        if candidate_cases:
+            metrics["candidate"] = compute_retrieval_metrics(candidate_cases, k=body.k)
+        if "baseline" in metrics and "candidate" in metrics:
+            metrics["delta"] = {
+                key: round(float(metrics["candidate"].get(key, 0.0)) - float(metrics["baseline"].get(key, 0.0)), 6)
+                for key in set(metrics["baseline"]).intersection(metrics["candidate"])
+                if isinstance(metrics["baseline"].get(key), (int, float)) and isinstance(metrics["candidate"].get(key), (int, float))
+            }
+        experiment = repository.save_experiment(
+            user_id=user_id,
+            name=body.name,
+            baseline=body.baseline,
+            candidate=body.candidate,
+            metrics=metrics,
+            status="completed" if "baseline" in metrics and "candidate" in metrics else "draft",
+        )
+    return {"experiment": experiment}
+
+
+@router.get("/knowledge/retrieval-experiments")
+async def list_knowledge_retrieval_experiments(fastapi_request: Request, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        return {"experiments": repository.list_experiments(_get_user_id(fastapi_request), limit=limit)}
+
+
 @router.post("/knowledge/retrieval-feedback", status_code=201)
 async def save_knowledge_retrieval_feedback(
     body: KnowledgeRetrievalFeedbackRequest,
@@ -2024,6 +2259,21 @@ async def list_knowledge_online_metrics(
         return {
             "metrics": repository.list_online_metrics(_get_user_id(fastapi_request), limit=limit),
             "summary": repository.online_metric_summary(_get_user_id(fastapi_request), limit=limit),
+        }
+
+
+@router.get("/knowledge/online-metrics/trends")
+async def list_knowledge_online_metric_trends(
+    fastapi_request: Request,
+    metric_name: str = Query(..., min_length=1, max_length=120),
+    limit: int = Query(default=30, ge=1, le=365),
+) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        return {
+            "metric_name": metric_name,
+            "trend": repository.online_metric_trend(_get_user_id(fastapi_request), metric_name, limit=limit),
         }
 
 
@@ -2290,6 +2540,34 @@ async def add_knowledge_entity_alias(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"entity": entity}
+
+
+@router.post("/knowledge/entities/{entity_id}/merge", status_code=201)
+async def merge_knowledge_entity(entity_id: str, body: KnowledgeEntityMergeRequest, fastapi_request: Request) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        entity = await asyncio.to_thread(
+            get_knowledge_service().merge_entities,
+            _get_user_id(fastapi_request),
+            entity_id,
+            body.target_entity_id,
+            reason=body.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"entity": entity}
+
+
+@router.get("/knowledge/entity-merge-audits")
+async def list_knowledge_entity_merge_audits(fastapi_request: Request, space_id: str | None = None, limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    return {"audits": await asyncio.to_thread(get_knowledge_service().list_entity_merge_audits, _get_user_id(fastapi_request), space_id=space_id, limit=limit)}
 
 
 @router.post("/knowledge/insights/refresh")
