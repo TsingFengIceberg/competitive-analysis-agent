@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import json
+import os
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -13,12 +16,15 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 from competition.db import DEFAULT_DB_PATH, init_db
 
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 SUPPORTED_SCHEMES = {"http", "https"}
 SOURCE_STATUSES = {"idle", "checking", "unchanged", "queued", "healthy", "failed", "disabled"}
+SOURCE_TYPES = {"web", "rss", "atom", "sitemap", "json_api"}
+_PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal", "metadata"}
 
 
 def _now() -> str:
@@ -29,14 +35,143 @@ def _decode(value: Any) -> str:
     return str(value or "").strip()
 
 
-def validate_source_uri(uri: str) -> str:
+def _is_private_host(hostname: str) -> bool:
+    value = hostname.casefold().strip("[]")
+    if value in _PRIVATE_HOSTNAMES or value.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_unspecified)
+
+
+def validate_source_uri(uri: str, *, allow_private: bool | None = None) -> str:
     value = _decode(uri)
     parsed = urlsplit(value)
     if parsed.scheme.lower() not in SUPPORTED_SCHEMES or not parsed.netloc:
         raise ValueError("Only http(s) source URLs are supported")
     if parsed.username or parsed.password:
         raise ValueError("Source URL must not contain embedded credentials")
+    if allow_private is None:
+        allow_private = os.getenv("CI_AGENT_KNOWLEDGE_ALLOW_PRIVATE_SOURCES", "false").lower() in {"1", "true", "yes", "on"}
+    if not allow_private and _is_private_host(parsed.hostname or ""):
+        raise ValueError("Private or local source hosts are not allowed")
     return value
+
+
+def _xml_local_name(tag: str) -> str:
+    return str(tag).rsplit("}", 1)[-1].casefold()
+
+
+def _xml_text(element: ElementTree.Element | None, names: tuple[str, ...]) -> str:
+    if element is None:
+        return ""
+    for child in list(element):
+        if _xml_local_name(child.tag) in names:
+            return " ".join("".join(child.itertext()).split())
+    return ""
+
+
+def parse_feed_items(data: bytes, *, source_uri: str, media_type: str = "") -> list[dict[str, Any]]:
+    """Extract bounded RSS/Atom entries into a provider-neutral shape."""
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError:
+        return []
+    root_name = _xml_local_name(root.tag)
+    if root_name not in {"rss", "feed", "rdf"}:
+        return []
+    entries = [element for element in root.iter() if _xml_local_name(element.tag) in {"item", "entry"}]
+    result: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries[:200]):
+        title = _xml_text(entry, ("title",))
+        summary = _xml_text(entry, ("description", "summary", "content"))
+        published = _xml_text(entry, ("pubdate", "published", "updated", "date"))
+        link = _xml_text(entry, ("link", "guid"))
+        if not link:
+            for child in list(entry):
+                if _xml_local_name(child.tag) == "link" and child.attrib.get("href"):
+                    link = str(child.attrib["href"])
+                    break
+        result.append({
+            "entry_id": link or f"{source_uri}#entry-{index + 1}",
+            "title": title[:500],
+            "summary": summary[:4000],
+            "published_at": published[:120] or None,
+            "source_uri": link or source_uri,
+            "media_type": media_type or "application/rss+xml",
+        })
+    return [item for item in result if item["title"] or item["summary"]]
+
+
+def parse_sitemap_urls(data: bytes, *, source_uri: str) -> list[dict[str, Any]]:
+    """Extract URLs and last-modified timestamps from XML sitemaps."""
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError:
+        return []
+    result: list[dict[str, Any]] = []
+    for index, element in enumerate(root.iter()):
+        if _xml_local_name(element.tag) != "url":
+            continue
+        loc = _xml_text(element, ("loc",))
+        if not loc:
+            continue
+        result.append({
+            "entry_id": loc,
+            "title": loc,
+            "summary": "",
+            "published_at": _xml_text(element, ("lastmod",)) or None,
+            "source_uri": loc,
+            "media_type": "text/html",
+            "ordinal": index,
+        })
+        if len(result) >= 500:
+            break
+    return result
+
+
+def parse_json_api_items(data: bytes, *, source_uri: str, media_type: str = "") -> list[dict[str, Any]]:
+    """Normalize common JSON API list envelopes without exposing arbitrary fields."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if isinstance(payload, dict):
+        for key in ("items", "results", "data", "entries"):
+            if isinstance(payload.get(key), list):
+                payload = payload[key]
+                break
+    if not isinstance(payload, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(payload[:200]):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("name") or item.get("id") or f"Entry {index + 1}")
+        summary = str(item.get("summary") or item.get("description") or item.get("content") or "")
+        uri = str(item.get("url") or item.get("link") or source_uri)
+        result.append({
+            "entry_id": str(item.get("id") or uri or index),
+            "title": title[:500],
+            "summary": summary[:4000],
+            "published_at": str(item.get("published_at") or item.get("published") or item.get("updated_at") or "")[:120] or None,
+            "source_uri": uri,
+            "media_type": media_type or "application/json",
+        })
+    return result
+
+
+def parse_source_items(data: bytes, *, source_uri: str, source_type: str, media_type: str = "") -> list[dict[str, Any]]:
+    kind = str(source_type or "web").casefold()
+    if kind in {"rss", "atom"} or "rss" in media_type.casefold() or "atom" in media_type.casefold():
+        return parse_feed_items(data, source_uri=source_uri, media_type=media_type)
+    if kind == "sitemap" or "sitemap" in media_type.casefold() or source_uri.casefold().split("?", 1)[0].endswith(".xml"):
+        return parse_sitemap_urls(data, source_uri=source_uri)
+    if kind == "json_api" or "json" in media_type.casefold():
+        return parse_json_api_items(data, source_uri=source_uri, media_type=media_type)
+    return []
 
 
 @dataclass
@@ -71,6 +206,9 @@ class KnowledgeSourceConnector:
         if not self.name:
             raise ValueError("source name is required")
         self.uri = validate_source_uri(self.uri)
+        self.source_type = _decode(self.source_type).casefold() or "web"
+        if self.source_type not in SOURCE_TYPES:
+            raise ValueError(f"Unsupported source type: {self.source_type}")
         if self.authority_tier not in {"primary", "structured_fact", "change_event", "third_party", "report"}:
             raise ValueError("Unsupported authority tier")
         self.sync_interval_minutes = max(5, min(int(self.sync_interval_minutes), 7 * 24 * 60))
@@ -264,6 +402,23 @@ class SourceRepository:
             result.append(item)
         return result
 
+    def health(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
+        """Return connector health aggregates without exposing credentials."""
+        rows = self.list(user_id, limit=limit)
+        counts: dict[str, int] = {}
+        for item in rows:
+            status = str(item.get("last_status") or "idle")
+            counts[status] = counts.get(status, 0) + 1
+        failures = sum(int(item.get("failure_count") or 0) for item in rows)
+        return {
+            "source_count": len(rows),
+            "enabled_count": sum(bool(item.get("enabled")) for item in rows),
+            "status_counts": counts,
+            "failure_count": failures,
+            "due_count": len(self.list_due(user_id=user_id, limit=limit)),
+            "degraded": bool(counts.get("failed") or counts.get("cooldown")),
+        }
+
     def delete(self, source_id: str, user_id: str) -> bool:
         cursor = self.conn.execute(
             "DELETE FROM knowledge_source_connectors WHERE source_id = ? AND user_id = ?",
@@ -312,6 +467,7 @@ class SourceFetchResult:
     last_modified: str | None = None
     content_hash: str | None = None
     error: str | None = None
+    items: tuple[dict[str, Any], ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -339,6 +495,12 @@ def fetch_http_source(
                 return SourceFetchResult(status="failed", error=f"Source exceeds {max_bytes // (1024 * 1024)} MB limit")
             headers_obj = response.headers
             media_type = str(headers_obj.get_content_type() if hasattr(headers_obj, "get_content_type") else headers_obj.get("Content-Type", "application/octet-stream")).split(";", 1)[0]
+            items = parse_source_items(
+                data,
+                source_uri=item.uri,
+                source_type=item.source_type,
+                media_type=media_type,
+            )
             return SourceFetchResult(
                 status="changed",
                 data=data,
@@ -346,6 +508,7 @@ def fetch_http_source(
                 etag=headers_obj.get("ETag"),
                 last_modified=headers_obj.get("Last-Modified"),
                 content_hash=hashlib.sha256(data).hexdigest(),
+                items=tuple(items),
             )
     except HTTPError as exc:
         if exc.code == 304:
@@ -428,6 +591,11 @@ def sync_source(
         market_scope=source.get("market_scope") or "Global / unspecified",
         authority_tier=source.get("authority_tier") or "primary",
         published_at=None,
+        metadata={
+            "connector_kind": source.get("source_type") or "web",
+            "discovered_items": list(result.items)[:200],
+            "sync_fetched_at": now,
+        },
         space_id=source.get("space_id") or None,
     )
     job = registration.get("job") or {}

@@ -11,8 +11,111 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from competition.knowledge_types import RetrievalFilters
+
 RETRIEVAL_MODES = {"hybrid", "dense", "sparse"}
 RANKING_PROFILES = {"balanced", "freshness", "authority"}
+
+
+@dataclass(frozen=True)
+class QueryClassification:
+    """Deterministic intent classification used to choose retrieval cost."""
+
+    intent: str
+    complexity: str
+    needs_graph: bool
+    needs_freshness: bool
+    needs_multi_hop: bool
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "complexity": self.complexity,
+            "needs_graph": self.needs_graph,
+            "needs_freshness": self.needs_freshness,
+            "needs_multi_hop": self.needs_multi_hop,
+            "reasons": list(self.reasons),
+        }
+
+
+_COMPARISON_TERMS = ("compare", "comparison", "versus", " vs ", "对比", "比较", "差异")
+_TEMPORAL_TERMS = ("latest", "current", "trend", "history", "timeline", "最新", "当前", "趋势", "历史", "时间线")
+_RELATION_TERMS = ("relationship", "integrate", "compatible", "alternative", "关系", "集成", "兼容", "替代")
+_FACT_TERMS = ("what", "which", "how much", "price", "是什么", "多少", "价格", "功能")
+
+
+def classify_query(query: str, filters: RetrievalFilters | None = None) -> QueryClassification:
+    """Classify a retrieval request without an additional LLM call."""
+    lowered = f" {(query or '').casefold()} "
+    scope = filters or RetrievalFilters()
+    reasons: list[str] = []
+    comparison = len(scope.products) > 1 or any(term in lowered for term in _COMPARISON_TERMS)
+    temporal = scope.temporal_mode != "current" or any(term in lowered for term in _TEMPORAL_TERMS)
+    relation = any(term in lowered for term in _RELATION_TERMS)
+    fact = any(term in lowered for term in _FACT_TERMS)
+    if comparison:
+        reasons.append("comparison_intent")
+    if temporal:
+        reasons.append("temporal_intent")
+    if relation:
+        reasons.append("relationship_intent")
+    if len(scope.dimensions) > 1:
+        reasons.append("multiple_dimensions")
+    if relation or temporal:
+        intent = "relationship" if relation else "temporal"
+    elif comparison:
+        intent = "comparison"
+    elif fact:
+        intent = "fact"
+    else:
+        intent = "exploration"
+    complexity = "high" if relation or (comparison and temporal) else "medium" if comparison or temporal or len(scope.dimensions) > 1 else "low"
+    return QueryClassification(
+        intent=intent,
+        complexity=complexity,
+        needs_graph=relation or comparison,
+        needs_freshness=temporal,
+        needs_multi_hop=relation or comparison or temporal,
+        reasons=tuple(reasons or ["general_exploration"]),
+    )
+
+
+def adaptive_strategy(
+    query: str,
+    filters: RetrievalFilters | None = None,
+    *,
+    preferred_mode: str | None = None,
+    preferred_profile: str | None = None,
+) -> RetrievalStrategy:
+    """Choose a bounded retrieval strategy from query intent and explicit preferences."""
+    classification = classify_query(query, filters)
+    mode = preferred_mode if preferred_mode in RETRIEVAL_MODES else "hybrid"
+    profile = preferred_profile if preferred_profile in RANKING_PROFILES else "balanced"
+    if classification.needs_freshness and profile == "balanced":
+        profile = "freshness"
+    if classification.intent == "fact" and preferred_mode is None:
+        mode = "sparse"
+    return RetrievalStrategy(
+        mode=mode,
+        ranking_profile=profile,
+        candidate_limit=64 if classification.complexity == "high" else 40,
+        rerank=classification.complexity != "low",
+        dense_weight=0.58 if classification.intent in {"comparison", "relationship"} else 0.5,
+        sparse_weight=0.42 if classification.intent in {"comparison", "relationship"} else 0.5,
+    ).normalized()
+
+
+def feedback_adjustment(
+    *,
+    relevant: int = 0,
+    not_relevant: int = 0,
+    citation_used: int = 0,
+) -> float:
+    """Return a bounded user-feedback prior for one chunk."""
+    positive = min(8, max(0, int(relevant))) + 0.5 * min(8, max(0, int(citation_used)))
+    negative = min(8, max(0, int(not_relevant)))
+    return round(max(-0.12, min(0.12, 0.018 * positive - 0.025 * negative)), 6)
 
 
 @dataclass(frozen=True)

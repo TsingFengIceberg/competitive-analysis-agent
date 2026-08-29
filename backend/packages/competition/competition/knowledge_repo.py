@@ -761,6 +761,24 @@ class KnowledgeRepository:
             result.append(item)
         return result
 
+    def retrieval_feedback_scores(self, user_id: str) -> dict[str, dict[str, int]]:
+        """Return caller-scoped feedback counts for adaptive reranking."""
+        rows = self.conn.execute(
+            """SELECT chunk_id, action, COUNT(*) AS count
+                 FROM knowledge_retrieval_feedback
+                WHERE user_id = ?
+                GROUP BY chunk_id, action""",
+            (user_id,),
+        ).fetchall()
+        scores: dict[str, dict[str, int]] = {}
+        for row in rows:
+            chunk_id = str(row[0] or "")
+            action = str(row[1] or "")
+            if not chunk_id or not action:
+                continue
+            scores.setdefault(chunk_id, {})[action] = int(row[2] or 0)
+        return scores
+
     def governance_stats(self, user_id: str, *, space_id: str | None = None) -> dict[str, Any]:
         """Aggregate durable review outcomes for a knowledge-space quality view."""
         spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
@@ -1011,6 +1029,72 @@ class KnowledgeRepository:
             )
         self.conn.commit()
         return _json_row(row)
+
+    def list_entities(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        entity_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        clauses = [f"e.space_id IN ({','.join('?' for _ in spaces)})"]
+        params: list[Any] = [*spaces]
+        if entity_type:
+            clauses.append("e.entity_type = ?")
+            params.append(entity_type)
+        params.append(max(1, min(int(limit), 1000)))
+        rows = self.conn.execute(
+            f"SELECT e.* FROM knowledge_entities e WHERE {' AND '.join(clauses)} ORDER BY e.updated_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = _json_row(row)
+            aliases = self.conn.execute(
+                "SELECT alias, alias_key, created_at FROM knowledge_entity_aliases WHERE space_id = ? AND entity_id = ? ORDER BY created_at",
+                (item["space_id"], item["entity_id"]),
+            ).fetchall()
+            item["aliases"] = [dict(alias) for alias in aliases]
+            result.append(item)
+        return result
+
+    def add_entity_alias(self, entity_id: str, *, user_id: str, alias: str) -> dict[str, Any]:
+        alias = " ".join(str(alias or "").split()).strip()
+        if not alias:
+            raise ValueError("alias cannot be empty")
+        entity_row = self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (entity_id,)).fetchone()
+        if entity_row is None:
+            raise KeyError(f"Knowledge entity not found: {entity_id}")
+        space = self.get_space(str(entity_row["space_id"]), user_id)
+        if not space or space.get("role") not in {"owner", "editor"}:
+            raise PermissionError("Knowledge-space edit permission is required")
+        alias_key = alias.casefold()
+        now = _now()
+        existing = self.conn.execute(
+            "SELECT entity_id FROM knowledge_entity_aliases WHERE space_id = ? AND alias_key = ?",
+            (entity_row["space_id"], alias_key),
+        ).fetchone()
+        if existing is not None and str(existing[0]) != entity_id:
+            raise ValueError("Alias is already assigned to another entity")
+        self.conn.execute(
+            """INSERT INTO knowledge_entity_aliases (space_id, alias_key, entity_id, alias, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(space_id, alias_key) DO UPDATE SET alias = excluded.alias""",
+            (entity_row["space_id"], alias_key, entity_id, alias, now),
+        )
+        self.conn.execute("UPDATE knowledge_entities SET updated_at = ? WHERE entity_id = ?", (now, entity_id))
+        self.conn.commit()
+        item = _json_row(self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (entity_id,)).fetchone())
+        assert item is not None
+        item["aliases"] = [dict(row) for row in self.conn.execute(
+            "SELECT alias, alias_key, created_at FROM knowledge_entity_aliases WHERE entity_id = ? ORDER BY created_at",
+            (entity_id,),
+        ).fetchall()]
+        return item
 
     def upsert_relation(self, values: dict[str, Any]) -> dict[str, Any]:
         now = _now()

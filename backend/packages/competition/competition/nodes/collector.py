@@ -36,6 +36,18 @@ def collector_node(state: dict) -> dict:
         analysis_memory,
         relationship_context,
     ) = _retrieve_local_knowledge(state)
+    try:
+        from competition.rag_context import build_agent_evidence_bundle, evidence_coverage, prompt_excerpt
+
+        rag_context = build_agent_evidence_bundle({**state, "collected_data": local_points}, role="collector")
+        rag_context["coverage"] = evidence_coverage(
+            rag_context,
+            products=list(state.get("target_products") or []),
+            dimensions=_brief_dimension_ids(state.get("analysis_brief")),
+        )
+    except Exception:
+        logger.exception("Collector RAG context build failed")
+        rag_context = {"schema_version": "rag-context.v1", "role": "collector", "quality_state": "missing", "abstain": True, "abstain_reasons": ["context_build_failed"], "evidence": []}
     if local_points:
         task += (
             "\n\nLOCAL KNOWLEDGE ALREADY AVAILABLE — use it to avoid duplicate searching "
@@ -43,6 +55,8 @@ def collector_node(state: dict) -> dict:
             "these records into your JSON output; they are merged separately:\n"
             + json.dumps(local_points, ensure_ascii=False, default=str)[:24000]
         )
+    if rag_context.get("evidence"):
+        task += "\n\nROLE-AWARE RAG EVIDENCE BUNDLE — prioritize these bounded records, then fill only missing coverage:\n" + prompt_excerpt(rag_context)
     if long_term_insights:
         task += (
             "\n\nLONG-HORIZON KNOWLEDGE CONTEXT — use this only to prioritize collection. "
@@ -95,6 +109,7 @@ def collector_node(state: dict) -> dict:
     summary["search_stats"] = _get_search_info()
     summary["complexity"] = state.get("complexity", "standard")
     summary["rag_retrieval"] = rag_summary
+    summary["rag_coverage"] = rag_context.get("coverage") or {}
     summary["intelligence_persistence"] = _persist_intelligence_items(state, fresh_data_points)
 
     # ── Self-assessment (§3.17.2) ──
@@ -147,6 +162,7 @@ def collector_node(state: dict) -> dict:
         "long_term_insights": long_term_insights,
         "analysis_memory": analysis_memory,
         "relationship_context": relationship_context,
+        "rag_context": rag_context,
     }
 
 

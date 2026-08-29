@@ -83,6 +83,8 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、知识空间、竞品、维度、市场、来源权威等级、发布时间以及当前/历史/全部/指定时间点版本过滤。查询规划器会让单一事实问题走低成本直查，将比较、时序和多维问题拆成多查询首跳与证据桥接跳，再对重复命中做融合。旧版本继续保存在 SQLite 和 Qdrant 中，索引重建会恢复全部成功版本；从持续观察导入事实时会按原始观察时间依次沉淀完整版本序列。分析阶段按“可引用原始证据、分层长期洞察、历史报告记忆”三个上下文层消费知识：历史报告只用于发现旧结论、补充问题和规划新搜索，不能进入 `collected_data` 或充当事实引用，且当前报告线程会被排除以避免自我引用。
 
+知识来源连接器支持网页、RSS/Atom、Sitemap 和 JSON API。来源地址会进行协议、凭据和私有网段校验，手动同步与到期同步都进入持久化后台任务队列，使用 ETag、Last-Modified 和内容哈希避免重复摄取；失败会记录冷却与重试状态，发现的条目会保存在文档元数据中。检索模式可设为 `auto`，系统根据事实、比较、时序和关系意图选择稀疏、混合、时效优先或多跳策略；用户对命中分块的“相关/不相关/已引用”反馈会在后续排序中作为有界先验，并自动清理旧缓存。线上延迟、命中数和缓存命中率等指标会持久化并提供加权汇总，实体别名支持按知识空间权限维护并进行冲突校验。
+
 GraphRAG 关系层使用 SQLite 保存竞品、能力、价格、集成、用户群、市场事件、来源和历史报告等类型化实体及带时间范围的关系，不引入额外图数据库。关系只从已批准资料版本和事件中确定性生成，并保留文档、版本、原始分块、事件、权威等级和观察时间追溯。单一事实查询继续走现有混合检索，只有跨竞品、关系或时间演化问题才启用图检索。图路径只有在对应原始分块同时进入本次 `collected_data` 时才能支持事实结论，否则仅作搜索导航和分析记忆；历史报告关系始终不可作为事实引用，当前报告线程同样会被排除。价格关系按版本关闭旧有效期，并将不同有效来源同时存在的价格差异显式标记为冲突。
 
 知识空间提供所有者、编辑者和只读成员角色。空间可以要求资料审批、设置保留天数，审批前或驳回后的内容不会进入 Agent 证据；到期资料会从索引和文件存储中清理，同时保留不含正文的删除审计。空间所有者可将审核结果标记为“已核实、来源冲突、内容错误、资料过期”，附加说明和修正建议；系统保留不可变审核记录，并按反馈调整来源域名可信度，供后续自动准入使用。已批准版本会归一化竞品实体，将相似的跨来源事实归并成事件并标记单源观察或多源印证，再以“事实、推断、待验证假设”三层生成长期洞察，避免把推测伪装成结论。知识库页面同时展示版本变化、数值冲突、关系图谱、实体事件、分层洞察、治理状态和人工审核历史；图谱可按当前、历史或全部关系浏览，筛选关系并跳转到原始证据分块。
@@ -803,6 +805,8 @@ uv run --locked pytest tests/test_a2a_provider.py
 | GET | `/api/competition/intelligence/changes/{change_id}` | 查询单条变化详情、当前事实、来源和版本历史 |
 | GET | `/api/competition/intelligence/items` | 查询可显式沉淀到知识库的情报事实 |
 | GET | `/api/competition/intelligence/sources` | 查询来源健康、失败次数、延迟和备用来源诊断 |
+| GET | `/api/competition/knowledge/sources/health` | 查询知识来源连接器健康、到期数量和失败统计 |
+| POST | `/api/competition/knowledge/sources/{source_id}/sync` | 将单个知识来源同步请求放入后台任务队列 |
 | GET | `/api/competition/knowledge/status` | 获取知识库、模型与索引状态 |
 | GET | `/api/competition/knowledge/retrieval-logs` | 查询当前用户的检索规划、过滤条件、命中分块、耗时与状态 |
 | GET / POST / PATCH | `/api/competition/knowledge/spaces` | 管理项目知识空间、审批和保留策略 |
@@ -823,6 +827,11 @@ uv run --locked pytest tests/test_a2a_provider.py
 | GET | `/api/competition/knowledge/jobs`、`/api/competition/knowledge/jobs/{job_id}` | 查询异步导入与重建任务状态 |
 | POST | `/api/competition/knowledge/jobs/{job_id}/retry` | 为失败的知识处理任务创建可追溯重试 |
 | POST | `/api/competition/knowledge/search` | 执行带元数据过滤的混合检索与重排 |
+| POST | `/api/competition/knowledge/retrieval-feedback` | 保存命中分块的相关性或引用反馈并刷新排序缓存 |
+| GET | `/api/competition/knowledge/retrieval-feedback` | 查询当前用户的检索反馈与汇总 |
+| GET / POST | `/api/competition/knowledge/online-metrics` | 查询或记录线上检索指标样本与加权汇总 |
+| GET | `/api/competition/knowledge/entities` | 查询当前知识空间中的规范化实体和别名 |
+| POST | `/api/competition/knowledge/entities/{entity_id}/aliases` | 为实体添加别名并校验空间编辑权限与冲突 |
 | GET | `/api/competition/knowledge/graph` | 按知识空间、关系类型和时间范围查询可追溯关系图谱 |
 | POST | `/api/competition/knowledge/graph/rebuild` | 从已批准资料版本和事件重建指定知识空间的关系图谱 |
 | GET | `/api/competition/knowledge/chunks/{chunk_id}` | 获取用户有权访问的证据原文分块 |

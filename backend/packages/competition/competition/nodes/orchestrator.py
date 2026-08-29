@@ -245,16 +245,23 @@ def orchestrator_node(state: dict) -> dict:
     user_request = state.get("user_request", "")
     products = state.get("target_products") or []
     brief = state.get("analysis_brief") or {}
+    try:
+        from competition.rag_context import build_agent_evidence_bundle, prompt_excerpt
+
+        rag_context = build_agent_evidence_bundle(state, role="orchestrator")
+    except Exception:
+        logger.exception("Orchestrator RAG context build failed")
+        rag_context = None
 
     if not user_request:
         logger.warning("Orchestrator called with empty user_request — using defaults")
         orch = _build_default_result()
-        return _build_return(orch, brief)
+        return _build_return(orch, brief, rag_context=rag_context)
 
     if not products:
         logger.warning("Orchestrator called with empty target_products — ProductResolver failed, degrading")
         orch = _build_default_result()
-        return _build_return(orch, brief)
+        return _build_return(orch, brief, rag_context=rag_context)
 
     # ── Build task prompt ──
     system_prompt = _load_prompt()
@@ -288,6 +295,8 @@ def orchestrator_node(state: dict) -> dict:
         "following the format in your system prompt. "
         "Do NOT wrap in markdown code blocks — output raw JSON only."
     )
+    if rag_context and rag_context.get("evidence"):
+        task += "\n\nRAG COVERAGE SIGNALS (planning only; do not treat as final facts):\n" + prompt_excerpt(rag_context)
 
     # ── Invoke LLM ──
     try:
@@ -302,36 +311,36 @@ def orchestrator_node(state: dict) -> dict:
     except Exception:
         logger.exception("Orchestrator LLM call failed — degrading to default pipeline")
         orch = _build_default_result()
-        return _build_return(orch, brief)
+        return _build_return(orch, brief, rag_context=rag_context)
 
     if not raw:
         logger.warning("Orchestrator returned empty content — degrading to default pipeline")
         orch = _build_default_result()
-        return _build_return(orch, brief)
+        return _build_return(orch, brief, rag_context=rag_context)
 
     # ── Parse & validate ──
     parsed = _parse_orchestrator_output(raw)
     if parsed is None:
         logger.warning("Orchestrator JSON parse failed — raw output: %.200s", raw)
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, rag_context=rag_context)
 
     try:
         orch = OrchestrationResult(**parsed)
     except Exception:
         logger.exception("OrchestrationResult model_validate failed — degrading")
         orch = _build_default_result()
-        return _build_return(orch)
+        return _build_return(orch, rag_context=rag_context)
 
     logger.info(
         "Orchestrator: complexity=%s schema=%s summary=%s",
         orch.complexity, orch.schema_profile, orch.summary,
     )
 
-    return _build_return(orch, brief)
+    return _build_return(orch, brief, rag_context=rag_context)
 
 
-def _build_return(orch: OrchestrationResult, brief: dict | None = None) -> dict:
+def _build_return(orch: OrchestrationResult, brief: dict | None = None, *, rag_context: dict | None = None) -> dict:
     """Build the partial state return dict."""
     if brief:
         dimensions = brief.get("effective_dimensions") or brief.get("dimensions") or []
@@ -347,4 +356,5 @@ def _build_return(orch: OrchestrationResult, brief: dict | None = None) -> dict:
     return {
         "orchestration_result": orch.model_dump(),
         "complexity": orch.complexity,
+        "rag_context": rag_context,
     }

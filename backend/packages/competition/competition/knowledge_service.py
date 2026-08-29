@@ -45,7 +45,7 @@ from competition.knowledge_query import (
     plan_retrieval_query,
 )
 from competition.knowledge_repo import KnowledgeRepository
-from competition.knowledge_retrieval import RetrievalStrategy, explain_retrieval
+from competition.knowledge_retrieval import RetrievalStrategy, adaptive_strategy, explain_retrieval, feedback_adjustment
 from competition.knowledge_types import AUTHORITY_PRIORS, KnowledgeChunk, KnowledgeHit, RetrievalFilters
 
 logger = logging.getLogger(__name__)
@@ -769,6 +769,11 @@ class KnowledgeService:
         from competition.knowledge_quota import quota
 
         quota.check(user_id, "search")
+        if retrieval_mode == "auto":
+            strategy = adaptive_strategy(query, filters, preferred_profile=ranking_profile)
+            retrieval_mode = strategy.mode
+            ranking_profile = strategy.ranking_profile
+            rerank = strategy.rerank
         kwargs: dict[str, Any] = {"user_id": user_id, "ranking_profile": ranking_profile}
         if retrieval_mode != "hybrid" or not rerank:
             kwargs.update({"retrieval_mode": retrieval_mode, "rerank": rerank})
@@ -788,6 +793,7 @@ class KnowledgeService:
             return []
         with self._repo() as repository:
             accessible = set(repository.accessible_space_ids(user_id))
+            feedback_scores = repository.retrieval_feedback_scores(user_id)
         scoped_requests: list[tuple[str, RetrievalFilters, int] | None] = []
         for query, filters, limit in requests:
             requested = set(filters.space_ids)
@@ -866,6 +872,7 @@ class KnowledgeService:
                     ranking_profile=ranking_profile,
                     retrieval_mode=retrieval_mode,
                     rerank=rerank,
+                    feedback_scores=feedback_scores,
                 )
                 output[index] = hits
                 self._put_cached(cache_key, hits)
@@ -900,6 +907,7 @@ class KnowledgeService:
         ranking_profile: str = "balanced",
         retrieval_mode: str = "hybrid",
         rerank: bool = True,
+        feedback_scores: dict[str, dict[str, int]] | None = None,
     ) -> list[KnowledgeHit]:
         hits: list[KnowledgeHit] = []
         profile = ranking_profile if ranking_profile in {"balanced", "freshness", "authority"} else "balanced"
@@ -911,6 +919,12 @@ class KnowledgeService:
             for (row, recall_score), rerank_score in zip(candidates, safe_rerank_scores, strict=True):
                 authority_score = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
                 final_score = 0.72 * max(0.0, min(1.0, rerank_score)) + 0.16 * max(0.0, min(1.0, recall_score)) + 0.12 * authority_score
+                counts = (feedback_scores or {}).get(str(row.get("chunk_id")), {})
+                final_score += feedback_adjustment(
+                    relevant=counts.get("relevant", 0),
+                    not_relevant=counts.get("not_relevant", 0),
+                    citation_used=counts.get("citation_used", 0),
+                )
                 ranked.append((row, round(final_score, 6), rerank_score))
             ranked.sort(key=lambda item: item[1], reverse=True)
         else:
@@ -965,6 +979,11 @@ class KnowledgeService:
                         "freshness_score": freshness,
                         "authority_score": authority,
                         "retrieval_explanation": explanation,
+                        "feedback_prior": feedback_adjustment(
+                            relevant=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("relevant", 0),
+                            not_relevant=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("not_relevant", 0),
+                            citation_used=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("citation_used", 0),
+                        ),
                     },
                 )
             )
@@ -1033,6 +1052,11 @@ class KnowledgeService:
         from competition.knowledge_quota import quota
 
         quota.check(user_id, "search")
+        if retrieval_mode == "auto":
+            strategy = adaptive_strategy(query, filters, preferred_profile=ranking_profile)
+            retrieval_mode = strategy.mode
+            ranking_profile = strategy.ranking_profile
+            rerank = strategy.rerank
         result = self.search_planned_many(
             [(query, filters or RetrievalFilters(), limit)],
             user_id=user_id,
@@ -1151,6 +1175,10 @@ class KnowledgeService:
                 removed = len(keys)
             self._cache_invalidations += removed
 
+    def invalidate_retrieval_cache(self, user_id: str) -> None:
+        """Invalidate cached hits after a caller feedback update."""
+        self._invalidate_result_cache(user_id)
+
     def _log_retrieval(
         self,
         *,
@@ -1175,6 +1203,23 @@ class KnowledgeService:
                 status=status,
                 error=error,
             )
+            # Keep a small online metric stream for latency/result regressions;
+            # detailed traces remain in knowledge_retrieval_logs.
+            if status == "completed":
+                now = _now()
+                for metric_name, value in (
+                    ("retrieval.latency_ms", float(duration_ms)),
+                    ("retrieval.result_count", float(len(hits))),
+                    ("retrieval.cache_hit", 1.0 if cache_hit else 0.0),
+                ):
+                    repository.conn.execute(
+                        """INSERT INTO knowledge_online_metrics (
+                            metric_id, user_id, metric_name, value, sample_count,
+                            dimensions_json, observed_at, created_at
+                        ) VALUES (?, ?, ?, ?, 1, '{}', ?, ?)""",
+                        (f"kmetric-{uuid.uuid4().hex}", user_id, metric_name, value, now, now),
+                    )
+                repository.conn.commit()
 
     def retrieve_for_analysis(self, state: dict[str, Any], limit: int = 16) -> list[dict[str, Any]]:
         user_id = str(state.get("user_id") or "default")
@@ -1371,6 +1416,23 @@ class KnowledgeService:
     def list_spaces(self, user_id: str) -> list[dict[str, Any]]:
         with self._repo() as repository:
             return repository.list_spaces(user_id)
+
+    def list_entities(
+        self,
+        user_id: str,
+        *,
+        space_id: str | None = None,
+        entity_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        if space_id:
+            self._resolve_space(user_id, space_id)
+        with self._repo() as repository:
+            return repository.list_entities(user_id, space_id=space_id, entity_type=entity_type, limit=limit)
+
+    def add_entity_alias(self, user_id: str, entity_id: str, alias: str) -> dict[str, Any]:
+        with self._repo() as repository:
+            return repository.add_entity_alias(entity_id, user_id=user_id, alias=alias)
 
     def update_space(self, user_id: str, space_id: str, **values: Any) -> dict[str, Any]:
         self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)

@@ -505,6 +505,18 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_feedback_user ON knowledge_retrieval_feedback(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_feedback_chunk ON knowledge_retrieval_feedback(chunk_id, action);
 
+        CREATE TABLE IF NOT EXISTS knowledge_online_metrics (
+            metric_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            metric_name TEXT NOT NULL,
+            value REAL NOT NULL,
+            sample_count INTEGER NOT NULL DEFAULT 1,
+            dimensions_json TEXT NOT NULL DEFAULT '{}',
+            observed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_online_metrics_user ON knowledge_online_metrics(user_id, metric_name, observed_at DESC);
+
         CREATE TABLE IF NOT EXISTS knowledge_spaces (
             space_id TEXT PRIMARY KEY,
             owner_id TEXT NOT NULL,

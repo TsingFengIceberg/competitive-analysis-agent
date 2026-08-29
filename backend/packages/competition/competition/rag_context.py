@@ -11,11 +11,37 @@ from competition.knowledge_types import AUTHORITY_PRIORS
 
 SCHEMA_VERSION = "rag-context.v1"
 ROLE_BUDGETS = {
+    "orchestrator": 3000,
     "analyst": 12000,
     "reviewer": 9000,
     "writer": 10000,
     "collector": 6000,
 }
+
+
+def evidence_coverage(bundle: dict[str, Any], *, products: list[str] | None = None, dimensions: list[str] | None = None) -> dict[str, Any]:
+    """Summarize product/dimension coverage for routing and targeted collection."""
+    evidence = [item for item in bundle.get("evidence") or [] if isinstance(item, dict)]
+    expected_products = {str(value).casefold() for value in products or [] if str(value).strip()}
+    expected_dimensions = {str(value).casefold() for value in dimensions or [] if str(value).strip()}
+    covered_products = {str(item.get("product") or "").casefold() for item in evidence if item.get("product")}
+    covered_dimensions = {str(item.get("dimension") or "").casefold() for item in evidence if item.get("dimension")}
+    missing_products = sorted(expected_products - covered_products)
+    missing_dimensions = sorted(expected_dimensions - covered_dimensions)
+    return {
+        "expected_products": sorted(expected_products),
+        "expected_dimensions": sorted(expected_dimensions),
+        "covered_products": sorted(covered_products),
+        "covered_dimensions": sorted(covered_dimensions),
+        "missing_products": missing_products,
+        "missing_dimensions": missing_dimensions,
+        "coverage_ratio": round(
+            (len(expected_products & covered_products) + len(expected_dimensions & covered_dimensions))
+            / max(1, len(expected_products) + len(expected_dimensions)),
+            6,
+        ),
+        "needs_targeted_collection": bool(missing_products or missing_dimensions or bundle.get("abstain")),
+    }
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -122,6 +148,10 @@ def build_agent_evidence_bundle(
         abstain_reasons.append(f"context_quality_{quality_state}")
     if quality.get("conflicts"):
         abstain_reasons.append("conflicting_sources_require_review")
+    products = [str(value) for value in (state.get("target_products") or [])]
+    brief_dimensions = (state.get("analysis_brief") or {}).get("effective_dimensions") or (state.get("analysis_brief") or {}).get("dimensions") or []
+    dimensions = [str(item.get("id")) for item in brief_dimensions if isinstance(item, dict) and item.get("id")]
+    coverage = evidence_coverage({"evidence": selected, "abstain": bool(abstain_reasons)}, products=products, dimensions=dimensions)
     return {
         "schema_version": SCHEMA_VERSION,
         "role": role,
@@ -134,6 +164,7 @@ def build_agent_evidence_bundle(
         "quality_state": quality_state,
         "abstain": bool(abstain_reasons),
         "abstain_reasons": abstain_reasons,
+        "coverage": coverage,
         "evidence": selected,
         "selection_policy": "retrieval_score_0.60_authority_0.25_freshness_0.15",
     }

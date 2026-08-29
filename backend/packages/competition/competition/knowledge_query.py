@@ -228,6 +228,10 @@ def plan_retrieval_query(
     """Route simple lookups cheaply and decompose comparative/causal requests."""
     scoped = filters or RetrievalFilters()
     normalized = normalize_query_text(query)
+    from competition.knowledge_retrieval import adaptive_strategy, classify_query
+
+    classification = classify_query(normalized, scoped)
+    recommended_strategy = adaptive_strategy(normalized, scoped)
     lowered = f" {normalized.casefold()} "
     clauses = _unique([part for part in _CLAUSE_SPLIT.split(normalized) if len(part.strip()) >= 4])
     complex_reasons: list[str] = []
@@ -246,7 +250,11 @@ def plan_retrieval_query(
             normalized_query=normalized,
             steps=(RetrievalStep("q1", normalized, "direct_lookup"),),
             reasons=("single_focused_information_need",),
-            metadata={"query_expansions": list(expand_query_variants(normalized))},
+            metadata={
+                "query_expansions": list(expand_query_variants(normalized)),
+                "classification": classification.to_dict(),
+                "recommended_strategy": recommended_strategy.to_dict(),
+            },
         )
 
     variants: list[tuple[str, str]] = [(normalized, "original_intent")]
@@ -280,7 +288,13 @@ def plan_retrieval_query(
         steps=tuple(steps),
         reasons=tuple(complex_reasons),
         estimated_cost="medium",
-        metadata={"max_steps": max_steps, "llm_calls": 0, "query_expansions": list(expand_query_variants(normalized))},
+        metadata={
+            "max_steps": max_steps,
+            "llm_calls": 0,
+            "query_expansions": list(expand_query_variants(normalized)),
+            "classification": classification.to_dict(),
+            "recommended_strategy": recommended_strategy.to_dict(),
+        },
     )
 
 
