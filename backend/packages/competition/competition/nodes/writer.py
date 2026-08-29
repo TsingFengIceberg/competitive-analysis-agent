@@ -174,6 +174,7 @@ def writer_node(state: dict) -> dict:
         sections=sections,
         traceability=traceability,
     )
+    context_pack = state.get("analysis_context_pack")
 
     report_data = {
         "persona": persona,
@@ -197,6 +198,7 @@ def writer_node(state: dict) -> dict:
             "output_focus": brief.get("output_focus"),
             "confirmation_source": brief.get("confirmation_source"),
         } if brief else None,
+        "analysis_context": _build_context_overview(context_pack),
         "quality_gate": quality_gate,
         "claim_verification": claim_verification,
         "long_term_insights": state.get("long_term_insights") or [],
@@ -225,6 +227,58 @@ def writer_node(state: dict) -> dict:
         "traceability_map": traceability,
         "review_package": review_package,
         "writer_self_assessment": self_assessment,
+    }
+
+
+def _build_context_overview(context_pack: dict | None) -> dict | None:
+    """Expose a low-sensitivity context quality summary in each report.
+
+    The complete pack stays in the internal graph state and immutable version
+    snapshot. Reports only need enough information for a reader to understand
+    which evidence scope and quality state informed the result.
+    """
+    if not isinstance(context_pack, dict):
+        return None
+    quality = context_pack.get("quality") if isinstance(context_pack.get("quality"), dict) else {}
+    scope = context_pack.get("scope") if isinstance(context_pack.get("scope"), dict) else {}
+    dimensions: list[dict] = []
+    raw_dimensions = context_pack.get("dimensions")
+    if isinstance(raw_dimensions, dict):
+        for dimension_id, value in raw_dimensions.items():
+            if not isinstance(value, dict):
+                continue
+            dimensions.append({
+                "id": str(value.get("id") or dimension_id),
+                "label": str(value.get("label") or dimension_id),
+                "quality_state": str(value.get("quality_state") or "missing"),
+                "evidence_count": int(value.get("evidence_count", 0) or 0),
+                "source_domain_count": int(value.get("source_domain_count", 0) or 0),
+                "official_source_count": int(value.get("official_source_count", 0) or 0),
+                "stale_evidence_count": int(value.get("stale_evidence_count", 0) or 0),
+                "fallback_reason": str(value.get("fallback_reason") or ""),
+                "conflict_count": len(value.get("conflicts") or []) if isinstance(value.get("conflicts"), list) else 0,
+            })
+    return {
+        "schema_version": str(context_pack.get("schema_version") or "analysis-context-pack.v1"),
+        "generated_at": context_pack.get("generated_at"),
+        "scope": {
+            "products": scope.get("products") or [],
+            "market_scope": scope.get("market_scope") or "Global / unspecified",
+            "time_range": scope.get("time_range") or {},
+            "evidence_policy": scope.get("evidence_policy") or "balanced",
+        },
+        "quality": {
+            "quality_state": quality.get("quality_state") or "missing",
+            "evidence_count": int(quality.get("evidence_count", 0) or 0),
+            "source_domain_count": int(quality.get("source_domain_count", 0) or 0),
+            "official_source_count": int(quality.get("official_source_count", 0) or 0),
+            "stale_evidence_count": int(quality.get("stale_evidence_count", 0) or 0),
+            "missing_dimensions": quality.get("missing_dimensions") or [],
+            "fallback_reason": str(quality.get("fallback_reason") or ""),
+            "fetch_error": str(quality.get("fetch_error") or ""),
+            "conflict_count": len(quality.get("conflicts") or []) if isinstance(quality.get("conflicts"), list) else 0,
+        },
+        "dimensions": dimensions,
     }
 
 

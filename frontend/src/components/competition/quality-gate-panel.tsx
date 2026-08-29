@@ -2,7 +2,11 @@
 
 import { AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react";
 
-import type { QualityGateIssue, QualityGateSnapshot } from "./api-client";
+import type {
+  AnalysisContextOverview,
+  QualityGateIssue,
+  QualityGateSnapshot,
+} from "./api-client";
 import {
   StatusBadge,
   StatusNotice,
@@ -11,6 +15,7 @@ import {
 
 interface Props {
   qualityGate?: QualityGateSnapshot | null;
+  contextOverview?: AnalysisContextOverview | null;
   selectedIssueId?: string | null;
   onSelectIssue?: (issue: QualityGateIssue) => void;
 }
@@ -43,6 +48,7 @@ function legacyState() {
 
 export default function QualityGatePanel({
   qualityGate,
+  contextOverview,
   selectedIssueId,
   onSelectIssue,
 }: Props) {
@@ -75,6 +81,65 @@ export default function QualityGatePanel({
           </div>
         </div>
       </div>
+      {contextOverview && (
+        <section>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <h3 className="font-semibold">分析上下文</h3>
+            <StatusBadge
+              tone={
+                contextOverview.quality?.quality_state === "available"
+                  ? "success"
+                  : contextOverview.quality?.quality_state === "missing" ||
+                      contextOverview.quality?.quality_state === "fetch_failed"
+                    ? "danger"
+                    : "warning"
+              }
+              label={contextOverview.quality?.quality_state ?? "unknown"}
+            />
+          </div>
+          <div className="ui-inset px-2.5 py-2 text-[10px]">
+            <div className="text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+              <span>证据 {contextOverview.quality?.evidence_count ?? 0}</span>
+              <span>
+                来源域名 {contextOverview.quality?.source_domain_count ?? 0}
+              </span>
+              <span>
+                官方来源 {contextOverview.quality?.official_source_count ?? 0}
+              </span>
+              {(contextOverview.quality?.stale_evidence_count ?? 0) > 0 && (
+                <span>
+                  过期 {contextOverview.quality?.stale_evidence_count}
+                </span>
+              )}
+              {(contextOverview.quality?.conflict_count ?? 0) > 0 && (
+                <span>冲突 {contextOverview.quality?.conflict_count}</span>
+              )}
+            </div>
+            {contextOverview.dimensions?.length ? (
+              <div className="mt-2 space-y-1">
+                {contextOverview.dimensions.map((dimension) => (
+                  <div
+                    key={dimension.id}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <span className="min-w-0 truncate">{dimension.label}</span>
+                    <span className="text-muted-foreground shrink-0">
+                      {dimension.quality_state} · {dimension.evidence_count} 条
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {(contextOverview.quality?.fallback_reason ||
+              contextOverview.quality?.fetch_error) && (
+              <div className="mt-2 [overflow-wrap:anywhere] break-words text-[color:var(--status-warning)]">
+                {contextOverview.quality.fallback_reason ||
+                  contextOverview.quality.fetch_error}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
       <section>
         <h3 className="mb-1 font-semibold">维度覆盖</h3>
         <div className="space-y-1.5">
@@ -121,7 +186,7 @@ export default function QualityGatePanel({
                 className={`w-full min-w-0 rounded-lg border px-2.5 py-2 text-left transition-colors ${selectedIssueId === issue.id ? "border-primary bg-primary/5" : "bg-card hover:bg-muted/40"}`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <span className="min-w-0 flex-1 break-words font-medium [overflow-wrap:anywhere]">
+                  <span className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere] break-words">
                     {issue.description}
                   </span>
                   <span className="shrink-0">
@@ -131,7 +196,7 @@ export default function QualityGatePanel({
                     />
                   </span>
                 </div>
-                <div className="text-muted-foreground mt-1 break-words text-[10px] [overflow-wrap:anywhere]">
+                <div className="text-muted-foreground mt-1 text-[10px] [overflow-wrap:anywhere] break-words">
                   {issue.remediation}
                 </div>
               </button>

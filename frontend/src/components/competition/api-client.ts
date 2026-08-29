@@ -520,6 +520,7 @@ export interface ReportVersionSnapshot {
   snapshot_status?: "complete" | "partial" | "unavailable";
   report_data?: ReportData | null;
   analysis_brief?: AnalysisBrief | null;
+  analysis_context_pack?: Record<string, unknown> | null;
   analysis_result?: Record<string, unknown> | null;
   review_verdict?: Record<string, unknown> | null;
   stage_results?: StageResult[];
@@ -594,6 +595,7 @@ export interface ReportData {
   forecast: unknown;
   metrics: Record<string, number>;
   analysis_scope?: Record<string, unknown> | null;
+  analysis_context?: AnalysisContextOverview | null;
   quality_gate?: QualityGateSnapshot | null;
   claim_verification?: ClaimVerificationSummary;
   long_term_insights?: Array<{
@@ -628,6 +630,39 @@ export interface ReportData {
     forecast?: unknown;
     dynamic_blocks?: unknown[];
   };
+}
+
+export interface AnalysisContextOverview {
+  schema_version?: string;
+  generated_at?: string | null;
+  scope?: {
+    products?: string[];
+    market_scope?: string;
+    time_range?: Record<string, unknown>;
+    evidence_policy?: string;
+  };
+  quality?: {
+    quality_state?: string;
+    evidence_count?: number;
+    source_domain_count?: number;
+    official_source_count?: number;
+    stale_evidence_count?: number;
+    missing_dimensions?: string[];
+    fallback_reason?: string;
+    fetch_error?: string;
+    conflict_count?: number;
+  };
+  dimensions?: Array<{
+    id: string;
+    label: string;
+    quality_state: string;
+    evidence_count: number;
+    source_domain_count: number;
+    official_source_count: number;
+    stale_evidence_count: number;
+    fallback_reason: string;
+    conflict_count: number;
+  }>;
 }
 
 export type ClaimVerificationStatus =

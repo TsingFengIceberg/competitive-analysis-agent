@@ -545,6 +545,7 @@ def _build_report_snapshot(
         "snapshot_status": "complete" if resolved_report is not None else "partial",
         "report_data": resolved_report,
         "analysis_brief": state.get("analysis_brief") or entry.get("analysis_brief"),
+        "analysis_context_pack": state.get("analysis_context_pack"),
         "analysis_result": state.get("analysis_result"),
         "review_verdict": state.get("review_verdict"),
         "stage_results": state.get("stage_results") or [],
@@ -625,6 +626,7 @@ def _snapshot_to_history(thread_id: str, version: int) -> dict | None:
         "snapshot_status": snapshot_status,
         "analysis_result": snapshot.get("analysis_result") if snapshot else None,
         "collected_data": snapshot.get("collected_data") if snapshot else None,
+        "analysis_context_pack": snapshot.get("analysis_context_pack") if snapshot else None,
     }
 
 
@@ -682,6 +684,7 @@ def _list_history(thread_id: str) -> list[dict]:
             "snapshot_status": snapshot_status,
             "analysis_result": snapshot.get("analysis_result") if snapshot else None,
             "collected_data": snapshot.get("collected_data") if snapshot else None,
+            "analysis_context_pack": snapshot.get("analysis_context_pack") if snapshot else None,
         })
     return result
 

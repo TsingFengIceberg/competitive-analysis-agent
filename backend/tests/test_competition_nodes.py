@@ -947,6 +947,29 @@ class TestWriterSelfCheck:
 
 
 class TestWriterNarrative:
+    def test_writer_persists_low_sensitivity_context_overview(self, monkeypatch):
+        monkeypatch.setattr(
+            "competition.executor.execute_structured_agent",
+            lambda *args, **kwargs: ({"executive_summary": "摘要", "recommendations": ["建议"]}, 2),
+        )
+        result = writer_node({
+            "analysis_result": {"comparison_matrix": {"products": ["A"], "dimensions": [], "cells": [], "summary": "结论"}},
+            "review_verdict": {"quality_summary": {}},
+            "target_products": ["A"],
+            "collected_data": [],
+            "analysis_context_pack": {
+                "schema_version": "analysis-context-pack.v1",
+                "generated_at": "2026-08-29T00:00:00+00:00",
+                "scope": {"products": ["a"], "market_scope": "Global / unspecified", "evidence_policy": "strict_multi_source"},
+                "quality": {"quality_state": "partial", "evidence_count": 1, "source_domain_count": 1, "missing_dimensions": ["features"]},
+                "dimensions": {"pricing": {"id": "pricing", "label": "定价", "quality_state": "partial", "evidence_count": 1, "source_domain_count": 1}},
+            },
+        })
+        overview = result["report_data"]["analysis_context"]
+        assert overview["quality"]["quality_state"] == "partial"
+        assert overview["quality"]["missing_dimensions"] == ["features"]
+        assert overview["dimensions"][0]["id"] == "pricing"
+
     def test_single_structured_call_updates_both_sections(self, monkeypatch):
         calls = []
 

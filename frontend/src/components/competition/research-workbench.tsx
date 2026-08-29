@@ -453,6 +453,7 @@ export default function ResearchWorkbench(props: Props) {
               {inspectorTab === "quality" && (
                 <QualityGatePanel
                   qualityGate={displayReport?.quality_gate}
+                  contextOverview={displayReport?.analysis_context}
                   selectedIssueId={selectedIssueId}
                   onSelectIssue={selectIssue}
                 />

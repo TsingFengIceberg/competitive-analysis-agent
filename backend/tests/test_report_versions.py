@@ -20,6 +20,11 @@ def _entry(report: dict) -> dict:
             "stage_results": [{"stage": "writer", "status": "completed"}],
             "usage_summary": {"total_tokens": 12},
             "collected_data": [{"id": "dp-1"}],
+            "analysis_context_pack": {
+                "schema_version": "analysis-context-pack.v1",
+                "quality": {"quality_state": "available", "evidence_count": 1},
+                "evidence": [{"id": "dp-1", "value": "kept"}],
+            },
             "user_request": "compare Alpha and Beta",
         },
     }
@@ -52,6 +57,7 @@ async def test_version_detail_returns_detached_complete_snapshot(monkeypatch, tm
     assert payload["snapshot"]["report_data"]["sections"][0]["content"] == "old"
     assert payload["snapshot"]["analysis_result"] == {"matrix": {"Alpha": 4}}
     assert payload["snapshot"]["token_usage"][0]["tokens"] == 12
+    assert payload["snapshot"]["analysis_context_pack"]["quality"]["quality_state"] == "available"
     router._store.pop(thread_id, None)
     store.close()
 

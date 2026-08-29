@@ -705,6 +705,10 @@ class ReportData(BaseModel):
         default=None,
         description="Compact Analysis Brief scope metadata for auditability",
     )
+    analysis_context: dict[str, Any] | None = Field(
+        default=None,
+        description="Low-sensitivity evidence scope and quality summary used by Analyst/Reviewer",
+    )
     quality_gate: QualityGateSnapshot | None = Field(
         default=None,
         description="Version-specific deterministic quality gate; absent on legacy reports",
