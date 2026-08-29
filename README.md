@@ -89,6 +89,10 @@ GraphRAG 关系层使用 SQLite 保存竞品、能力、价格、集成、用户
 
 Collector 会先复用本地证据再补充实时搜索。Reviewer 从对比矩阵、SWOT、趋势和动态洞察中提取事实性主张，批量结合明确引用与本地语义检索，将每条主张标记为“证据支持”“存在矛盾”或“证据不足”，并检查数字与否定关系。Writer 只能把确认支持的证据作为正文引用，矛盾和相关但不足的材料仍保留在报告审计数据中。命中与核验结果沿用 `CollectedDataPoint`、Analysis Context Pack、`ReviewVerdict`、`ReportData` 和 `traceability_map` 契约；模型或索引不可用时核验会明确标记降级，分析主流程仍可继续。
 
+检索验证支持“综合排序”“优先最新资料”和“优先高可信来源”三种策略，返回每条命中的时效分、来源权威分和排序策略，便于人工解释证据排序。`POST /api/competition/knowledge/evaluate` 接收版本化离线样例，计算 Recall、MRR、NDCG、拒答、追溯、核验、规划和治理指标，按阈值给出通过/失败结果并持久化到评估历史；知识库页面会显示最近评估和当前用户的检索配额，超限请求返回 `429` 与 `Retry-After`。
+
+竞品观察支持独立的情报订阅。用户可以保存关注的竞品、维度、最低严重级别和通知渠道，订阅会复用现有告警引擎的匹配、去重和冷却逻辑。告警历史可直接标记“可信”“忽略”或“修正”，修正内容和反馈时间会持久化，供后续人工治理和告警策略迭代使用。相关接口为 `/api/competition/subscriptions` 和 `/api/competition/alerts/events/{event_id}/feedback`，订阅、反馈和告警均按用户隔离。
+
 ### 研究工作台
 
 报告完成后可在全屏研究工作台中查看版本树、报告内容、质量门禁、语义核验、长期洞察、来源、证据图谱和执行流程。核验视图展示结论有据率、引用精确率、数字一致率以及每条主张的支持、矛盾和不足证据，并可跳转到报告来源或打开指定本地历史分块。洞察视图保留报告生成时匹配到的事实、推断和待验证假设，并区分已关联本次证据与仅作研判背景的内容。工作台同时支持历史版本切换、版本差异比较、报告导出、质量问题定位以及从论断跳转到对应章节或原始来源。报告正文目录、三栏滚动区域和长文本均有独立边界，避免内容互相遮挡。
@@ -254,6 +258,8 @@ uv run --project backend --locked python scripts/setup-rag-models.py
 模型默认写入 `.ci-agent/models`，原始资料、规范化 Markdown 和 Qdrant 索引默认写入 `.ci-agent/knowledge`，两者均被 Git 忽略。运行时只加载本地资产，不会自动联网下载模型。知识库入口为 `/competition/knowledge`，默认单文件上限 50 MB；可将服务器本地资料放入 `.ci-agent/knowledge/inbox` 后，通过界面填写相对路径导入。
 
 FastAPI 默认在后台预热本地检索模型，避免第一次分析承担完整模型加载时间。分析检索会规范化常见竞品别名与中英文维度名，将多个“竞品 × 维度”查询批量编码，并缓存重复的查询向量和检索结果；受控的中英文词组扩展默认关闭，只有设置 `CI_AGENT_RAG_QUERY_EXPANSION=true` 才会启用，且不会额外调用 LLM。资料新版本激活、删除或索引重建后会自动清除对应用户的结果缓存。
+
+检索和评估接口按用户提供可替换的资源配额保护，默认每用户每分钟最多 600 次检索、30 次离线评估，可通过 `CI_AGENT_RAG_SEARCH_RATE_LIMIT` 和 `CI_AGENT_RAG_EVALUATION_RATE_LIMIT` 调整。配额只限制昂贵操作，不影响浏览文档、报告和既有观察历史。
 
 评测报告同时包含 `query_expansion.baseline`、`query_expansion.expanded` 和 `query_expansion.delta`，用于比较关闭/开启受控查询扩展后的 Recall、MRR、NDCG 与 P95 延迟；只有在评测集显示收益时才应保持开启。
 

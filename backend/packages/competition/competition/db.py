@@ -303,6 +303,35 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_alert_events_dedupe ON alert_events(rule_id, dedupe_key, last_seen_at DESC);
         CREATE INDEX IF NOT EXISTS idx_alert_events_pending ON alert_events(status, last_seen_at DESC);
 
+        CREATE TABLE IF NOT EXISTS intelligence_subscriptions (
+            subscription_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            products_json TEXT NOT NULL DEFAULT '[]',
+            dimensions_json TEXT NOT NULL DEFAULT '[]',
+            space_id TEXT NOT NULL DEFAULT '',
+            min_severity TEXT NOT NULL DEFAULT 'major',
+            channels_json TEXT NOT NULL DEFAULT '["in_app"]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_intelligence_subscriptions_user ON intelligence_subscriptions(user_id, enabled, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS alert_feedback (
+            feedback_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            action TEXT NOT NULL,
+            correction TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(event_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_alert_feedback_user ON alert_feedback(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_alert_feedback_event ON alert_feedback(event_id, updated_at DESC);
+
         CREATE TABLE IF NOT EXISTS notification_deliveries (
             delivery_id TEXT PRIMARY KEY,
             event_id TEXT,
@@ -418,6 +447,18 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_user ON knowledge_retrieval_logs(user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS knowledge_evaluation_runs (
+            run_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            dataset_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'passed',
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            failures_json TEXT NOT NULL DEFAULT '[]',
+            case_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_evaluation_user ON knowledge_evaluation_runs(user_id, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS knowledge_spaces (
             space_id TEXT PRIMARY KEY,

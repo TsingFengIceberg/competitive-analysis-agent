@@ -18,6 +18,7 @@ import os
 import queue as _queue_mod
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -142,6 +143,22 @@ class AlertRuleRequest(BaseModel):
     enabled: bool = True
 
 
+class IntelligenceSubscriptionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    products: list[str] = Field(default_factory=list, max_length=20)
+    dimensions: list[str] = Field(default_factory=list, max_length=30)
+    space_id: str = Field(default="", max_length=120)
+    min_severity: str = Field(default="major", pattern=r"^(minor|major|critical)$")
+    channels: list[str] = Field(default_factory=lambda: ["in_app"], max_length=10)
+    enabled: bool = True
+
+
+class AlertFeedbackRequest(BaseModel):
+    action: str = Field(..., pattern=r"^(confirmed|ignored|corrected)$")
+    correction: str = Field(default="", max_length=2000)
+    note: str = Field(default="", max_length=1000)
+
+
 class KnowledgeInboxImportRequest(BaseModel):
     relative_path: str = Field(..., min_length=1, max_length=500)
     title: str = Field(default="", max_length=300)
@@ -174,7 +191,19 @@ class KnowledgeSearchRequest(BaseModel):
     as_of: str | None = None
     space_ids: list[str] = Field(default_factory=list, max_length=20)
     advanced: bool = True
+    ranking_profile: str = Field(default="balanced", pattern=r"^(balanced|freshness|authority)$")
+    query_expansion: bool | None = None
     limit: int = Field(default=12, ge=1, le=50)
+
+
+class KnowledgeEvaluationRequest(BaseModel):
+    dataset_name: str = Field(default="ad-hoc", min_length=1, max_length=120)
+    cases: list[dict] = Field(default_factory=list, max_length=500)
+    verification_cases: list[dict] = Field(default_factory=list, max_length=500)
+    planning_cases: list[dict] = Field(default_factory=list, max_length=500)
+    governance_cases: list[dict] = Field(default_factory=list, max_length=500)
+    k: int = Field(default=5, ge=1, le=50)
+    thresholds: dict[str, float] = Field(default_factory=dict)
 
 
 class KnowledgeSpaceCreateRequest(BaseModel):
@@ -1565,6 +1594,7 @@ async def retry_knowledge_job(job_id: str, fastapi_request: Request) -> dict:
 @router.post("/knowledge/search")
 async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Request) -> dict:
     from competition.knowledge_index import KnowledgeUnavailableError
+    from competition.knowledge_quota import QuotaExceeded
     from competition.knowledge_service import get_knowledge_service
     from competition.knowledge_types import RetrievalFilters
 
@@ -1600,6 +1630,8 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
                 user_id=_get_user_id(fastapi_request),
                 filters=filters,
                 limit=body.limit,
+                query_expansion=body.query_expansion,
+                ranking_profile=body.ranking_profile,
             )
         else:
             hits = await asyncio.to_thread(
@@ -1608,14 +1640,18 @@ async def search_knowledge(body: KnowledgeSearchRequest, fastapi_request: Reques
                 user_id=_get_user_id(fastapi_request),
                 filters=filters,
                 limit=body.limit,
+                ranking_profile=body.ranking_profile,
             )
             plan = None
     except KnowledgeUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after)}) from exc
     return {
         "query": body.query,
         "hits": [hit.to_dict() for hit in hits],
         "plan": plan.to_dict() if plan is not None else None,
+        "ranking_profile": body.ranking_profile,
     }
 
 
@@ -1637,6 +1673,69 @@ async def get_knowledge_timeline(
         space_id=space_id,
         limit=limit,
     )
+
+
+@router.post("/knowledge/evaluate")
+async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi_request: Request) -> dict:
+    """Run deterministic offline retrieval/grounding evaluation and persist its result."""
+    from competition.knowledge_eval import (
+        EvaluationThresholds,
+        check_thresholds,
+        compute_governance_metrics,
+        compute_planning_metrics,
+        compute_retrieval_metrics,
+        compute_verification_metrics,
+        evaluate_governance_cases,
+    )
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+    from competition.knowledge_quota import QuotaExceeded, quota
+
+    if not body.cases and not body.verification_cases and not body.planning_cases and not body.governance_cases:
+        raise HTTPException(status_code=422, detail="At least one evaluation case is required")
+    try:
+        quota.check(_get_user_id(fastapi_request), "evaluation")
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after)}) from exc
+    metrics: dict[str, Any] = {}
+    if body.cases:
+        metrics["retrieval"] = compute_retrieval_metrics(body.cases, k=body.k)
+    if body.verification_cases:
+        metrics["verification"] = compute_verification_metrics(body.verification_cases)
+    if body.planning_cases:
+        metrics["planning"] = compute_planning_metrics(body.planning_cases)
+    if body.governance_cases:
+        governance = evaluate_governance_cases(body.governance_cases)
+        metrics["governance"] = compute_governance_metrics(governance)
+    threshold_fields = set(EvaluationThresholds.__dataclass_fields__)
+    threshold_values = {key: value for key, value in body.thresholds.items() if key in threshold_fields}
+    thresholds = EvaluationThresholds(**threshold_values)
+    failures: list[str] = []
+    if metrics.get("retrieval"):
+        failures.extend(check_thresholds(metrics["retrieval"], thresholds, k=body.k))
+    for group in ("verification", "planning", "governance"):
+        group_metrics = metrics.get(group)
+        if group_metrics:
+            failures.extend(check_thresholds({group: group_metrics}, thresholds, k=body.k))
+    status = "passed" if not failures else "failed"
+    user_id = _get_user_id(fastapi_request)
+    with KnowledgeEvaluationRepository() as repository:
+        run = repository.save(
+            user_id=user_id,
+            dataset_name=body.dataset_name,
+            status=status,
+            metrics={"schema_version": "rag-evaluation.v1", **metrics},
+            failures=failures,
+            case_count=len(body.cases) + len(body.verification_cases) + len(body.planning_cases) + len(body.governance_cases),
+        )
+    return {"ok": not failures, **run}
+
+
+@router.get("/knowledge/evaluations")
+async def list_knowledge_evaluations(fastapi_request: Request, limit: int = Query(default=50, ge=1, le=200)) -> dict:
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        return {"runs": repository.list(_get_user_id(fastapi_request), limit=limit)}
 
 
 @router.get("/knowledge/retrieval-logs")
@@ -4111,10 +4210,127 @@ async def delete_alert_rule(rule_id: str, fastapi_request: Request):
 @router.get("/alerts/events")
 async def list_alert_events(fastapi_request: Request, status: str | None = None, limit: int = Query(default=50, le=500)):
     from competition.alerts import AlertRepository
+    from competition.subscriptions import SubscriptionRepository
 
     repository = AlertRepository()
+    feedback_repository = SubscriptionRepository()
     try:
-        return {"events": repository.list_events(user_id=_get_user_id(fastapi_request), status=status, limit=limit)}
+        user_id = _get_user_id(fastapi_request)
+        events = repository.list_events(user_id=user_id, status=status, limit=limit)
+        feedback = {
+            item["event_id"]: item
+            for item in feedback_repository.list_feedback(user_id, limit=max(limit, 100))
+        }
+        for event in events:
+            event["feedback"] = feedback.get(event["event_id"])
+        return {"events": events}
+    finally:
+        repository.close()
+        feedback_repository.close()
+
+
+@router.post("/subscriptions")
+async def create_intelligence_subscription(body: IntelligenceSubscriptionRequest, fastapi_request: Request):
+    from competition.subscriptions import IntelligenceSubscription, SubscriptionRepository
+
+    user_id = _get_user_id(fastapi_request)
+    repository = SubscriptionRepository()
+    try:
+        subscription = IntelligenceSubscription(**body.model_dump(), user_id=user_id)
+        return {"ok": True, "subscription": repository.save(subscription)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.get("/subscriptions")
+async def list_intelligence_subscriptions(fastapi_request: Request, enabled_only: bool = False):
+    from competition.subscriptions import SubscriptionRepository
+
+    repository = SubscriptionRepository()
+    try:
+        return {"subscriptions": repository.list(_get_user_id(fastapi_request), enabled_only=enabled_only)}
+    finally:
+        repository.close()
+
+
+@router.put("/subscriptions/{subscription_id}")
+async def update_intelligence_subscription(subscription_id: str, body: IntelligenceSubscriptionRequest, fastapi_request: Request):
+    from competition.subscriptions import IntelligenceSubscription, SubscriptionRepository
+
+    user_id = _get_user_id(fastapi_request)
+    repository = SubscriptionRepository()
+    try:
+        if repository.get(subscription_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        subscription = IntelligenceSubscription(**body.model_dump(), subscription_id=subscription_id, user_id=user_id)
+        return {"ok": True, "subscription": repository.save(subscription)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        repository.close()
+
+
+@router.delete("/subscriptions/{subscription_id}")
+async def delete_intelligence_subscription(subscription_id: str, fastapi_request: Request):
+    from competition.subscriptions import SubscriptionRepository
+
+    repository = SubscriptionRepository()
+    try:
+        if not repository.delete(subscription_id, _get_user_id(fastapi_request)):
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        return {"ok": True}
+    finally:
+        repository.close()
+
+
+@router.post("/alerts/events/{event_id}/feedback")
+async def save_alert_feedback(event_id: str, body: AlertFeedbackRequest, fastapi_request: Request):
+    from competition.alerts import AlertRepository
+    from competition.subscriptions import SubscriptionRepository
+
+    user_id = _get_user_id(fastapi_request)
+    alerts = AlertRepository()
+    feedback = SubscriptionRepository()
+    try:
+        event = alerts.get_event(event_id, user_id=user_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Alert event not found")
+        try:
+            record = feedback.save_feedback(
+                event_id=event_id,
+                user_id=user_id,
+                action=body.action,
+                correction=body.correction,
+                note=body.note,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True, "feedback": record}
+    finally:
+        alerts.close()
+        feedback.close()
+
+
+@router.get("/alerts/feedback")
+async def list_alert_feedback(fastapi_request: Request, limit: int = Query(default=100, ge=1, le=500)):
+    from competition.subscriptions import SubscriptionRepository
+
+    repository = SubscriptionRepository()
+    try:
+        return {"feedback": repository.list_feedback(_get_user_id(fastapi_request), limit=limit)}
+    finally:
+        repository.close()
+
+
+@router.get("/alerts/feedback/summary")
+async def get_alert_feedback_summary(fastapi_request: Request):
+    from competition.subscriptions import SubscriptionRepository
+
+    repository = SubscriptionRepository()
+    try:
+        return {"summary": repository.feedback_summary(_get_user_id(fastapi_request))}
     finally:
         repository.close()
 

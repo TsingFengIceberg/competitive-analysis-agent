@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import threading
@@ -44,7 +45,7 @@ from competition.knowledge_query import (
     plan_retrieval_query,
 )
 from competition.knowledge_repo import KnowledgeRepository
-from competition.knowledge_types import KnowledgeChunk, KnowledgeHit, RetrievalFilters
+from competition.knowledge_types import AUTHORITY_PRIORS, KnowledgeChunk, KnowledgeHit, RetrievalFilters
 
 logger = logging.getLogger(__name__)
 
@@ -778,10 +779,15 @@ class KnowledgeService:
         user_id: str,
         filters: RetrievalFilters | None = None,
         limit: int = 12,
+        ranking_profile: str = "balanced",
     ) -> list[KnowledgeHit]:
+        from competition.knowledge_quota import quota
+
+        quota.check(user_id, "search")
         return self.search_many(
             [(query, filters or RetrievalFilters(), limit)],
             user_id=user_id,
+            ranking_profile=ranking_profile,
         )[0]
 
     def search_many(
@@ -789,6 +795,7 @@ class KnowledgeService:
         requests: list[tuple[str, RetrievalFilters, int]],
         *,
         user_id: str,
+        ranking_profile: str = "balanced",
     ) -> list[list[KnowledgeHit]]:
         """Retrieve several scoped queries with batch inference and result caching."""
         if not requests:
@@ -813,7 +820,7 @@ class KnowledgeService:
                 continue
             query, filters, limit = scoped
             normalized = normalize_query_text(query)
-            cache_key = self._cache_key(user_id, normalized, filters, limit)
+            cache_key = self._cache_key(user_id, normalized, filters, limit, ranking_profile)
             cached = self._get_cached(cache_key)
             if cached is not None:
                 output[index] = cached
@@ -864,7 +871,7 @@ class KnowledgeService:
                 score_groups = [self.index.rerank(query, texts) for query, texts in rerank_groups]
             for request, candidates, rerank_scores in zip(missing, candidate_groups, score_groups, strict=True):
                 index, query, filters, limit, cache_key = request
-                hits = self._build_hits(candidates, rerank_scores, limit)
+                hits = self._build_hits(candidates, rerank_scores, limit, ranking_profile=ranking_profile)
                 output[index] = hits
                 self._put_cached(cache_key, hits)
                 self._log_retrieval(
@@ -895,11 +902,19 @@ class KnowledgeService:
         candidates: list[tuple[dict[str, Any], float]],
         rerank_scores: list[float],
         limit: int,
+        ranking_profile: str = "balanced",
     ) -> list[KnowledgeHit]:
         hits: list[KnowledgeHit] = []
+        profile = ranking_profile if ranking_profile in {"balanced", "freshness", "authority"} else "balanced"
         for row, score in merge_scores(candidates, rerank_scores):
             if score < MIN_RETRIEVAL_SCORE:
                 continue
+            authority = AUTHORITY_PRIORS.get(str(row.get("authority_tier")), 0.5)
+            freshness = self._freshness_score(row)
+            if profile == "freshness":
+                score = round(0.68 * score + 0.20 * freshness + 0.12 * authority, 6)
+            elif profile == "authority":
+                score = round(0.68 * score + 0.20 * authority + 0.12 * freshness, 6)
             hits.append(
                 KnowledgeHit(
                     chunk_id=row["chunk_id"],
@@ -926,6 +941,9 @@ class KnowledgeService:
                     metadata={
                         **(row.get("metadata") or {}),
                         "version_metadata": row.get("version_metadata") or {},
+                        "ranking_profile": profile,
+                        "freshness_score": freshness,
+                        "authority_score": authority,
                     },
                 )
             )
@@ -933,12 +951,28 @@ class KnowledgeService:
                 break
         return hits
 
+    @staticmethod
+    def _freshness_score(row: dict[str, Any]) -> float:
+        """Return a bounded, deterministic freshness score for ranking profiles."""
+        value = row.get("published_at") or row.get("observed_at") or row.get("fetched_at")
+        if not value:
+            return 0.35
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            age_days = max(0.0, (datetime.now(UTC) - stamp.astimezone(UTC)).total_seconds() / 86400)
+            return round(max(0.0, min(1.0, math.exp(-age_days / 365.0))), 6)
+        except (TypeError, ValueError, OverflowError):
+            return 0.35
+
     def _cache_key(
         self,
         user_id: str,
         query: str,
         filters: RetrievalFilters,
         limit: int,
+        ranking_profile: str = "balanced",
     ) -> tuple[Any, ...]:
         values = filters.to_dict()
         return (
@@ -956,6 +990,7 @@ class KnowledgeService:
             values["as_of"],
             tuple(values["space_ids"]),
             limit,
+            ranking_profile,
         )
 
     def search_planned(
@@ -966,11 +1001,16 @@ class KnowledgeService:
         filters: RetrievalFilters | None = None,
         limit: int = 12,
         query_expansion: bool | None = None,
+        ranking_profile: str = "balanced",
     ) -> tuple[list[KnowledgeHit], RetrievalPlan]:
+        from competition.knowledge_quota import quota
+
+        quota.check(user_id, "search")
         result = self.search_planned_many(
             [(query, filters or RetrievalFilters(), limit)],
             user_id=user_id,
             query_expansion=query_expansion,
+            ranking_profile=ranking_profile,
         )
         return result[0]
 
@@ -980,6 +1020,7 @@ class KnowledgeService:
         *,
         user_id: str,
         query_expansion: bool | None = None,
+        ranking_profile: str = "balanced",
     ) -> list[tuple[list[KnowledgeHit], RetrievalPlan]]:
         """Execute cost-routed multi-query plans with one batch per hop."""
         if not requests:
@@ -1004,7 +1045,11 @@ class KnowledgeService:
                 for variant in plan.metadata.get("query_expansions") or expand_query_variants(plan.normalized_query):
                     flat.append((variant, filters, per_step))
                     owners.append(owner)
-        groups = self.search_many(flat, user_id=user_id)
+        groups = (
+            self.search_many(flat, user_id=user_id)
+            if ranking_profile == "balanced"
+            else self.search_many(flat, user_id=user_id, ranking_profile=ranking_profile)
+        )
         accumulated: list[list[KnowledgeHit]] = [[] for _ in requests]
         for owner, hits in zip(owners, groups, strict=True):
             accumulated[owner].extend(hits)
@@ -1016,7 +1061,11 @@ class KnowledgeService:
             bridge_requests.append((build_bridge_query(plan, accumulated[owner][:5]), filters, max(limit, limit * 2)))
             bridge_owners.append(owner)
         if bridge_requests:
-            bridge_groups = self.search_many(bridge_requests, user_id=user_id)
+            bridge_groups = (
+                self.search_many(bridge_requests, user_id=user_id)
+                if ranking_profile == "balanced"
+                else self.search_many(bridge_requests, user_id=user_id, ranking_profile=ranking_profile)
+            )
             for owner, hits in zip(bridge_owners, bridge_groups, strict=True):
                 accumulated[owner].extend(hits)
         output: list[tuple[list[KnowledgeHit], RetrievalPlan]] = []
@@ -1893,6 +1942,8 @@ class KnowledgeService:
             return repository.list_jobs(user_id, limit)
 
     def status(self, user_id: str) -> dict[str, Any]:
+        from competition.knowledge_quota import quota
+
         with self._repo() as repository:
             database = repository.stats(user_id)
             spaces = repository.list_spaces(user_id)
@@ -1912,6 +1963,7 @@ class KnowledgeService:
                 "invalidations": self._cache_invalidations,
             },
             "warmup": dict(self._warmup_status),
+            "quota": quota.status(user_id),
         }
 
     def warmup(self) -> dict[str, Any]:

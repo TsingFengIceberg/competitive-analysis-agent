@@ -877,6 +877,39 @@ def test_retrieval_evaluation_reports_quality_and_latency_failures():
     assert len(failures) == 6
 
 
+def test_retrieval_ranking_profiles_expose_freshness_and_authority_scores(tmp_path):
+    from competition.knowledge_service import KnowledgeService
+
+    service = KnowledgeService(db_path=tmp_path / "ranking.db", root=tmp_path / "knowledge", index=object())
+    candidates = [
+        (
+            {
+                "chunk_id": "chunk-1",
+                "document_id": "doc-1",
+                "version_no": 1,
+                "title": "Current pricing",
+                "text": "new",
+                "contextual_text": "new",
+                "source_uri": "https://example.test",
+                "source_type": "docs",
+                "authority_tier": "primary",
+                "product": "Cursor",
+                "dimension": "pricing",
+                "market_scope": "Global / unspecified",
+                "published_at": "2099-01-01T00:00:00+00:00",
+                "observed_at": "2099-01-01T00:00:00+00:00",
+                "active": True,
+                "metadata": {},
+            },
+            0.7,
+        )
+    ]
+    hits = service._build_hits(candidates, [0.8], 1, ranking_profile="freshness")
+    assert hits[0].metadata["ranking_profile"] == "freshness"
+    assert hits[0].metadata["freshness_score"] == 1.0
+    assert hits[0].metadata["authority_score"] == 0.95
+
+
 def test_query_planning_metrics_measure_route_and_required_steps():
     metrics = compute_planning_metrics(
         [

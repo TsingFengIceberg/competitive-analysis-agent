@@ -5,8 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Bell,
+  CheckCircle2,
   Clock3,
   Edit3,
+  EyeOff,
   ExternalLink,
   FileText,
   History,
@@ -187,6 +189,21 @@ interface AlertEvent {
   status: string;
   last_seen_at: string;
   suppressed_reason: string | null;
+  feedback?: {
+    action: "confirmed" | "ignored" | "corrected";
+    correction?: string;
+    note?: string;
+  } | null;
+}
+
+interface IntelligenceSubscription {
+  subscription_id: string;
+  name: string;
+  products: string[];
+  dimensions: string[];
+  min_severity: "minor" | "major" | "critical";
+  channels: string[];
+  enabled: boolean;
 }
 
 interface RuntimeStatus {
@@ -419,6 +436,9 @@ export default function MonitoringPage() {
   const [changes, setChanges] = useState<IntelligenceChange[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [events, setEvents] = useState<AlertEvent[]>([]);
+  const [subscriptions, setSubscriptions] = useState<
+    IntelligenceSubscription[]
+  >([]);
   const [selectedChange, setSelectedChange] =
     useState<IntelligenceChange | null>(null);
   const [changeDetail, setChangeDetail] =
@@ -453,6 +473,7 @@ export default function MonitoringPage() {
         changesResponse,
         rulesResponse,
         eventsResponse,
+        subscriptionsResponse,
         tasksResponse,
       ] = await Promise.all([
         fetch("/api/competition/observation/runtime", {
@@ -477,6 +498,7 @@ export default function MonitoringPage() {
         fetch("/api/competition/alerts/events?limit=100", {
           credentials: "include",
         }),
+        fetch("/api/competition/subscriptions", { credentials: "include" }),
         fetch("/api/competition/tasks?limit=30", { credentials: "include" }),
       ]);
       if (
@@ -488,6 +510,7 @@ export default function MonitoringPage() {
           changesResponse,
           rulesResponse,
           eventsResponse,
+          subscriptionsResponse,
           tasksResponse,
         ].every((response) => response.ok)
       ) {
@@ -501,6 +524,7 @@ export default function MonitoringPage() {
         changesPayload,
         rulesPayload,
         eventsPayload,
+        subscriptionsPayload,
         tasksPayload,
       ] = await Promise.all([
         runtimeResponse.json(),
@@ -510,6 +534,7 @@ export default function MonitoringPage() {
         changesResponse.json(),
         rulesResponse.json(),
         eventsResponse.json(),
+        subscriptionsResponse.json(),
         tasksResponse.json(),
       ]);
       setRuntime(runtimePayload);
@@ -533,6 +558,7 @@ export default function MonitoringPage() {
       setChanges(changesPayload.changes || []);
       setRules(rulesPayload.rules || []);
       setEvents(eventsPayload.events || []);
+      setSubscriptions(subscriptionsPayload.subscriptions || []);
       setBackgroundTasks(tasksPayload.tasks || []);
       setError(null);
     } catch (fetchError) {
@@ -897,6 +923,105 @@ export default function MonitoringPage() {
     } catch (dispatchError) {
       toast.error(
         dispatchError instanceof Error ? dispatchError.message : "投递失败",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const createSubscription = async () => {
+    const name = window.prompt("订阅名称", "重点竞品变化");
+    if (!name?.trim()) return;
+    const products =
+      window
+        .prompt("关注竞品（逗号分隔，留空表示全部）", "")
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) || [];
+    const dimensions =
+      window
+        .prompt("关注维度（逗号分隔，留空表示全部）", "")
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean) || [];
+    setBusy("subscription-save");
+    try {
+      await request("/api/competition/subscriptions", "POST", {
+        name: name.trim(),
+        products,
+        dimensions,
+        channels: ["in_app"],
+        min_severity: "major",
+        enabled: true,
+      });
+      toast.success("订阅已创建");
+      await fetchData(true);
+    } catch (subscriptionError) {
+      toast.error(
+        subscriptionError instanceof Error
+          ? subscriptionError.message
+          : "订阅创建失败",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mutateSubscription = async (
+    subscription: IntelligenceSubscription,
+    action: "toggle" | "delete",
+  ) => {
+    if (
+      action === "delete" &&
+      !window.confirm(`确认删除订阅“${subscription.name}”？`)
+    ) {
+      return;
+    }
+    setBusy(`${action}:${subscription.subscription_id}`);
+    try {
+      await request(
+        `/api/competition/subscriptions/${subscription.subscription_id}`,
+        action === "delete" ? "DELETE" : "PUT",
+        action === "toggle"
+          ? { ...subscription, enabled: !subscription.enabled }
+          : undefined,
+      );
+      await fetchData(true);
+    } catch (subscriptionError) {
+      toast.error(
+        subscriptionError instanceof Error
+          ? subscriptionError.message
+          : "订阅操作失败",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const submitFeedback = async (
+    event: AlertEvent,
+    action: "confirmed" | "ignored" | "corrected",
+  ) => {
+    const correction =
+      action === "corrected"
+        ? window.prompt("请输入修正后的事实或判断", "") || ""
+        : "";
+    if (action === "corrected" && !correction.trim()) return;
+    setBusy(`feedback:${event.event_id}`);
+    try {
+      await request(
+        `/api/competition/alerts/events/${event.event_id}/feedback`,
+        "POST",
+        {
+          action,
+          correction: correction.trim(),
+        },
+      );
+      toast.success("反馈已记录");
+      await fetchData(true);
+    } catch (feedbackError) {
+      toast.error(
+        feedbackError instanceof Error ? feedbackError.message : "反馈保存失败",
       );
     } finally {
       setBusy(null);
@@ -1500,6 +1625,94 @@ export default function MonitoringPage() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
+                  <h2 className="text-sm font-semibold">情报订阅</h2>
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    保存关注的竞品和维度，后续可据此调整告警与通知偏好
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void createSubscription()}
+                  disabled={busy === "subscription-save"}
+                >
+                  {busy === "subscription-save" ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Plus />
+                  )}
+                  新建订阅
+                </Button>
+              </div>
+              {subscriptions.length > 0 && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {subscriptions.map((subscription) => (
+                    <article
+                      key={subscription.subscription_id}
+                      className="rounded-md border p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="truncate text-sm font-medium">
+                              {subscription.name}
+                            </h3>
+                            <StatusBadge
+                              tone={
+                                subscription.enabled ? "success" : "neutral"
+                              }
+                              label={subscription.enabled ? "已启用" : "已暂停"}
+                            />
+                          </div>
+                          <p className="text-muted-foreground mt-1 text-xs break-words">
+                            {subscription.products.length
+                              ? subscription.products.join("、")
+                              : "全部竞品"}{" "}
+                            ·{" "}
+                            {subscription.dimensions.length
+                              ? subscription.dimensions
+                                  .map(displayDimension)
+                                  .join("、")
+                              : "全部维度"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title={
+                              subscription.enabled ? "暂停订阅" : "启用订阅"
+                            }
+                            aria-label={
+                              subscription.enabled ? "暂停订阅" : "启用订阅"
+                            }
+                            onClick={() =>
+                              void mutateSubscription(subscription, "toggle")
+                            }
+                          >
+                            {subscription.enabled ? <Pause /> : <Play />}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title="删除订阅"
+                            aria-label="删除订阅"
+                            onClick={() =>
+                              void mutateSubscription(subscription, "delete")
+                            }
+                          >
+                            <Trash2 />
+                          </Button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
                   <h2 className="text-sm font-semibold">告警规则</h2>
                   <p className="text-muted-foreground mt-1 text-xs">
                     控制严重级别、冷却、静默时段和即时或摘要投递
@@ -1633,6 +1846,50 @@ export default function MonitoringPage() {
                           <p className="text-muted-foreground mt-1 text-xs break-words">
                             {event.message}
                           </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            <Button
+                              variant={
+                                event.feedback?.action === "confirmed"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="sm"
+                              onClick={() =>
+                                void submitFeedback(event, "confirmed")
+                              }
+                              disabled={busy === `feedback:${event.event_id}`}
+                            >
+                              <CheckCircle2 /> 可信
+                            </Button>
+                            <Button
+                              variant={
+                                event.feedback?.action === "ignored"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="sm"
+                              onClick={() =>
+                                void submitFeedback(event, "ignored")
+                              }
+                              disabled={busy === `feedback:${event.event_id}`}
+                            >
+                              <EyeOff /> 忽略
+                            </Button>
+                            <Button
+                              variant={
+                                event.feedback?.action === "corrected"
+                                  ? "secondary"
+                                  : "ghost"
+                              }
+                              size="sm"
+                              onClick={() =>
+                                void submitFeedback(event, "corrected")
+                              }
+                              disabled={busy === `feedback:${event.event_id}`}
+                            >
+                              修正
+                            </Button>
+                          </div>
                         </div>
                         <span className="text-muted-foreground text-xs tabular-nums">
                           {formatTime(event.last_seen_at)}

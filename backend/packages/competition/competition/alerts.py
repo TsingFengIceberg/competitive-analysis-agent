@@ -178,6 +178,24 @@ class AlertRepository:
             result.append(item)
         return result
 
+    def get_event(self, event_id: str, *, user_id: str | None = None) -> dict | None:
+        """Load one alert event while enforcing its optional user boundary."""
+        clauses = ["event_id = ?"]
+        params: list[Any] = [event_id]
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        row = self.conn.execute(
+            f"SELECT event_id, rule_id, user_id, event_type, severity, dedupe_key, title, message, payload_json, status, first_seen_at, last_seen_at, sent_at, suppressed_reason FROM alert_events WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        keys = ("event_id", "rule_id", "user_id", "event_type", "severity", "dedupe_key", "title", "message", "payload", "status", "first_seen_at", "last_seen_at", "sent_at", "suppressed_reason")
+        result = dict(zip(keys, row, strict=True))
+        result["payload"] = json.loads(result["payload"]) if result["payload"] else {}
+        return result
+
     def mark_status(self, event_ids: list[str], status: str, *, sent_at: str | None = None, reason: str | None = None) -> None:
         if not event_ids:
             return
@@ -223,8 +241,10 @@ class AlertEngine:
                     "event_id": uuid.uuid4().hex, "rule_id": rule["rule_id"], "user_id": rule.get("user_id", "default"),
                     "event_type": event_type, "severity": severity, "dedupe_key": dedupe_key,
                     "title": self._title(change, event_type), "message": self._message(change, event_type),
-                    "payload": change, "status": status, "first_seen_at": _iso(now), "last_seen_at": _iso(now),
+                    "payload": {**change, "_notification_channels": list(rule.get("channels") or [])},
+                    "status": status, "first_seen_at": _iso(now), "last_seen_at": _iso(now),
                     "suppressed_reason": "quiet_hours" if quiet else None,
+                    "channels": list(rule.get("channels") or []),
                 }
                 self.repository.save_event(event)
                 emitted.append(event)
@@ -295,7 +315,7 @@ def deliver_alert_events(repository: AlertRepository, events: list[dict], *, cha
             continue
         result = dispatch_notification(
             NotificationMessage(route="alert", title=event["title"], body=event["message"], severity=event["severity"], event_id=event["event_id"], payload=event.get("payload") or {}),
-            channels=channels,
+            channels=channels or event.get("channels") or (event.get("payload") or {}).get("_notification_channels") or None,
         )
         sent = any(item.get("status") == "sent" for item in result.get("results", {}).values())
         status = "sent" if sent else "failed"

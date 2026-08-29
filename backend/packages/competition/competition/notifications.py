@@ -70,6 +70,15 @@ class WebhookChannel:
             return False
 
 
+class InAppChannel:
+    """Durable in-app delivery represented by the alert_events row itself."""
+
+    name = "in_app"
+
+    def send(self, message: NotificationMessage) -> bool:
+        return bool(message.event_id)
+
+
 class NotificationRouter:
     def __init__(self, channels: list[NotificationChannel] | None = None):
         self.channels = {channel.name: channel for channel in (channels or [])}
@@ -96,7 +105,7 @@ class NotificationRouter:
 
 
 def default_notification_router(*, webhook_url: str | None = None) -> NotificationRouter:
-    router = NotificationRouter([FeishuChannel()])
+    router = NotificationRouter([InAppChannel(), FeishuChannel()])
     url = webhook_url or os.environ.get("CI_AGENT_NOTIFICATION_WEBHOOK", "")
     if url:
         router.register(WebhookChannel(url))

@@ -363,6 +363,7 @@ export interface KnowledgeHit {
   temporal_status: "current" | "historical" | "future" | "unknown";
   score: number;
   confidence: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface KnowledgeStatus {
@@ -385,6 +386,13 @@ export interface KnowledgeStatus {
   supported_extensions: string[];
   max_upload_bytes: number;
   inbox: string;
+  quota?: {
+    window_seconds: number;
+    search_limit: number;
+    search_used: number;
+    evaluation_limit: number;
+    evaluation_used: number;
+  };
 }
 
 export interface ReportResponse {

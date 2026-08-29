@@ -203,12 +203,17 @@ def _persist_intelligence_items(state: dict, points: list[CollectedDataPoint]) -
             stats.setdefault("alerts_dispatched", 0)
             try:
                 from competition.alerts import AlertEngine, AlertRepository, deliver_alert_events
+                from competition.subscriptions import SubscriptionRepository, subscriptions_as_alert_rules
                 if getattr(repository, "conn", None) is not None:
                     alert_repository = AlertRepository(conn=repository.conn)
-                    events = AlertEngine(alert_repository).evaluate(stats.get("change_events") or [])
+                    owner_id = str(state.get("user_id") or "default")
+                    configured_rules = alert_repository.list_rules(user_id=owner_id, enabled_only=True)
+                    subscriptions = SubscriptionRepository(conn=repository.conn).list(owner_id, enabled_only=True)
+                    rules = configured_rules + subscriptions_as_alert_rules(subscriptions)
+                    events = AlertEngine(alert_repository).evaluate(stats.get("change_events") or [], rules=rules)
                     stats["alerts_emitted"] = len(events)
-                    rules = {rule["rule_id"]: rule for rule in alert_repository.list_rules(enabled_only=True)}
-                    immediate = [event for event in events if rules.get(event["rule_id"], {}).get("delivery_mode") == "immediate"]
+                    rule_map = {rule["rule_id"]: rule for rule in rules}
+                    immediate = [event for event in events if rule_map.get(event["rule_id"], {}).get("delivery_mode") == "immediate"]
                     deliveries = deliver_alert_events(alert_repository, immediate)
                     stats["alerts_dispatched"] = sum(item.get("status") == "sent" for item in deliveries)
             except Exception as alert_exc:
