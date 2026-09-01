@@ -90,6 +90,7 @@ class A2AAuthMiddleware(BaseHTTPMiddleware):
         recent.append(now)
         request.scope["a2a_owner"] = caller
         request.scope["a2a_tenant"] = request.headers.get("x-a2a-tenant", "")[:160]
+        request.scope["a2a_last_event_id"] = request.headers.get("last-event-id", "")[:80]
         return await call_next(request)
 
 
@@ -100,6 +101,7 @@ class A2AContextBuilder(DefaultServerCallContextBuilder):
         context.user = A2AUser(owner, authenticated=bool(request.scope.get("a2a_owner")))
         context.tenant = request.scope.get("a2a_tenant", "")
         context.state["a2a_owner"] = owner
+        context.state["a2a_last_event_id"] = request.scope.get("a2a_last_event_id", "")
         return context
 
 

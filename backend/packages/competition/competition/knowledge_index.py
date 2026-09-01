@@ -293,8 +293,14 @@ class KnowledgeIndex:
             if self._client is None:
                 from qdrant_client import QdrantClient
 
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                self._client = QdrantClient(path=str(self.path))
+                from competition.knowledge_storage import qdrant_connection_options
+
+                options = qdrant_connection_options()
+                if options["url"]:
+                    self._client = QdrantClient(url=options["url"], api_key=options["api_key"])
+                else:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self._client = QdrantClient(path=str(self.path))
         return self._client
 
     def ensure_collection(self) -> None:
@@ -638,12 +644,17 @@ class KnowledgeIndex:
     def status(self) -> dict[str, Any]:
         model_status = self.provider.readiness() if hasattr(self.provider, "readiness") else {}
         try:
+            from competition.knowledge_storage import qdrant_connection_options
+
+            connection = qdrant_connection_options()
             client = self._get_client()
             exists = client.collection_exists(self.collection)
             points = int(client.get_collection(self.collection).points_count or 0) if exists else 0
             return {
                 "available": all(model_status.get(key, True) for key in ("embedding_model", "reranker_model", "sparse_model")),
                 "collection": self.collection,
+                "backend": "remote" if connection["url"] else "local",
+                "endpoint_configured": bool(connection["url"]),
                 "collection_exists": exists,
                 "points": points,
                 **model_status,

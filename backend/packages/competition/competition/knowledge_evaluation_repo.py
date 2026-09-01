@@ -138,6 +138,60 @@ class KnowledgeEvaluationRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def build_feedback_dataset(
+        self,
+        user_id: str,
+        *,
+        dataset_name: str = "feedback-derived",
+        version: str = "v1",
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Materialize judged retrieval feedback as reproducible eval cases."""
+        rows = self.conn.execute(
+            """SELECT retrieval_id, query, chunk_id, action, note, created_at
+                 FROM knowledge_retrieval_feedback
+                WHERE user_id = ?
+                ORDER BY created_at ASC LIMIT ?""",
+            (user_id, max(1, min(int(limit), 5000))),
+        ).fetchall()
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            retrieval_id = str(row[0] or f"feedback:{row[1]}")
+            query = str(row[1] or "").strip()
+            if not query:
+                continue
+            entry = grouped.setdefault((retrieval_id, query), {"relevant": set(), "not_relevant": set(), "notes": []})
+            chunk_id = str(row[2] or "")
+            if not chunk_id:
+                continue
+            if row[3] in {"relevant", "citation_used"}:
+                entry["relevant"].add(chunk_id)
+            elif row[3] == "not_relevant":
+                entry["not_relevant"].add(chunk_id)
+            if row[4]:
+                entry["notes"].append(str(row[4])[:500])
+        cases: list[dict[str, Any]] = []
+        for (retrieval_id, query), entry in grouped.items():
+            relevant = sorted(entry["relevant"] - entry["not_relevant"])
+            if not relevant:
+                continue
+            ranked = [{"label": chunk_id, "chunk_id": chunk_id, "document_id": "feedback"} for chunk_id in relevant]
+            cases.append({
+                "id": f"feedback-{len(cases) + 1}",
+                "query": query,
+                "retrieval_id": retrieval_id,
+                "relevant": relevant,
+                "ranked": ranked,
+                "metadata": {"source": "user_feedback", "notes": entry["notes"][-5:]},
+            })
+        return self.save_dataset(
+            user_id=user_id,
+            dataset_name=dataset_name,
+            version=version,
+            cases=cases,
+            metadata={"source": "knowledge_retrieval_feedback", "feedback_count": len(rows)},
+        )
+
     def record_online_metric(
         self,
         *,

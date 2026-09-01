@@ -576,6 +576,34 @@ class SourceRepository:
         ).fetchone()
         return self._row(row)
 
+    def update_config(self, source_id: str, user_id: str, **values: Any) -> dict[str, Any] | None:
+        """Update connector settings and reset conditional state when identity changes."""
+        source = self.get(source_id, user_id)
+        if source is None:
+            return None
+        allowed = {
+            "name", "uri", "product", "dimension", "market_scope", "authority_tier", "media_type",
+            "source_type", "enabled", "sync_interval_minutes", "timeout_seconds", "priority", "max_pages", "page_param",
+        }
+        updates = {key: value for key, value in values.items() if key in allowed and value is not None}
+        if not updates:
+            return source
+        candidate = {**source, **updates, "source_id": source_id, "user_id": user_id}
+        validated = KnowledgeSourceConnector.from_dict(candidate, user_id=user_id)
+        updates = {key: getattr(validated, key) for key in allowed if key in updates}
+        if "enabled" in updates:
+            updates["enabled"] = int(bool(updates["enabled"]))
+        if any(key in updates for key in {"uri", "product", "dimension", "source_type"}):
+            updates.update({"etag": None, "last_modified": None, "content_hash": None, "last_status": "idle", "last_error": None, "failure_count": 0, "cooldown_until": None})
+        updates["updated_at"] = _now()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        self.conn.execute(
+            f"UPDATE knowledge_source_connectors SET {assignments} WHERE source_id = ? AND user_id = ?",
+            [*updates.values(), source_id, user_id],
+        )
+        self.conn.commit()
+        return self.get(source_id, user_id)
+
     def list(self, user_id: str, *, enabled_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
         where = "user_id = ?" + (" AND enabled = 1" if enabled_only else "")
         rows = self.conn.execute(

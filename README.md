@@ -282,6 +282,13 @@ make rag-eval
 | `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-Encoder 重排模型目录 |
 | `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 模型缓存目录 |
 | `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local 存储目录 |
+| `CI_AGENT_RAG_QDRANT_URL` | 空 | 远程 Qdrant URL；设置后替代 Local 模式 |
+| `CI_AGENT_RAG_QDRANT_API_KEY` | 空 | 远程 Qdrant API Key（仅通过环境变量注入） |
+| `CI_AGENT_OBJECT_STORE` | `local` | 原始资料对象存储后端：`local`、`s3`、`minio` 或 `r2` |
+| `CI_AGENT_OBJECT_STORE_ROOT` | `.ci-agent/knowledge/objects` | Local 对象存储根目录 |
+| `CI_AGENT_OBJECT_STORE_BUCKET` | 空 | S3 兼容对象存储 bucket；选择 S3 后必填 |
+| `CI_AGENT_OBJECT_STORE_ENDPOINT` | 空 | S3/MinIO/R2 兼容 endpoint |
+| `CI_AGENT_OBJECT_STORE_PREFIX` | `knowledge` | 远程对象存储前缀 |
 | `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | 单文件上传字节上限 |
 | `CI_AGENT_RAG_MIN_SCORE` | `0.08` | 重排后的最低返回分数 |
 | `CI_AGENT_RAG_PREWARM` | `true` | 是否在 FastAPI 启动后后台预热本地检索模型 |
@@ -290,6 +297,10 @@ make rag-eval
 | `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | 检索结果缓存有效期，设为 `0` 可禁用 |
 | `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | 是否启用受控的中英文查询词组扩展，不触发额外 LLM 调用 |
 | `CI_AGENT_RAG_LEXICAL_FALLBACK` | `true` | 语义模型或索引不可用时是否启用 SQLite 词法降级检索 |
+
+现代 `.docx`、`.xlsx` 和 `.pptx` 在 Docling 不可用时会先尝试标准 OOXML 文本降级解析；PDF、图片、旧版二进制 Office 和复杂版式仍使用本地 Docling + RapidOCR。来源连接器可通过 `PATCH /api/competition/knowledge/sources/{source_id}` 修改并在身份字段变化后自动清理条件请求状态；`POST /api/competition/knowledge/evaluation-datasets/from-feedback` 可将人工检索反馈固化为评估集。多进程部署可运行 `python -m app.task_worker`，观察调度器使用 SQLite 租约避免重复执行；A2A 订阅支持通过 `Last-Event-ID` 增量恢复事件。
+
+需要 S3 兼容对象存储时安装可选依赖：`uv sync --extra rag-remote --project backend`。
 
 ### DB 模式（默认）
 

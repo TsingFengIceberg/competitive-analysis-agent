@@ -123,6 +123,26 @@ async def test_persisted_events_replay_after_handler_recreation(tmp_path: Path, 
 
 
 @pytest.mark.asyncio
+async def test_subscription_replays_only_events_after_last_event_id(tmp_path: Path) -> None:
+    store = A2AStore(tmp_path / "a2a.db")
+    handler = CompetitionA2AHandler(store)
+    task = Task(id="task-resume", context_id="ctx-resume", status=TaskStatus(state=TaskState.TASK_STATE_WORKING))
+    store.create(task, owner="client-a", tenant="tenant-a")
+    await handler._publish_status(task, TaskState.TASK_STATE_WORKING, "first")
+    await handler._publish_status(task, TaskState.TASK_STATE_COMPLETED, "done")
+    events = store.events(task.id, "client-a", "tenant-a", 0)
+    assert len(events) == 2
+    resumed = []
+    async for event in handler.on_subscribe_to_task(
+        type("Subscribe", (), {"id": task.id})(),
+        ServerCallContext(state={"a2a_owner": "client-a", "a2a_last_event_id": str(events[0]["sequence"])}, tenant="tenant-a"),
+    ):
+        resumed.append(event)
+    assert len(resumed) == 2  # task snapshot plus the terminal event
+    assert resumed[-1].status.state == TaskState.TASK_STATE_COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_start_requeues_submitted_tasks_after_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = A2AStore(tmp_path / "a2a.db")
     task = Task(id="task-recover", context_id="ctx-recover", status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED))

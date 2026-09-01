@@ -115,6 +115,18 @@ class TaskRepository:
         ).fetchone()
         return _decode(row)
 
+    def find_active(self, *, user_id: str, task_type: str, payload_key: str, payload_value: str) -> dict[str, Any] | None:
+        """Find an equivalent queued/running task to avoid duplicate work."""
+        row = self.conn.execute(
+            """SELECT * FROM background_tasks
+                WHERE user_id = ? AND task_type = ?
+                  AND status IN ('queued', 'running')
+                  AND json_extract(payload_json, ?) = ?
+                ORDER BY created_at DESC LIMIT 1""",
+            (user_id, task_type, f"$.{payload_key}", payload_value),
+        ).fetchone()
+        return _decode(row)
+
     def get(self, task_id: str, user_id: str | None = None) -> dict[str, Any] | None:
         sql = "SELECT * FROM background_tasks WHERE task_id = ?"
         params: list[Any] = [task_id]

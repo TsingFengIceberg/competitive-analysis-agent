@@ -270,6 +270,13 @@ The following environment variables override storage and retrieval defaults:
 | `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-encoder reranker directory |
 | `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 model cache |
 | `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local directory |
+| `CI_AGENT_RAG_QDRANT_URL` | empty | Remote Qdrant URL; replaces Local mode when set |
+| `CI_AGENT_RAG_QDRANT_API_KEY` | empty | Remote Qdrant API key (inject through environment only) |
+| `CI_AGENT_OBJECT_STORE` | `local` | Original-document object store: `local`, `s3`, `minio`, or `r2` |
+| `CI_AGENT_OBJECT_STORE_ROOT` | `.ci-agent/knowledge/objects` | Local object-store root |
+| `CI_AGENT_OBJECT_STORE_BUCKET` | empty | S3-compatible bucket; required for S3 mode |
+| `CI_AGENT_OBJECT_STORE_ENDPOINT` | empty | S3/MinIO/R2-compatible endpoint |
+| `CI_AGENT_OBJECT_STORE_PREFIX` | `knowledge` | Remote object-store prefix |
 | `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | Maximum uploaded file size in bytes |
 | `CI_AGENT_RAG_MIN_SCORE` | `0.08` | Minimum final reranked score |
 | `CI_AGENT_RAG_PREWARM` | `true` | Warm local retrieval models in the background after FastAPI starts |
@@ -278,6 +285,10 @@ The following environment variables override storage and retrieval defaults:
 | `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | Retrieval-result cache lifetime; set to `0` to disable |
 | `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | Enable bounded bilingual query-term expansion without an extra LLM call |
 | `CI_AGENT_RAG_LEXICAL_FALLBACK` | `true` | Enable SQLite lexical fallback when semantic models or the index are unavailable |
+
+Modern `.docx`, `.xlsx`, and `.pptx` files first use a standard OOXML text fallback when Docling is unavailable; PDFs, images, legacy binary Office files, and complex layouts continue to use local Docling + RapidOCR. Connector settings can be edited with `PATCH /api/competition/knowledge/sources/{source_id}`, which resets conditional-request state when identity fields change. `POST /api/competition/knowledge/evaluation-datasets/from-feedback` materializes explicit retrieval judgments as a versioned evaluation set. Multi-process deployments can run `python -m app.task_worker`; the observation scheduler uses SQLite leases to prevent duplicate execution. A2A subscriptions support incremental replay through `Last-Event-ID`.
+
+For S3-compatible object storage, install the optional dependency with `uv sync --extra rag-remote --project backend`.
 
 ### DB mode
 

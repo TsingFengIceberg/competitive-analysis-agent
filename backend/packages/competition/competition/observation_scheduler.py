@@ -130,7 +130,7 @@ class ScheduleRepository:
         return [self._decode(row) for row in rows]
 
     def update_runtime(self, schedule_id: str, **fields: Any) -> None:
-        allowed = {"next_run_at", "last_run_at", "last_success_at", "last_failure_at", "last_status", "last_error", "last_skip_reason", "enabled"}
+        allowed = {"next_run_at", "last_run_at", "last_success_at", "last_failure_at", "last_status", "last_error", "last_skip_reason", "enabled", "lease_owner", "lease_until"}
         updates = [(key, value) for key, value in fields.items() if key in allowed]
         if not updates:
             return
@@ -174,6 +174,41 @@ class ScheduleRepository:
             item["summary"] = json.loads(item["summary"]) if item["summary"] else {}
             result.append(item)
         return result
+
+    def claim_due(self, *, owner: str, user_id: str | None = None, limit: int = 20, now: datetime | None = None, lease_seconds: int = 300) -> list[dict]:
+        """Atomically lease due schedules so multiple API processes do not duplicate runs."""
+        current = now or datetime.now(UTC)
+        now_iso = _iso(current)
+        lease_until = _iso(current + timedelta(seconds=max(30, int(lease_seconds))))
+        if self.conn.in_transaction:
+            self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            where = ["enabled = 1", "next_run_at IS NOT NULL", "next_run_at <= ?", "(lease_until IS NULL OR lease_until <= ?)"]
+            params: list[Any] = [now_iso, now_iso]
+            if user_id:
+                where.append("user_id = ?")
+                params.append(user_id)
+            params.append(max(1, min(int(limit), 100)))
+            rows = self.conn.execute(
+                f"SELECT * FROM observation_schedules WHERE {' AND '.join(where)} ORDER BY next_run_at ASC LIMIT ?",
+                params,
+            ).fetchall()
+            claimed: list[dict] = []
+            for row in rows:
+                schedule_id = str(row[0])
+                self.conn.execute(
+                    "UPDATE observation_schedules SET lease_owner = ?, lease_until = ?, updated_at = ? WHERE schedule_id = ?",
+                    (owner, lease_until, now_iso, schedule_id),
+                )
+                item = self._decode(self.conn.execute("SELECT * FROM observation_schedules WHERE schedule_id = ?", (schedule_id,)).fetchone())
+                if item:
+                    claimed.append(item)
+            self.conn.commit()
+            return claimed
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def list_report_runs(
         self,
@@ -227,12 +262,32 @@ class ScheduleRepository:
         ).fetchone()
         return int(row[0]) if row else 0
 
+    def get_report_run(self, run_id: str, *, user_id: str) -> dict | None:
+        """Return one report-producing observation run with its full summary."""
+        row = self.conn.execute(
+            """SELECT r.run_id, r.schedule_id, s.name, s.user_id, r.started_at, r.finished_at,
+                       r.status, r.summary_json, r.error, r.skip_reason
+                  FROM observation_runs r
+                  JOIN observation_schedules s ON s.schedule_id = r.schedule_id
+                 WHERE r.run_id = ? AND s.user_id = ?""",
+            (run_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        keys = ("run_id", "schedule_id", "schedule_name", "user_id", "started_at", "finished_at", "status", "summary", "error", "skip_reason")
+        item = dict(zip(keys, row, strict=True))
+        item["summary"] = json.loads(item["summary"]) if item["summary"] else {}
+        deep = item["summary"].get("deep_analysis") or {}
+        item["thread_id"] = deep.get("thread_id")
+        item["report_status"] = deep.get("status")
+        return item
+
     @staticmethod
     def _decode(row) -> dict:
         keys = (
             "schedule_id", "user_id", "name", "products", "dimensions", "market_scope", "daily_times",
             "interval_minutes", "enabled", "next_run_at", "last_run_at", "last_success_at", "last_failure_at",
-            "last_status", "last_error", "last_skip_reason", "created_at", "updated_at",
+            "last_status", "last_error", "last_skip_reason", "lease_owner", "lease_until", "created_at", "updated_at",
         )
         data = dict(zip(keys, row, strict=True))
         for key in ("products", "dimensions", "daily_times"):
@@ -254,6 +309,7 @@ class ObservationScheduler:
         self.deep_runner = deep_runner
         self.clock = clock
         self.task_submitter = task_submitter
+        self._owner = f"scheduler-{uuid.uuid4().hex[:12]}"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -282,10 +338,8 @@ class ObservationScheduler:
     def tick(self, now: datetime | None = None, *, user_id: str | None = None) -> list[dict]:
         now = now or self.clock()
         results = []
-        for schedule in self.repository.list(user_id=user_id, enabled_only=True):
-            due = _parse_iso(schedule.get("next_run_at"))
-            if due and due <= now:
-                results.append(self._execute(schedule, manual=False))
+        for schedule in self.repository.claim_due(owner=self._owner, user_id=user_id, now=now):
+            results.append(self._execute(schedule, manual=False))
         return results
 
     def start(self, poll_seconds: int = 30) -> None:
@@ -357,4 +411,5 @@ class ObservationScheduler:
             self.repository.update_runtime(schedule["schedule_id"], last_status="failed", last_failure_at=finished, last_error=str(exc)[:500], next_run_at=_iso(self.next_run(schedule, self.clock())))
             return self.repository.record_run(schedule["schedule_id"], status="failed", started_at=started, finished_at=finished, error=str(exc)[:500])
         finally:
+            self.repository.update_runtime(schedule["schedule_id"], lease_owner=None, lease_until=None)
             self._global_run_lock.release()

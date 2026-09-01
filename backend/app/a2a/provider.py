@@ -181,10 +181,13 @@ class CompetitionA2AHandler(RequestHandler):
         owner, tenant = self._scope(context)
         queue: asyncio.Queue = asyncio.Queue(maxsize=256)
         self._subscribers[task.id].add(queue)
-        last_sequence = 0
+        try:
+            last_sequence = max(0, int(context.state.get("a2a_last_event_id") or 0))
+        except (TypeError, ValueError):
+            last_sequence = 0
         try:
             yield task
-            for item in self.store.events(task.id, owner, tenant, 0):
+            for item in self.store.events(task.id, owner, tenant, last_sequence):
                 last_sequence = item["sequence"]
                 event = self._event_from(item)
                 if event is not None:
@@ -213,10 +216,13 @@ class CompetitionA2AHandler(RequestHandler):
             raise TaskNotFoundError
         queue: asyncio.Queue = asyncio.Queue(maxsize=256)
         self._subscribers[task.id].add(queue)
-        last_sequence = 0
+        try:
+            last_sequence = max(0, int(context.state.get("a2a_last_event_id") or 0))
+        except (TypeError, ValueError):
+            last_sequence = 0
         try:
             yield task
-            for item in self.store.events(task.id, owner, tenant, 0):
+            for item in self.store.events(task.id, owner, tenant, last_sequence):
                 last_sequence = item["sequence"]
                 event = self._event_from(item)
                 if event is not None:

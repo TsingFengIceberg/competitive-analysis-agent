@@ -10,8 +10,10 @@ import mimetypes
 import os
 import re
 import threading
+import zipfile
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from competition.knowledge_types import ParsedBlock, ParsedDocument
 
@@ -158,6 +160,54 @@ def _parse_json(path: Path, media_type: str) -> ParsedDocument:
     )
 
 
+def _parse_ooxml(path: Path, media_type: str, *, kind: str) -> ParsedDocument:
+    """Extract readable text from modern Office XML packages without a model."""
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "a": "http://schemas.openxmlformats.org/drawingml/2006/main", "x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        if kind == "docx":
+            candidates = [name for name in names if name.startswith("word/") and name.endswith(".xml") and "/media/" not in name]
+            blocks: list[str] = []
+            for name in sorted(candidates):
+                root = ElementTree.fromstring(archive.read(name))
+                paragraphs = []
+                for paragraph in root.findall(".//w:p", namespace):
+                    text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
+                    if text:
+                        paragraphs.append(text)
+                blocks.extend(paragraphs)
+            markdown = "\n\n".join(blocks)
+        elif kind == "pptx":
+            candidates = [name for name in names if name.startswith("ppt/slides/slide") and name.endswith(".xml")]
+            slides: list[str] = []
+            for index, name in enumerate(sorted(candidates), start=1):
+                root = ElementTree.fromstring(archive.read(name))
+                text = " ".join(node.text or "" for node in root.findall(".//a:t", namespace)).strip()
+                if text:
+                    slides.append(f"## Slide {index}\n\n{text}")
+            markdown = "\n\n".join(slides)
+        else:
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+                shared = ["".join(node.text or "" for node in item.findall(".//x:t", namespace)) for item in root.findall(".//x:si", namespace)]
+            rows: list[str] = []
+            for name in sorted(item for item in names if item.startswith("xl/worksheets/sheet") and item.endswith(".xml")):
+                root = ElementTree.fromstring(archive.read(name))
+                for row in root.findall(".//x:row", namespace):
+                    values: list[str] = []
+                    for cell in row.findall("x:c", namespace):
+                        value = cell.find("x:v", namespace)
+                        raw = (value.text or "") if value is not None else ""
+                        if cell.get("t") == "s" and raw.isdigit() and int(raw) < len(shared):
+                            raw = shared[int(raw)]
+                        values.append(raw)
+                    if any(values):
+                        rows.append("| " + " | ".join(values) + " |")
+            markdown = "\n".join(rows)
+    return ParsedDocument(title=path.stem, markdown=markdown, blocks=_blocks_from_markdown(markdown), media_type=media_type)
+
+
 class DocumentParser:
     """Parse common text formats directly and rich documents through Docling."""
 
@@ -186,6 +236,11 @@ class DocumentParser:
             return _parse_csv(source, media_type)
         if suffix == ".json":
             return _parse_json(source, media_type)
+        if suffix in {".docx", ".xlsx", ".pptx"}:
+            try:
+                return _parse_ooxml(source, media_type, kind=suffix.removeprefix("."))
+            except (KeyError, OSError, ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+                logger.warning("OOXML fallback failed for %s; trying Docling: %s", source, exc)
         return self._parse_with_docling(source, media_type)
 
     def _get_converter(self) -> Any:

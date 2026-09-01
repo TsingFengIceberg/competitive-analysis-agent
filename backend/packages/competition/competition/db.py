@@ -191,6 +191,8 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
             last_status TEXT NOT NULL DEFAULT 'idle',
             last_error TEXT,
             last_skip_reason TEXT,
+            lease_owner TEXT,
+            lease_until TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -873,6 +875,8 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
         ("priority", "INTEGER NOT NULL DEFAULT 50"),
         ("max_pages", "INTEGER NOT NULL DEFAULT 1"),
         ("page_param", "TEXT NOT NULL DEFAULT ''"),
+        ("lease_owner", "TEXT"),
+        ("lease_until", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE knowledge_source_connectors ADD COLUMN {col} {definition}")

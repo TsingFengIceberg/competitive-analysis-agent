@@ -1312,6 +1312,53 @@ class KnowledgeRepository:
             result.append(item)
         return result
 
+    def restore_entity_merge(self, audit_id: str, *, user_id: str) -> dict[str, Any]:
+        """Undo a merge using the immutable audit snapshot as the source of truth."""
+        row = self.conn.execute("SELECT * FROM knowledge_entity_merge_audits WHERE audit_id = ?", (audit_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Knowledge merge audit not found: {audit_id}")
+        space = self.get_space(str(row["space_id"]), user_id)
+        if not space or space.get("role") not in {"owner", "editor"}:
+            raise PermissionError("Knowledge-space edit permission is required")
+        before = _loads(row["before_json"], {})
+        source = before.get("source") or {}
+        target = before.get("target") or {}
+        source_id = str(row["source_entity_id"])
+        target_id = str(row["target_entity_id"])
+        if not source or not target:
+            raise ValueError("Merge audit snapshot is incomplete")
+        for entity_id, snapshot in ((source_id, source), (target_id, target)):
+            self.conn.execute(
+                "UPDATE knowledge_entities SET canonical_name = ?, entity_type = ?, metadata_json = ?, merged_into = ?, updated_at = ? WHERE entity_id = ? AND space_id = ?",
+                (
+                    snapshot.get("canonical_name", ""),
+                    snapshot.get("entity_type", "product"),
+                    json.dumps(snapshot.get("metadata") or {}, ensure_ascii=False, default=str),
+                    snapshot.get("merged_into"),
+                    _now(),
+                    entity_id,
+                    row["space_id"],
+                ),
+            )
+        self.conn.execute("UPDATE knowledge_events SET entity_id = ? WHERE entity_id = ? AND space_id = ?", (source_id, target_id, row["space_id"]))
+        self.conn.execute("UPDATE knowledge_insights SET entity_id = ? WHERE entity_id = ? AND space_id = ?", (source_id, target_id, row["space_id"]))
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO knowledge_entity_merge_audits (
+                   audit_id, space_id, actor_id, source_entity_id, target_entity_id,
+                   reason, before_json, after_json, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"kmerge-restore-{uuid.uuid4().hex}", row["space_id"], user_id, source_id, target_id,
+                f"restore:{audit_id}", row["after_json"], json.dumps({"restored_from": audit_id, "source": source, "target": target}, ensure_ascii=False, default=str), now,
+            ),
+        )
+        self.conn.commit()
+        restored_row = self.conn.execute("SELECT * FROM knowledge_entities WHERE entity_id = ?", (source_id,)).fetchone()
+        result = _json_row(restored_row) or {"entity_id": source_id}
+        result["restored_from"] = audit_id
+        return result
+
     def upsert_relation(self, values: dict[str, Any]) -> dict[str, Any]:
         now = _now()
         existing = self.conn.execute(
@@ -1673,6 +1720,24 @@ class KnowledgeRepository:
             item["after"] = _loads(item.pop("after_json"), {})
             result.append(item)
         return result
+
+    def list_relation_conflicts(self, user_id: str, *, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """List relations requiring explicit conflict resolution."""
+        spaces = [space_id] if space_id else self.accessible_space_ids(user_id)
+        if not spaces:
+            return []
+        placeholders = ",".join("?" for _ in spaces)
+        rows = self.conn.execute(
+            f"""SELECT r.*, s.canonical_name AS source_name, t.canonical_name AS target_name
+                  FROM knowledge_relations r
+                  JOIN knowledge_entities s ON s.entity_id = r.source_entity_id
+                  JOIN knowledge_entities t ON t.entity_id = r.target_entity_id
+                 WHERE r.space_id IN ({placeholders})
+                   AND (r.status = 'conflicted' OR json_extract(r.metadata_json, '$.governance.conflict') = 1)
+                 ORDER BY r.last_seen_at DESC LIMIT ?""",
+            [*spaces, max(1, min(int(limit), 500))],
+        ).fetchall()
+        return [_json_row(row) for row in rows]
 
     def create_hypothesis(self, values: dict[str, Any]) -> dict[str, Any]:
         now = _now()

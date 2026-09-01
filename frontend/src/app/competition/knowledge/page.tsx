@@ -272,6 +272,16 @@ interface EntityMergeAudit {
   created_at: string;
 }
 
+interface KnowledgeRelationConflict {
+  relation_id: string;
+  source_name?: string;
+  target_name?: string;
+  relation_type?: string;
+  statement?: string;
+  confidence?: number;
+  status?: string;
+}
+
 interface GovernanceStats {
   document_reviews: { total: number; approved: number; rejected: number };
   feedback_by_type: Record<string, number>;
@@ -422,6 +432,9 @@ export default function KnowledgePage() {
   const [entityMergeAudits, setEntityMergeAudits] = useState<
     EntityMergeAudit[]
   >([]);
+  const [relationConflicts, setRelationConflicts] = useState<
+    KnowledgeRelationConflict[]
+  >([]);
   const [governance, setGovernance] = useState<GovernanceStats | null>(null);
   const [sources, setSources] = useState<IntelligenceSource[]>([]);
   const [sourceConnectors, setSourceConnectors] = useState<
@@ -483,6 +496,7 @@ export default function KnowledgePage() {
           latencyTrendPayload,
           entityPayload,
           entityAuditPayload,
+          conflictPayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
@@ -548,6 +562,9 @@ export default function KnowledgePage() {
           requestJson<{ audits: EntityMergeAudit[] }>(
             `${API}/knowledge/entity-merge-audits?${spaceId ? `space_id=${encodeURIComponent(spaceId)}&` : ""}limit=8`,
           ),
+          requestJson<{ conflicts: KnowledgeRelationConflict[] }>(
+            `${API}/knowledge/graph/conflicts?${spaceId ? `space_id=${encodeURIComponent(spaceId)}&` : ""}limit=20`,
+          ),
         ]);
         setStatus(statusPayload);
         setDocuments(documentPayload.documents);
@@ -572,6 +589,7 @@ export default function KnowledgePage() {
         setLatencyTrend(latencyTrendPayload.trend ?? []);
         setEntities(entityPayload.entities ?? []);
         setEntityMergeAudits(entityAuditPayload.audits ?? []);
+        setRelationConflicts(conflictPayload.conflicts ?? []);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
             statusPayload.spaces.find(
@@ -817,6 +835,47 @@ export default function KnowledgePage() {
       await refresh(true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "来源同步失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editSourceConnector = async (source: KnowledgeSourceConnector) => {
+    const name = window.prompt("来源名称", source.name);
+    if (name == null) return;
+    const uri = window.prompt("来源 URL", source.uri);
+    if (uri == null) return;
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/sources/${source.source_id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({ name: name.trim(), uri: uri.trim() }),
+      });
+      toast.success("来源配置已更新");
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "来源更新失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const materializeFeedbackDataset = async () => {
+    setBusy(true);
+    try {
+      await requestJson(`${API}/knowledge/evaluation-datasets/from-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
+        body: JSON.stringify({
+          dataset_name: "feedback-derived",
+          version: `v${new Date().toISOString().slice(0, 10)}`,
+        }),
+      });
+      toast.success("已根据检索反馈生成评估集");
+      await refresh(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "评估集生成失败");
     } finally {
       setBusy(false);
     }
@@ -1630,6 +1689,14 @@ export default function KnowledgePage() {
                 >
                   <RefreshCw className="size-3" /> 立即同步
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void editSourceConnector(source)}
+                >
+                  编辑
+                </Button>
                 {source.last_status === "failed" && (
                   <Button
                     variant="outline"
@@ -1749,6 +1816,14 @@ export default function KnowledgePage() {
                   : "暂无线上样本"
               }
             />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || !feedbackSummary?.total}
+              onClick={() => void materializeFeedbackDataset()}
+            >
+              <Database className="size-3" /> 反馈生成评估集
+            </Button>
           </div>
           <div className="grid divide-y text-xs lg:grid-cols-3 lg:divide-x lg:divide-y-0">
             <div className="p-4">
@@ -1854,6 +1929,42 @@ export default function KnowledgePage() {
             </div>
           </div>
         </section>
+
+        {relationConflicts.length > 0 && (
+          <section className="ui-panel min-w-0 overflow-hidden">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold">待处理关系冲突</h2>
+                <p className="text-muted-foreground mt-0.5 text-xs">
+                  需要所有者或编辑者确认后才会恢复为可引用关系。
+                </p>
+              </div>
+              <StatusBadge
+                tone="warning"
+                label={`${relationConflicts.length} 条`}
+              />
+            </div>
+            <div className="divide-y text-xs">
+              {relationConflicts.slice(0, 8).map((conflict) => (
+                <div
+                  key={conflict.relation_id}
+                  className="flex min-w-0 items-center justify-between gap-3 px-4 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">
+                      {conflict.source_name || "未知实体"} →{" "}
+                      {conflict.target_name || "未知实体"}
+                    </div>
+                    <div className="text-muted-foreground truncate">
+                      {conflict.statement || "关系陈述待审核"}
+                    </div>
+                  </div>
+                  <StatusBadge tone="warning" label="冲突" />
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {status && !status.index.available && (
           <StatusNotice tone="warning" title="本地检索当前不可用">

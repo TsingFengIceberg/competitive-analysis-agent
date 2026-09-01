@@ -47,6 +47,7 @@ from competition.knowledge_query import (
 )
 from competition.knowledge_repo import KnowledgeRepository
 from competition.knowledge_retrieval import RetrievalStrategy, adaptive_strategy, explain_retrieval, feedback_adjustment
+from competition.knowledge_storage import ObjectStore, build_object_store
 from competition.knowledge_types import AUTHORITY_PRIORS, KnowledgeChunk, KnowledgeHit, RetrievalFilters
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ class KnowledgeService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.inbox = self.root / "inbox"
         self.inbox.mkdir(parents=True, exist_ok=True)
+        self.object_store: ObjectStore = build_object_store(self.root / "objects")
         self.parser = parser or DocumentParser()
         self.index = index or KnowledgeIndex(path=self.root / "indexes" / "qdrant")
         self._registration_lock = threading.RLock()
@@ -197,6 +199,8 @@ class KnowledgeService:
             version_no = max([int(existing.get("current_version", 0) if existing else 0), *version_numbers]) + 1
             original_path = self.root / "originals" / _user_segment(user_id) / document_id / f"v{version_no}-{safe_name}"
             _write_atomic(original_path, data)
+            object_key = f"originals/{_user_segment(user_id)}/{document_id}/v{version_no}-{safe_name}"
+            self.object_store.put_bytes(object_key, data, content_type=media_type)
             candidate_fields = {
                 "title": title.strip() or Path(safe_name).stem,
                 "filename": safe_name,
@@ -259,6 +263,7 @@ class KnowledgeService:
                 metadata={
                     "version_no": version_no,
                     "file_path": str(original_path),
+                    "object_key": object_key,
                     "content_hash": digest,
                     "document_fields": candidate_fields,
                 },
@@ -296,6 +301,7 @@ class KnowledgeService:
             job_metadata = job.get("metadata", {})
             version_no = int(job_metadata.get("version_no") or document.get("current_version") or 0)
             file_path = Path(job_metadata.get("file_path") or document.get("file_path") or "")
+            object_key = str(job_metadata.get("object_key") or "")
             candidate_fields = job_metadata.get("document_fields")
             if not isinstance(candidate_fields, dict):
                 candidate_fields = {}
@@ -303,6 +309,16 @@ class KnowledgeService:
             repository.update_job(job_id, status="running", progress=10, started_at=_now(), error=None)
             repository.update_document(document["document_id"], status="processing", error=None)
 
+        if not file_path.is_file() and object_key:
+            try:
+                restored = self.object_store.get_bytes(object_key)
+                _write_atomic(file_path, restored)
+            except Exception as exc:
+                with self._repo() as repository:
+                    repository.update_job(job_id, status="failed", progress=100, error="Stored document is unavailable", finished_at=_now())
+                    result = repository.get_job(job_id)
+                logger.warning("Unable to restore knowledge object %s: %s", object_key, exc)
+                return result or {"job_id": job_id, "status": "failed", "error": "Stored document is unavailable"}
         try:
             parsed = self.parser.parse(file_path, document_for_chunks.get("media_type"))
             normalized_path = self.root / "normalized" / _user_segment(document["user_id"]) / document["document_id"] / f"v{version_no}.md"
@@ -1529,6 +1545,12 @@ class KnowledgeService:
         with self._repo() as repository:
             return repository.list_entity_merge_audits(user_id, space_id=space_id, limit=limit)
 
+    def restore_entity_merge(self, user_id: str, audit_id: str) -> dict[str, Any]:
+        with self._repo() as repository:
+            result = repository.restore_entity_merge(audit_id, user_id=user_id)
+        self._invalidate_result_cache(user_id)
+        return result
+
     def update_space(self, user_id: str, space_id: str, **values: Any) -> dict[str, Any]:
         self._resolve_space(user_id, space_id, roles=REVIEW_ROLES)
         with self._repo() as repository:
@@ -1840,6 +1862,10 @@ class KnowledgeService:
         with self._repo() as repository:
             return repository.list_relation_audits(user_id, relation_id=relation_id, space_id=space_id, limit=limit)
 
+    def relation_conflicts(self, user_id: str, *, space_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        with self._repo() as repository:
+            return repository.list_relation_conflicts(user_id, space_id=space_id, limit=limit)
+
     def create_hypothesis(self, user_id: str, **values: Any) -> dict[str, Any]:
         space = self._resolve_space(user_id, values.get("space_id"), roles=WRITE_ROLES)
         relation_id = values.get("relation_id")
@@ -2114,10 +2140,15 @@ class KnowledgeService:
             database = repository.stats(user_id)
             spaces = repository.list_spaces(user_id)
         index_status = self.index.status()
+        object_store_name = self.object_store.__class__.__name__
         return {
             "database": database,
             "spaces": spaces,
             "index": index_status,
+            "object_store": {
+                "backend": object_store_name.removesuffix("ObjectStore").casefold() or "local",
+                "durable": object_store_name != "LocalObjectStore" or bool(os.getenv("CI_AGENT_KNOWLEDGE_ROOT")),
+            },
             "retrieval": {
                 "semantic_index_available": bool(index_status.get("available")),
                 "lexical_fallback_enabled": os.getenv("CI_AGENT_RAG_LEXICAL_FALLBACK", "true").lower() in {"1", "true", "yes", "on"},

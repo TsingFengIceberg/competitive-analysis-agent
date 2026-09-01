@@ -216,6 +216,12 @@ class KnowledgeDatasetRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class KnowledgeFeedbackDatasetRequest(BaseModel):
+    dataset_name: str = Field(default="feedback-derived", min_length=1, max_length=120)
+    version: str = Field(default="v1", min_length=1, max_length=40)
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
 class KnowledgeExperimentRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     baseline: dict[str, Any] = Field(default_factory=dict)
@@ -243,6 +249,23 @@ class KnowledgeSourceRequest(BaseModel):
     priority: int = Field(default=50, ge=0, le=1000)
     max_pages: int = Field(default=1, ge=1, le=20)
     page_param: str = Field(default="", max_length=40)
+
+
+class KnowledgeSourceUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    uri: str | None = Field(default=None, min_length=8, max_length=2000)
+    product: str | None = Field(default=None, max_length=200)
+    dimension: str | None = Field(default=None, max_length=120)
+    market_scope: str | None = Field(default=None, max_length=200)
+    authority_tier: str | None = Field(default=None, pattern=r"^(primary|structured_fact|change_event|third_party|report)$")
+    media_type: str | None = Field(default=None, max_length=120)
+    source_type: str | None = Field(default=None, max_length=40)
+    enabled: bool | None = None
+    sync_interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    timeout_seconds: int | None = Field(default=None, ge=3, le=120)
+    priority: int | None = Field(default=None, ge=0, le=1000)
+    max_pages: int | None = Field(default=None, ge=1, le=20)
+    page_param: str | None = Field(default=None, max_length=40)
 
 
 class KnowledgeRetrievalFeedbackRequest(BaseModel):
@@ -1579,6 +1602,14 @@ def _queue_knowledge_source_sync(source_id: str, user_id: str, *, manual: bool =
 
     repository = TaskRepository()
     try:
+        active = repository.find_active(
+            user_id=user_id,
+            task_type="knowledge.source_sync",
+            payload_key="source_id",
+            payload_value=source_id,
+        )
+        if active is not None:
+            return active
         key = f"knowledge-source:{source_id}:manual:{__import__('uuid').uuid4().hex}" if manual else f"knowledge-source:{source_id}:due"
         return repository.enqueue(
             user_id=user_id,
@@ -1668,6 +1699,23 @@ async def list_knowledge_sources(
 
     with SourceRepository() as repository:
         return {"sources": repository.list(_get_user_id(fastapi_request), enabled_only=enabled_only, limit=limit)}
+
+
+@router.patch("/knowledge/sources/{source_id}")
+async def update_knowledge_source(source_id: str, body: KnowledgeSourceUpdateRequest, fastapi_request: Request) -> dict:
+    """Edit connector configuration without losing its synchronization history."""
+    from competition.knowledge_sources import SourceRepository
+
+    values = body.model_dump(exclude_unset=True)
+    user_id = _get_user_id(fastapi_request)
+    try:
+        with SourceRepository() as repository:
+            source = repository.update_config(source_id, user_id, **values)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if source is None:
+        raise HTTPException(status_code=404, detail="Knowledge source not found")
+    return {"source": source}
 
 
 @router.delete("/knowledge/sources/{source_id}")
@@ -2160,6 +2208,21 @@ async def list_knowledge_evaluation_datasets(fastapi_request: Request, dataset_n
         return {"datasets": repository.list_datasets(_get_user_id(fastapi_request), dataset_name=dataset_name, limit=limit)}
 
 
+@router.post("/knowledge/evaluation-datasets/from-feedback", status_code=201)
+async def create_feedback_evaluation_dataset(body: KnowledgeFeedbackDatasetRequest, fastapi_request: Request) -> dict:
+    """Turn explicit retrieval judgments into a versioned evaluation dataset."""
+    from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
+
+    with KnowledgeEvaluationRepository() as repository:
+        dataset = repository.build_feedback_dataset(
+            _get_user_id(fastapi_request),
+            dataset_name=body.dataset_name,
+            version=body.version,
+            limit=body.limit,
+        )
+    return {"dataset": dataset}
+
+
 @router.post("/knowledge/retrieval-experiments", status_code=201)
 async def create_knowledge_retrieval_experiment(body: KnowledgeExperimentRequest, fastapi_request: Request) -> dict:
     from competition.knowledge_eval import compute_retrieval_metrics
@@ -2592,6 +2655,26 @@ async def list_knowledge_entity_merge_audits(fastapi_request: Request, space_id:
     return {"audits": await asyncio.to_thread(get_knowledge_service().list_entity_merge_audits, _get_user_id(fastapi_request), space_id=space_id, limit=limit)}
 
 
+@router.post("/knowledge/entity-merge-audits/{audit_id}/restore")
+async def restore_knowledge_entity_merge(audit_id: str, fastapi_request: Request) -> dict:
+    """Restore the entity state captured before a merge operation."""
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        entity = await asyncio.to_thread(
+            get_knowledge_service().restore_entity_merge,
+            _get_user_id(fastapi_request),
+            audit_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "entity": entity}
+
+
 @router.post("/knowledge/insights/refresh")
 async def refresh_knowledge_insights(space_id: str, fastapi_request: Request) -> dict:
     from competition.knowledge_service import get_knowledge_service
@@ -2692,6 +2775,26 @@ async def list_knowledge_relation_audits(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"audits": audits}
+
+
+@router.get("/knowledge/graph/conflicts")
+async def list_knowledge_relation_conflicts(
+    fastapi_request: Request,
+    space_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    from competition.knowledge_service import get_knowledge_service
+
+    try:
+        conflicts = await asyncio.to_thread(
+            get_knowledge_service().relation_conflicts,
+            _get_user_id(fastapi_request),
+            space_id=space_id,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"conflicts": conflicts}
 
 
 @router.post("/knowledge/graph/hypotheses", status_code=201)
@@ -4777,6 +4880,21 @@ async def list_observation_reports(
         }
     finally:
         repository.close()
+
+
+@router.get("/observation/reports/{run_id}")
+async def get_observation_report(run_id: str, fastapi_request: Request) -> dict:
+    """Return the complete report pointer and collection summary for one run."""
+    from competition.observation_scheduler import ScheduleRepository
+
+    repository = ScheduleRepository()
+    try:
+        report = repository.get_report_run(run_id, user_id=_get_user_id(fastapi_request))
+    finally:
+        repository.close()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Observation report not found")
+    return {"report": report}
 
 
 @router.put("/observation/schedules/{schedule_id}")
