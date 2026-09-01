@@ -4,7 +4,9 @@
 
 <h1 align="center">Competitive-Analysis-Agent</h1>
 
-<p align="center"><a href="./README_en.md">English</a> | <a href="./README.md">中文</a></p>
+<p align="center">English | <a href="./README.md">中文</a></p>
+
+<p align="center"><strong>AI-powered competitive-analysis Agent collaboration system</strong></p>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
@@ -14,527 +16,142 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
 
-<p align="center"><strong>An AI-powered competitive intelligence and analysis agent collaboration system.</strong></p>
-
 ## Contents
 
 - [Positioning](#positioning)
-- [Architecture](#architecture)
-- [Core Features](#core-features)
-- [Technology Stack](#technology-stack)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Project Structure](#project-structure)
-- [API](#api)
-- [Competition Requirements](#competition-requirements)
-- [Roadmap](#roadmap)
+- [Core capabilities](#core-capabilities)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Quick start](#quick-start)
+- [Documentation](#documentation)
+- [Technology stack](#technology-stack)
+- [Project structure](#project-structure)
+- [Tests](#tests)
 - [License](#license)
 
 ## Positioning
 
-Competitive-Analysis-Agent is a "digital competitive intelligence team": six specialized AI agents use structured collaboration protocols to collect competitive data, cross-validate evidence, perform multi-dimensional comparisons, and generate interactive reports. The whole workflow is traceable, interruptible, and interactive.
+Competitive-Analysis-Agent turns competitive research into a traceable, reviewable, and interruptible Agent workflow. It starts with a natural-language request and covers scope confirmation, multi-source collection, evidence verification, comparative analysis, quality review, and report generation. It also provides continuous competitor monitoring, a local knowledge base/RAG layer, a research workbench, and a standard A2A Provider.
 
-## Architecture
+## Core capabilities
+
+- **Structured Agent collaboration**: Orchestrator, Collector, Analyst, Reviewer, Writer, and HITL communicate through Pydantic schemas.
+- **Pre-analysis scope confirmation**: Products, decision goal, dimensions, weights, industry, time range, and evidence policy are editable before execution.
+- **Three-layer adaptive dimensions**: Common, industry, and model-proposed dimensions; users can remove or reweight candidates.
+- **Evidence quality loop**: Citations, numeric consistency, source credibility, corroboration, and targeted rework are traceable.
+- **Research workbench**: Version tree, quality gates, semantic verification, sources, evidence graph, and process trace in one workspace.
+- **Continuous monitoring**: Scheduled incremental collection triggers deep analysis only for material changes and supports alerts and complete report history.
+- **Local knowledge base and RAG**: Versioned documents, hybrid retrieval, reranking, GraphRAG, temporal filters, governance, and offline evaluation.
+- **Reliability and recovery**: Durable task queue, schedule leases, standalone Worker, cancellation, retries, fallbacks, and SSE replay.
+- **Standard A2A interoperability**: Independent AgentCard, JSON-RPC, Tasks, Artifacts, standard SSE, and replaceable authentication.
+
+## Architecture at a glance
 
 ![System architecture](images/architecture.png)
 
-### Six agent roles
+```text
+Next.js UI ── REST/SSE ── FastAPI Gateway
+                              │
+                       LangGraph Workflow
+             Orchestrator → Collector → Analyst
+                                  ↓          │
+                              Reviewer ←─────┘
+                                  ↓
+                           Writer → HITL Gate
+                              │
+                SQLite + Qdrant + Object Storage
+                              │
+                     A2A Provider (separate adapter)
+```
 
-| Agent | Responsibility | Output |
-|-------|----------------|--------|
-| **Orchestrator** | Intent parsing, complexity assessment, dimension weights, and dynamic schema (depth x industry) | `OrchestrationResult` |
-| **Collector** | Multi-source search, deduplication, coverage self-assessment, and VoC survey generation | `CollectedDataPoint[]` |
-| **Analyst** | Comparison matrix, SWOT, trend forecast, and dynamic dimensions | `AnalysisResult` |
-| **Reviewer** | Eight quality checks, gap detection, and targeted rework | `ReviewVerdict` |
-| **Writer** | Structured report generation, `[n]` citations, and traceability map | `ReportData` |
-| **HITL Gate / Rework Intent** | Human approval and natural-language routing to recollection, reanalysis, or rewrite | `HitlDecision` / `ReworkIntent` |
+See [Architecture and workflow](docs/architecture_en.md) for state contracts, versions, HITL, and event design.
 
-Agents communicate through structured Pydantic schemas rather than plain natural language. Prompts, inputs, outputs, and decisions can be inspected in the frontend process trace panel.
-
-## Core Features
-
-### Closed-loop quality feedback
-
-Reviewer performs eight quality checks covering data coverage, cross-validation, source credibility, freshness, and dimension completeness, plus literal verification of numbers in source content. Gaps route the workflow back to Collector or Analyst for at most two rounds. Rework targets only missing product-dimension pairs instead of rerunning the entire pipeline, and each round records improvement and repair deltas.
-
-### Evidence traceability
-
-Every analytical claim carries an `[n]` citation. Hovering a citation opens a source card with URL, collection time, confidence, and verification state, with a direct link to the original source. Domains receive strong, medium, or weak evidence strength based on historical credibility, and low-credibility sources are down-weighted.
-
-### Scope confirmation before analysis
-
-Before execution, the system creates an editable **Analysis Brief** containing products, decision objective, dimension weights, industry, audience, time range, analysis depth, and evidence policy. Analysis starts only after ambiguity is resolved, at least two concrete products are confirmed, and a decision objective is present.
-
-### Session reliability and recovery
-
-Realtime SSE events and lightweight polling jointly maintain analysis state. Polling cannot overwrite an in-flight confirmation, cancellation, approval, or rework action. Network failures preserve the input draft and actionable error, while manual retry remains available. SSE reconnects resume from the last event ID, and a refreshed page reconstructs the session from persisted state.
-
-### Continuous competitor monitoring
-
-The **Competitor Monitoring** workspace in the sidebar manages scheduled or fixed-interval incremental collection. The system persists fact baselines and every run, and starts a full deep analysis only when a material change is detected, avoiding repeated searches and model calls. Users can edit, pause, run immediately, or delete schedules and review the change timeline, run history, alert rules, quiet hours, cooldowns, pending alerts, and delivery history in one place. Runs with material changes expose direct links to their complete reports, while a latest-changed shortcut and a separately paginated report archive keep every older report accessible even when recent runs are unchanged. Unchanged runs are explicitly marked as having no report version. Tasks, rules, and records are isolated per user.
-
-### Local knowledge base and basic RAG
-
-The **Local Knowledge Base** workspace supports file uploads, imports from a restricted Inbox path, and promotion of selected monitoring facts. Material changes found by continuous monitoring and newly generated analysis-report versions automatically enter the knowledge-governance workflow. Content confidence, source credibility, report quality gates, and groundedness determine automatic admission or review quarantine. Pending content keeps complete lineage but is not retrievable by default, and the UI can create a traceable retry linked to a failed job. TXT, Markdown, HTML, CSV, and JSON use lightweight parsers; PDF, Office documents, and images are processed locally by Docling and RapidOCR. Original files, normalized Markdown, document versions, structured chunks, and ingestion jobs are stored separately. Identical content does not create another version, and a failed replacement keeps the previous indexed version usable.
-
-Retrieval combines BGE-M3 dense vectors and Chinese-aware FastEmbed BM25 sparse vectors through Qdrant RRF fusion, followed by bge-reranker-v2-m3. Filters cover user, knowledge space, product, dimension, market, authority tier, source type, publication time, and current, historical, all-version, or as-of temporal modes. The query planner keeps focused fact lookups on a low-cost direct path and decomposes comparative, temporal, or multi-dimensional requests into batched first-hop queries plus an evidence-bridging hop before fusing repeated hits. Old versions remain in SQLite and Qdrant, and rebuilding restores every successfully indexed version. Promoting monitoring facts imports their complete version sequence using the original observation times. Analysis consumes knowledge through three separate context layers: citable raw evidence, layered long-horizon insights, and historical-report memory. Historical reports may reveal prior conclusions, suggest questions, and guide fresh searches, but they never enter `collected_data` or become factual citations. The current report thread is excluded to prevent self-reference. When semantic index or local model assets are unavailable, the service automatically falls back to bounded SQLite lexical retrieval and marks the degraded state in retrieval logs, report provenance, and the quality workspace.
-
-Knowledge source connectors support web pages, RSS/Atom feeds, Sitemaps, and JSON APIs. Source URLs are checked for supported schemes, embedded credentials, and private network targets. Manual and due refreshes run through the durable background task queue, using ETag, Last-Modified, and content hashes to avoid duplicate ingestion; failures record cooldown and retry state, while discovered entries are retained in document metadata. The workspace exposes entry counts, sync history, and a high-priority retry that clears connector backoff. Retrieval accepts an `auto` mode that selects sparse, hybrid, freshness-first, or multi-hop behavior from fact, comparison, temporal, and relationship intent. User feedback on retrieved chunks (relevant, not relevant, or citation used) becomes a bounded ranking prior and invalidates stale caches. Online latency, result-count, and cache-hit samples are persisted with weighted summaries, and entity aliases can be edited within knowledge-space permissions with conflict checks.
-
-The GraphRAG relationship layer stores typed products, capabilities, prices, integrations, audiences, market events, sources, and historical reports, plus time-bounded relationships, in SQLite without adding a graph database. Relationships are generated deterministically only from approved document versions and events, retaining document, version, original chunk, event, authority, and observation-time provenance. Focused fact questions continue to use hybrid retrieval; graph retrieval activates only for cross-product, relational, or temporal-evolution questions. A graph path may support a factual conclusion only when its original evidence chunk also enters the current `collected_data`; otherwise it is navigation and analysis memory only. Historical-report relationships are never citation eligible, and the current report thread remains excluded. Price relationships close previous validity intervals by version, while differing prices from simultaneously valid approved sources are surfaced as conflicts.
-
-Knowledge spaces provide owner, editor, and viewer roles. A space can require document approval and set a retention period. Pending or rejected content cannot become Agent evidence; expired content is removed from the index and file store while a body-free deletion audit remains. Space owners can classify reviews as verified, source conflict, content error, or outdated, with an explanation and correction. The system preserves an immutable review trail and adjusts source-domain credibility for later automatic admission decisions. Approved versions resolve canonical product entities, cluster similar cross-source facts into single-source or corroborated events, and generate long-horizon insights in three explicit layers: facts, inferences, and hypotheses requiring validation. The workspace exposes version changes, numeric conflicts, the relationship graph, entity events, layered insights, governance state, and human review history together. The graph can show current, historical, or all relationships, filter relation types, and open the original evidence chunk.
-
-Collector reuses local evidence before fresh web collection. Reviewer extracts factual claims from the comparison matrix, SWOT, trends, and dynamic insights, then batches explicit citations and local semantic retrieval to classify each claim as supported, contradicted, or insufficient while checking numbers and polarity. Writer may cite only evidence classified as supporting; contradictory and context-only material remains available in report audit data. Hits and verification results flow through the existing `CollectedDataPoint`, Analysis Context Pack, `ReviewVerdict`, `ReportData`, and `traceability_map` contracts. Missing model or index assets produce an explicit degraded verification state and do not block the analysis pipeline.
-
-Retrieval verification supports balanced, freshness-first, and authority-first ranking profiles. Each hit exposes its freshness score, source-authority score, and applied profile so evidence ordering is explainable. `POST /api/competition/knowledge/evaluate` accepts versioned offline cases, computes Recall, MRR, NDCG, abstention, traceability, verification, planning, and governance metrics, applies thresholds, and persists pass/fail runs for regression review. Versioned evaluation datasets and baseline/candidate retrieval experiments are stored separately, with online latency trends and metric deltas. The knowledge workspace shows recent evaluations, experiments, online trends, and the current user's retrieval quota; over-limit requests return `429` with `Retry-After`.
-
-Competitor Monitoring also supports durable intelligence subscriptions. Users can save products, dimensions, minimum severity, and notification channels. Subscriptions reuse the existing alert engine's matching, deduplication, and cooldown logic. Alert history can be marked trusted, ignored, or corrected; correction text and timestamps are persisted for human governance and future alert tuning. The endpoints are `/api/competition/subscriptions` and `/api/competition/alerts/events/{event_id}/feedback`, with user-scoped isolation for subscriptions, feedback, and alerts.
-
-### Research workbench
-
-Completed reports open in a full-screen research workbench with version tree, report, quality gate, semantic verification, long-horizon insights, sources, evidence graph, and process views. The verification view shows groundedness, citation precision, numeric consistency, and the supporting, contradictory, or insufficient evidence for each claim, with jumps to report sources and exact local historical chunks. The insight view preserves the facts, inferences, and hypotheses matched when that report version was generated and distinguishes evidence-linked items from context-only signals. The workbench also supports historical version navigation, diffs, exports, quality issue locating, and jumps from claims to report sections or source pages. The report directory, three-column scroll regions, and long text have independent boundaries to prevent overlap.
-
-Every report version stores an immutable full snapshot containing the report body, analysis result, reviewer verdict, stage results, token usage, collected data, Analysis Brief, original request, and rework feedback. The version-detail API and workbench load these fields for the selected version, so quality, source, evidence, and process panels do not mix in current-version state. Historical records are labeled as “complete snapshot”, “partial snapshot”, or “unavailable”; missing legacy data is reported explicitly instead of being fabricated.
-
-### Human report editing
-
-The report editor provides per-section drafts, a changed-section counter, and one unified submit action. Opening an editor without changing text does not mark a section as changed; submitting automatically includes the currently open draft and reports update count and improvement ratio. Tables and charts remain read-only so structured report data is not accidentally damaged.
-
-### Evidence graph
-
-The evidence graph maps report claims and `[n]` citations, counts total, linked, and unsupported claims, and distinguishes multi-source, single-source, and unsupported evidence. Selecting a claim returns to its report section; selecting a source opens the source inspector with verification, credibility, and original URL details.
-
-### Parallel report generation
-
-Writer generates independent report chapters in bounded parallel while preserving chapter order. Tasks have concurrency limits, timeouts, cancellation, saturation protection, and deterministic fallbacks. A failed chapter does not block the complete report, and chapter-level progress is emitted in process events.
-
-### Quality gate and version audit
-
-Every report version stores an independent quality snapshot covering dimension coverage, source quality, single/multi/unsupported claims, blocking issues, warnings, reviewer notes, rework rounds, and improvement metrics. Quality and evidence information travel with the version for before/after audits.
-
-### BranchTree
-
-Agent execution is versioned. Each HITL intervention can create a branch, fork from any historical version, compare versions, and merge branches. After a report is generated, users can type a natural-language rework request in the same input box. Rework Intent routes it to `replan`, `reanalyze`, or `rewrite`, and records the result as a traceable version.
-
-### Rework input and version tracking
-
-Initial and rework queries appear as user bubbles before their corresponding execution rounds, keeping human input, agent phase messages, and the version tree aligned.
-
-### Dynamic schema
-
-The three-layer dimension model combines common fixed dimensions, industry candidates, and an LLM-adaptive layer. Common and industry dimensions are visible in the Analysis Brief and can be removed or reweighted. Confirmed `effective_dimensions` are shared by Collector, Analyst, Reviewer, and Writer. Analyst may propose evidence-backed dynamic blocks with a reason, source, and inclusion decision, preventing silent scope expansion.
-
-### Observability
-
-- **DAG execution graph**: five node states, animated edges, dashed feedback loops, and self-assessment dots.
-- **Process trace**: inspect each node's prompt, input, output, token usage, and structured JSON.
-- **Traceability chain**: jump from a report claim to its source data.
-- **Human correction panel**: edit report chapters online and quantify improvement.
-
-### Evolving source credibility
-
-Each source domain has a credibility score from 0 to 1. Reviewer verification updates it across sessions using verified, conflict, error, and outdated outcomes. Pages are persisted in full so downstream agents can verify claims against original content instead of relying only on summaries.
-
-### Agent reliability
-
-A circuit breaker interrupts repeated calls after three consecutive duplicates. Per-agent timeouts and fallback handling prevent a single model failure from blocking the complete workflow.
-
-### Preference profiles
-
-`profile.md` defines analysis style, dimension weights, source rules, and other durable preferences. Orchestrator injects the profile into prompts at session start.
-
-### Feishu integration
-
-The system can send completion notifications, export reports to Feishu documents automatically, and expose a manual Feishu export action. Each feature is independently switchable and disabled by default.
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Orchestration** | LangGraph StateGraph, conditional routing, and feedback loops |
-| **Backend** | Python 3.12, FastAPI, Pydantic v2, and SQLite |
-| **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, and [DeerFlow](https://github.com/bytedance/deer-flow) UI/auth components |
-| **DAG visualization** | [@xyflow/react](https://reactflow.dev/) |
-| **LLM** | OpenAI-compatible APIs |
-| **Search** | Tavily, DuckDuckGo, Jina AI, and provider-native web search |
-| **RAG retrieval** | BGE-M3, FastEmbed BM25, Qdrant Local RRF fusion, and bge-reranker-v2-m3 |
-| **Document parsing** | Docling, RapidOCR, and BeautifulSoup for PDF, Office, image, HTML, Markdown, CSV, JSON, and TXT |
-| **Deployment** | uv + pnpm, with Next.js proxying FastAPI |
-| **Persistence** | SQLite for business/knowledge metadata, Qdrant Local for rebuildable vectors, and `.ci-agent/knowledge` for source and normalized files |
-
-## Quick Start
+## Quick start
 
 ### Requirements
 
-| Dependency | Version |
-|------------|---------|
-| Python | 3.12+ |
-| uv | Latest stable |
-| Node.js | 22+ |
-| pnpm | 10+ |
-
-### Make commands (recommended)
+Python 3.12+, uv, Node.js 22+, and pnpm 10+.
 
 ```bash
-cp .env.example .env    # Fill in DOUBAO_API_KEY and other keys
-make install            # Install dependencies
-make dev                # Start the low-I/O local stack
+make install
+make dev
 ```
 
-Open `http://localhost:2026/competition` after startup. `make dev` reuses an existing frontend build when sources are unchanged and does not enable backend file watching, which is suitable for shared servers.
-
-Common commands:
+Open `http://localhost:2026/competition`. Common commands:
 
 ```bash
-make stop               # Stop services
-make restart            # Restart in low-I/O mode
-make watch              # Hot reload (high I/O; use only when needed)
-make start              # Start with an existing production build
-make test               # Run tests
-make lint               # Run linters
-make build              # Rebuild the frontend
+make stop
+make restart
+make watch
+make start
+make test
+make lint
+make build
 ```
 
-On hosts without pnpm or with restricted process networking, the fallback build uses the installed Next.js binary and Webpack. Production startup reuses `.next` output and does not require file watching.
-
-To use different ports:
-
-```bash
-BACKEND_PORT=8002 FRONTEND_PORT=2027 make dev
-```
-
-### Start services separately
-
-```bash
-# Terminal 1: backend
-cd backend
-PYTHONDONTWRITEBYTECODE=1 uv run --locked --no-dev --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8001
-
-# Terminal 2: frontend (run pnpm build once first)
-cd frontend
-pnpm start --hostname 0.0.0.0 --port 2026
-```
-
-## Configuration
-
-The project supports two configuration modes selected by `CI_AGENT_CONFIG_MODE`:
-
-| Mode | Trigger | Configuration source | Use case |
-|------|---------|----------------------|----------|
-| **DB mode** (default) | Unset or `CI_AGENT_CONFIG_MODE=db` | SQLite `user_settings`, managed in Settings | Production and multi-user isolation |
-| **File mode** | `CI_AGENT_CONFIG_MODE=file` | `config.yaml` + `.env` | Debugging, demos, and no-account use |
-
-### Continuous monitoring runtime
-
-FastAPI starts an in-process observation scheduler by default, which is appropriate for the current single-process deployment. The following environment variables control it:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CI_AGENT_OBSERVATION_SCHEDULER_ENABLED` | `true` | Start and stop the observation scheduler with FastAPI |
-| `CI_AGENT_OBSERVATION_POLL_SECONDS` | `30` | Interval for scanning due schedules; runtime minimum is 5 seconds |
-| `CI_AGENT_NOTIFICATION_WEBHOOK` | empty | Optional alert webhook; Feishu delivery continues to use current user settings |
-
-Manage schedules and alert rules at `/competition/monitoring`. Multi-process or horizontally scaled deployments should enable only one scheduler instance or move polling to a dedicated task worker.
-
-### Local RAG models and storage
-
-After installing dependencies, prepare the local models once. This requires several GB of disk and network access to Hugging Face:
-
-```bash
-uv run --project backend --locked python scripts/setup-rag-models.py
-```
-
-Models are stored under `.ci-agent/models`; originals, normalized Markdown, and the Qdrant index are stored under `.ci-agent/knowledge`. Both locations are ignored by Git. Runtime loading is local-only and never downloads models automatically. Open `/competition/knowledge` to manage documents. The default per-file limit is 50 MB; server-side files may be placed in `.ci-agent/knowledge/inbox` and imported by relative path.
-
-FastAPI warms the local retrieval models in the background by default so the first analysis does not pay the full model-loading cost. Analysis retrieval normalizes common product aliases and bilingual dimension names, batch-encodes multiple product-by-dimension queries, and caches repeated query vectors and retrieval results. Bounded bilingual term expansion is opt-in; set `CI_AGENT_RAG_QUERY_EXPANSION=true` to enable it, without an additional LLM call. Activating a new document version, deleting a document, or rebuilding the index automatically invalidates the affected user's result cache.
-
-Retrieval and evaluation endpoints apply configurable per-user resource quotas. The defaults are 600 searches and 30 offline evaluations per minute per user; tune them with `CI_AGENT_RAG_SEARCH_RATE_LIMIT` and `CI_AGENT_RAG_EVALUATION_RATE_LIMIT`. These limits protect expensive operations without restricting document browsing, reports, or existing monitoring history.
-
-Evaluation reports also include `query_expansion.baseline`, `query_expansion.expanded`, and `query_expansion.delta` to compare Recall, MRR, NDCG, and P95 latency with bounded query expansion disabled/enabled; keep it enabled only when the golden set demonstrates a gain.
-
-The default strict set, `evals/rag/real-v1.json`, contains human-curated snapshots of public first-party competitor documentation with source URLs, capture times, and expected labels. `basic-v1.json` remains an explicitly synthetic unit-regression set. Neither enters the business knowledge base. The command below runs ingestion, cost-routed query planning, retrieval, relationship construction, and claim verification against temporary SQLite and in-memory Qdrant stores. It reports Recall@5, MRR, NDCG@5, no-answer abstention accuracy, traceability completeness, P50/P95 latency, direct/multi-hop route accuracy, decomposition coverage, claim-status accuracy, contradiction recall, citation precision, numeric-consistency accuracy, groundedness, governance admission accuracy, quarantine recall, historical-memory recall, memory-to-evidence isolation, current-thread exclusion, graph-route accuracy, relation Recall@5, relation traceability, temporal-relation accuracy, and unsupported-relation rate, then writes the detailed report under the ignored `.ci-agent/evaluations/` directory:
-
-```bash
-make rag-eval
-```
-
-The following environment variables override storage and retrieval defaults:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CI_AGENT_DB_PATH` | `.ci-agent/competition.db` | SQLite path for business and knowledge metadata |
-| `CI_AGENT_KNOWLEDGE_ROOT` | `.ci-agent/knowledge` | Root for originals, normalized files, Inbox, and indexes |
-| `CI_AGENT_RAG_EMBEDDING_PATH` | `.ci-agent/models/embeddings/bge-m3` | Dense embedding model directory |
-| `CI_AGENT_RAG_EMBEDDING_DIM` | `1024` | Dense vector dimension; must match the embedding model and Qdrant collection |
-| `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-encoder reranker directory |
-| `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 model cache |
-| `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local directory |
-| `CI_AGENT_RAG_QDRANT_URL` | empty | Remote Qdrant URL; replaces Local mode when set |
-| `CI_AGENT_RAG_QDRANT_API_KEY` | empty | Remote Qdrant API key (inject through environment only) |
-| `CI_AGENT_OBJECT_STORE` | `local` | Original-document object store: `local`, `s3`, `minio`, or `r2` |
-| `CI_AGENT_OBJECT_STORE_ROOT` | `.ci-agent/knowledge/objects` | Local object-store root |
-| `CI_AGENT_OBJECT_STORE_BUCKET` | empty | S3-compatible bucket; required for S3 mode |
-| `CI_AGENT_OBJECT_STORE_ENDPOINT` | empty | S3/MinIO/R2-compatible endpoint |
-| `CI_AGENT_OBJECT_STORE_PREFIX` | `knowledge` | Remote object-store prefix |
-| `CI_AGENT_RAG_MAX_UPLOAD_BYTES` | `52428800` | Maximum uploaded file size in bytes |
-| `CI_AGENT_RAG_MIN_SCORE` | `0.08` | Minimum final reranked score |
-| `CI_AGENT_RAG_PREWARM` | `true` | Warm local retrieval models in the background after FastAPI starts |
-| `CI_AGENT_RAG_QUERY_VECTOR_CACHE_SIZE` | `256` | In-process query-vector LRU capacity; set to `0` to disable |
-| `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | User- and filter-isolated retrieval-result LRU capacity |
-| `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | Retrieval-result cache lifetime; set to `0` to disable |
-| `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | Enable bounded bilingual query-term expansion without an extra LLM call |
-| `CI_AGENT_RAG_LEXICAL_FALLBACK` | `true` | Enable SQLite lexical fallback when semantic models or the index are unavailable |
-
-Modern `.docx`, `.xlsx`, and `.pptx` files first use a standard OOXML text fallback when Docling is unavailable; PDFs, images, legacy binary Office files, and complex layouts continue to use local Docling + RapidOCR. Connector settings can be edited with `PATCH /api/competition/knowledge/sources/{source_id}`, which resets conditional-request state when identity fields change. `POST /api/competition/knowledge/evaluation-datasets/from-feedback` materializes explicit retrieval judgments as a versioned evaluation set. Multi-process deployments can run `python -m app.task_worker`; the observation scheduler uses SQLite leases to prevent duplicate execution. A2A subscriptions support incremental replay through `Last-Event-ID`.
-
-For S3-compatible object storage, install the optional dependency with `uv sync --extra rag-remote --project backend`.
-
-### DB mode
-
-Open `/competition/settings` and configure LLM providers, API keys, search backends, Feishu credentials, and per-agent parameters. Settings are stored per user in `.ci-agent/competition.db` and synchronized across devices after login.
-
-The settings panel contains:
-
-- **API credentials**: LLM provider name/key/base URL, Tavily/Jina keys, and multiple Feishu credential sets.
-- **Configuration groups**: independent presets with search and Feishu switches and per-agent overrides.
-- **Per-agent overrides**: provider, model, temperature, timeout, and max turns for each agent.
-
-### File mode (debug/demo)
-
-File mode reads `config.yaml` and `.env` directly and can be used without an account. LLM and search keys live in `.env`; model routing, search switches, Feishu switches, and per-agent parameters live in `config.yaml`.
+DB configuration mode is the default. For debugging or demos:
 
 ```bash
 cp .env.example .env
 cp config.example.yaml config.yaml
-# Edit .env and config.yaml
 CI_AGENT_CONFIG_MODE=file make dev
 ```
 
-### Configuration sync
+Override ports with `BACKEND_PORT=8002 FRONTEND_PORT=2027 make dev`. See [Operations and troubleshooting](docs/operations_en.md) for startup, SSH tunneling, and diagnostics.
 
-The `scripts/sync-user-config.py` utility migrates settings between File and DB modes:
+## Documentation
 
-```bash
-uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py push <user_email>
-uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py pull <user_email>
-uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py push <user_email> --dry-run
-uv run --project backend --locked --no-dev --no-sync python scripts/sync-user-config.py pull <user_email> --dry-run
-```
+| Document | Use it for |
+| --- | --- |
+| [Architecture and workflow](docs/architecture_en.md) | Agent orchestration, state, HITL, versions, and reliability |
+| [RAG and knowledge governance](docs/rag_en.md) | Ingestion, retrieval, GraphRAG, evaluation, and permissions |
+| [Configuration guide](docs/configuration_en.md) | Models, search, monitoring, RAG storage, and Feishu |
+| [A2A Provider](docs/a2a-provider_en.md) | AgentCard, JSON-RPC, Tasks, SSE, and authentication |
+| [API reference](docs/api_en.md) | REST, SSE, monitoring, and knowledge endpoints |
+| [Operations and troubleshooting](docs/operations_en.md) | Startup, tests, recovery, logs, and remote access |
+| [Competition requirements coverage](docs/requirements_en.md) | Defense requirements mapped to implementation |
+| [Roadmap](docs/roadmap_en.md) | Delivered capabilities, current boundaries, and next steps |
 
-### Environment file
+Chinese documentation is indexed at [docs/README.md](docs/README.md). Keep the root README and README_en.md synchronized in features and structure.
 
-Copy `.env.example` and fill only the providers and integrations you use. Typical variables include `DOUBAO_API_KEY`, `DEEPSEEK_API_KEY`, `QWEN_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_NOTIFY_OPEN_ID`, and `FEISHU_TENANT`. Search falls back to free DuckDuckGo search when optional search keys are absent.
+## Technology stack
 
-DB mode does not require `.env` or `config.yaml`; File mode does.
+| Layer | Technology |
+| --- | --- |
+| Orchestration | LangGraph StateGraph, conditional routing, feedback loops |
+| Backend | Python 3.12, FastAPI, Pydantic v2, SQLite |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
+| Retrieval | BGE-M3, FastEmbed BM25, Qdrant RRF, bge-reranker-v2-m3 |
+| Parsing | Docling, RapidOCR, OOXML fallback, BeautifulSoup |
+| Tasks | SQLite durable queue, schedule leases, standalone Worker |
+| Interoperability | `a2a-sdk==1.1.2`, A2A protocol 1.0 |
+| Deployment | uv, pnpm, Docker configuration, Make commands |
 
-### `config.yaml`
-
-File mode uses built-in defaults. Copy `config.example.yaml` to assign providers, models, search switches, Feishu switches, and per-agent overrides. The file uses a two-level provider and configuration-group structure with an `active_group` selector. Each agent can override `provider` and `model` or inherit the group defaults.
-
-### Feishu integration (optional)
-
-Enable notification, automatic document export, or manual document export independently in the active configuration group. Prepare an enterprise self-built Feishu application, enable the bot capability, publish the required permissions, and fill the four Feishu variables in `.env`.
-
-### Configuration locations
-
-```text
-competitive-analysis-agent/
-├── .env               # API keys (not committed)
-├── config.yaml        # Agent tuning (not committed)
-├── .env.example       # Key template
-└── config.example.yaml # Parameter template
-```
-
-## Project Structure
+## Project structure
 
 ```text
-competitive-analysis-agent/
-├── backend/
-│   ├── app/                           # FastAPI entrypoint and gateway routes
-│   ├── packages/competition/           # LangGraph agents, schemas, tools, DB, and BranchTree
-│   │   └── competition/knowledge_*.py   # Parsing, chunking, versioning, indexing, and retrieval
-│   ├── tests/                          # Backend tests
-│   ├── pyproject.toml                  # uv workspace configuration
-│   └── uv.lock                         # Locked dependencies
-├── frontend/
-│   └── src/
-│       ├── app/competition/             # Competition routes and shell
-│       │   └── knowledge/               # Knowledge management and retrieval verification
-│       ├── app/api/competition/         # SSE proxy route
-│       └── components/competition/      # Chat, report, workbench, evidence, and trace UI
-├── scripts/                            # Build, run, stop, and configuration helpers
-├── images/                             # Documentation images
-├── .env.example                         # Environment template
-├── config.example.yaml                  # Agent configuration template
-├── Makefile                             # Build/start/test shortcuts
-├── README.md                            # Chinese documentation
-└── README_en.md                         # English documentation
+backend/app/                         # FastAPI gateway, A2A, task Worker
+backend/packages/competition/        # LangGraph, schemas, RAG, monitoring, reports
+backend/tests/                       # Backend unit and integration tests
+frontend/src/app/competition/        # Analysis, monitoring, knowledge, and settings pages
+frontend/src/components/competition/ # Reports, DAG, workbench, and evidence components
+docs/                                # Topic documentation in both languages
+evals/rag/                           # Offline RAG evaluation sets
+scripts/                             # Startup, model, evaluation, and sync scripts
+images/                              # Architecture and UI assets
 ```
 
-## Competition Requirements
+Runtime databases, models, source files, and evaluation reports live under `.ci-agent/` and are not committed.
 
-| Requirement | Description | Implementation |
-|-------------|-------------|----------------|
-| R1 | Clear six-agent boundaries | `nodes/orchestrator.py`, `collector.py`, `analyst.py`, `reviewer.py`, `writer.py`, `hitl_gate.py` |
-| R2 | Dual-track collection and survey | `nodes/collector.py` VoC Aggregator |
-| R3 | Product knowledge schemas | `schema.py` |
-| R4 | Structured JSON communication | `schema.py` result and decision models |
-| R5 | Eight reviewer gap checks and rework | `nodes/reviewer.py` + `router.py` |
-| R6 | Quantified feedback improvement | `competition_router.py` improvement ratio |
-| R7 | `[n]` citations and traceability map | `nodes/writer.py` + `source-card.tsx` |
-| R8 | Schema validation, retry, and fallback | `schema.py` model validation |
-| R9 | Live DAG highlighting and animated edges | `dag.py` + `dag-graph.tsx` |
-| R10 | Inspectable prompts, I/O, decisions, and tokens | Process trace UI + `/trace` |
-| R11 | Complete end-to-end workflow | `graph.py` + SSE gateway + frontend |
-| R12 | Hallucination controls | Reviewer and Analyst evidence checks |
-| R13 | Timeout, retry, and degradation | Per-agent config and error handler |
-| R14 | BranchTree, checkpoints, and source credibility | `branchtree/` + `db.py` |
-| R15 | Quantified coverage, validation, and improvement | Writer metrics + schemas |
-
-## Standalone A2A Provider
-
-The project exposes an independent Provider using the official `a2a-sdk==1.1.2` (A2A protocol `1.0`). The SDK version is pinned so AgentCard, JSON-RPC, Task, Artifact, and SSE serialization remain reproducible; the Provider has no dependency on a particular client or Hub.
-
-Default endpoints:
-
-| Capability | Address |
-|------------|---------|
-| AgentCard | `GET /.well-known/agent-card.json` |
-| JSON-RPC | `POST /a2a` |
-| Standard REST binding | `/a2a/message:send`, `/a2a/message:stream`, `/a2a/tasks/{id}`, `/a2a/tasks/{id}:cancel` |
-
-Discover the AgentCard after startup:
+## Tests
 
 ```bash
-curl http://localhost:8001/.well-known/agent-card.json
+make test
+make lint
+make rag-eval
+cd backend && uv run --locked pytest tests/test_a2a_provider.py
 ```
 
-Bearer/API-key authentication is required by default in production. Set `CI_AGENT_A2A_API_KEY` and send it as `Authorization: Bearer <key>`; `X-A2A-Client-ID` and `X-A2A-Tenant` provide caller and tenant boundaries. Only local debugging should explicitly set `CI_AGENT_A2A_AUTH_REQUIRED=false`. A2A tasks, context mappings, status events, and report artifacts are persisted in SQLite and remain separate from internal `thread_id` values.
-
-Use `CI_AGENT_A2A_ENABLED` to toggle the Provider. `CI_AGENT_A2A_MAX_CONCURRENCY`, `CI_AGENT_A2A_RATE_LIMIT_PER_MINUTE`, and `CI_AGENT_A2A_MAX_REQUEST_BYTES` control concurrency, rate, and request size; `CI_AGENT_A2A_TASK_TIMEOUT_SECONDS`, `CI_AGENT_A2A_MAX_ATTEMPTS`, and `CI_AGENT_A2A_LEASE_SECONDS` control task timeouts, bounded retries, and cross-process execution leases. After a restart, submitted/working tasks are recovered from SQLite; completed, failed, canceled, or input-required tasks are not started again.
-
-Send a text request (the JSON-RPC method names are defined by the SDK):
-
-```bash
-curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -H 'X-A2A-Client-ID: cli-demo' -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"messageId":"m-1","role":"ROLE_USER","parts":[{"text":"Compare Cursor and GitHub Copilot, focusing on team adoption cost"}]}}}'
-```
-
-The `result.task.id` value is the external A2A Task ID. Use `GetTask` to poll and `SendStreamingMessage` for standard SSE. After a disconnect, call `GetTask` or `SubscribeToTask` to recover. When a task is `TASK_STATE_INPUT_REQUIRED`, send another Message with the same `taskId` and `contextId` (a DataPart may carry `{"brief": {...}}`) to continue. Use `CancelTask` to stop work; the final report is returned as an `application/json` Artifact.
-
-```bash
-curl -N -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"2","method":"SendStreamingMessage","params":{"message":{"messageId":"m-2","taskId":"<task-id>","contextId":"<context-id>","role":"ROLE_USER","parts":[{"text":"Confirm the analysis brief and continue"}]}}}'
-curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"3","method":"GetTask","params":{"id":"<task-id>"}}'
-curl -X POST http://localhost:8001/a2a -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -H 'Authorization: Bearer <key>' -d '{"jsonrpc":"2.0","id":"4","method":"CancelTask","params":{"id":"<task-id>"}}'
-```
-
-Run the A2A regression tests:
-
-```bash
-cd backend
-uv run --locked pytest tests/test_a2a_provider.py
-```
-
-## API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/competition/analyze` | Create an analysis task and return a thread ID |
-| GET | `/api/competition/stream/{thread_id}` | SSE progress and agent output stream |
-| GET | `/api/competition/report/{thread_id}` | Get report and phase data |
-| GET | `/api/competition/report/{thread_id}/history` | Get version history and branches |
-| GET | `/api/competition/report/{thread_id}/versions/{version}` | Get the immutable full snapshot for one report version |
-| GET | `/api/competition/report/{thread_id}/trace` | Get agent execution trace |
-| PATCH | `/api/competition/report/{thread_id}/sections` | Edit report sections |
-| PUT | `/api/competition/report/{thread_id}` | Submit HITL decision |
-| POST | `/api/competition/{thread_id}/cancel` | Stop a running analysis |
-| GET | `/api/competition/report/{thread_id}/export` | Export Markdown or JSON |
-| GET | `/api/competition/me` | Get current user information |
-| GET | `/api/competition/history` | List analysis history |
-| GET | `/api/competition/observation/runtime` | Get continuous monitoring scheduler status |
-| GET / POST | `/api/competition/observation/schedules` | List or create observation schedules for the current user |
-| PUT / DELETE | `/api/competition/observation/schedules/{schedule_id}` | Edit or delete an observation schedule |
-| POST | `/api/competition/observation/schedules/{schedule_id}/run-now` | Run an observation schedule immediately |
-| GET | `/api/competition/observation/runs` | List observation run history for the current user |
-| GET | `/api/competition/intelligence/changes` | List the incremental intelligence change timeline |
-| GET | `/api/competition/intelligence/changes/{change_id}` | Get one change with its current fact, sources, and version history |
-| GET | `/api/competition/intelligence/items` | List intelligence facts available for explicit knowledge ingestion |
-| GET | `/api/competition/intelligence/sources` | Inspect source health, failures, latency, and fallback diagnostics |
-| GET | `/api/competition/knowledge/sources/health` | Inspect knowledge connector health, due count, and failure totals |
-| POST | `/api/competition/knowledge/sources/{source_id}/sync` | Queue one knowledge-source refresh in the durable worker |
-| POST | `/api/competition/knowledge/sources/{source_id}/retry` | Clear connector cooldown and queue a high-priority retry |
-| GET | `/api/competition/knowledge/status` | Get knowledge database, model, and index status |
-| GET | `/api/competition/knowledge/retrieval-logs` | List the current user's retrieval plans, filters, selected chunks, latency, and status |
-| GET / POST / PATCH | `/api/competition/knowledge/spaces` | Manage project knowledge spaces, approval, and retention policies |
-| GET / PUT / DELETE | `/api/competition/knowledge/spaces/{space_id}/members` | Manage viewer and editor membership |
-| POST | `/api/competition/knowledge/documents/{document_id}/review` | Approve or classify rejection of pending content with notes, corrections, and source-credibility feedback |
-| GET | `/api/competition/knowledge/reviews` | List human governance records visible through the current user's knowledge spaces |
-| GET | `/api/competition/knowledge/governance/stats` | Aggregate document reviews, relation audits, hypothesis states, and approval rate |
-| GET | `/api/competition/knowledge/events` | List canonical-entity events clustered across sources |
-| GET / POST | `/api/competition/knowledge/insights` / `/api/competition/knowledge/insights/refresh` | List or regenerate fact, inference, and hypothesis layers |
-| GET | `/api/competition/knowledge/deletions` | List auditable deletion records |
-| POST | `/api/competition/knowledge/retention/run` | Apply expired retention policies immediately |
-| POST | `/api/competition/knowledge/upload` | Upload and asynchronously parse, chunk, and index a document |
-| POST | `/api/competition/knowledge/import-inbox` | Import a file by restricted Inbox-relative path |
-| POST | `/api/competition/knowledge/import-intelligence` | Promote explicitly selected intelligence facts into knowledge documents |
-| GET | `/api/competition/knowledge/documents` | List documents with status, product, source-type, and pagination filters |
-| GET / DELETE | `/api/competition/knowledge/documents/{document_id}` | Inspect versions/chunks or delete a document |
-| POST | `/api/competition/knowledge/documents/{document_id}/reindex` | Reparse and reindex the current usable version |
-| GET | `/api/competition/knowledge/jobs`, `/api/competition/knowledge/jobs/{job_id}` | Inspect asynchronous ingestion and rebuild jobs |
-| POST | `/api/competition/knowledge/jobs/{job_id}/retry` | Create a traceable retry for a failed knowledge-processing job |
-| POST | `/api/competition/knowledge/search` | Run filtered hybrid retrieval and reranking |
-| POST | `/api/competition/knowledge/retrieval-feedback` | Save relevance or citation feedback and invalidate ranking caches |
-| GET | `/api/competition/knowledge/retrieval-feedback` | List the current user's retrieval feedback and summary |
-| GET / POST | `/api/competition/knowledge/online-metrics` | List or record online retrieval metric samples and weighted summaries |
-| GET | `/api/competition/knowledge/online-metrics/trends` | Query an online metric trend grouped by UTC day |
-| GET / POST | `/api/competition/knowledge/evaluation-datasets` | List or save versioned RAG evaluation datasets |
-| GET / POST | `/api/competition/knowledge/retrieval-experiments` | List or record baseline/candidate retrieval experiments and deltas |
-| GET | `/api/competition/knowledge/entities` | List canonical entities and aliases in accessible knowledge spaces |
-| POST | `/api/competition/knowledge/entities/{entity_id}/aliases` | Add an entity alias with editor permission and conflict checks |
-| POST | `/api/competition/knowledge/entities/{entity_id}/merge` | Merge same-space entities and migrate aliases, relations, and insights |
-| GET | `/api/competition/knowledge/entity-merge-audits` | List entity-merge audit records |
-| GET | `/api/competition/knowledge/graph` | Query the traceable relationship graph by knowledge space, relation type, and temporal range |
-| POST | `/api/competition/knowledge/graph/rebuild` | Rebuild a knowledge space graph from approved document versions and events |
-| GET | `/api/competition/knowledge/chunks/{chunk_id}` | Read an authorized original evidence chunk |
-| POST | `/api/competition/knowledge/rebuild` | Rebuild the current user's Qdrant index from SQLite |
-| GET / POST | `/api/competition/alerts/rules` | List or create alert rules |
-| PUT / DELETE | `/api/competition/alerts/rules/{rule_id}` | Edit or delete an alert rule |
-| GET / POST | `/api/competition/alerts/events` / `/api/competition/alerts/dispatch` | List alert history or dispatch pending alerts |
-
-Use `?summary=true` on report polling requests for a lightweight active-state response. Terminal states still return complete report data. FastAPI Swagger is available at `http://localhost:8001/docs`.
-
-## Roadmap
-
-The current system combines realtime search with local hybrid RAG and persists business, knowledge, and evidence data in SQLite, Qdrant Local, and file storage. It is ready for an end-to-end competition demonstration. Productization directions reserved by the architecture include:
-
-### Completed RAG P1
-
-- Retrieval logs and governance statistics are integrated into the knowledge workspace for inspecting queries, selected chunks, latency, review outcomes, and source health.
-- Query-expansion evaluation compares Recall, MRR, NDCG, and P95 latency with the bounded expansion switch disabled/enabled before accepting additional recall cost.
-- The competitive-intelligence pool keeps content versions, source health, and failure records; observation runs trigger deep analysis only after material changes.
-- Alerts support content deduplication, cooldowns, quiet hours, digest/immediate delivery, and a failure-isolated notification router for reports, alerts, and system errors.
-
-### Advanced RAG
-
-- **Main-pipeline evidence loop**: Collector reuses local evidence first, while Analyst, Reviewer, and Writer share bounded RAG context; reports record coverage, degraded state, and stable provenance, and gaps become targeted product-by-dimension collection tasks.
-- **Retrieval availability fallback**: when Dense, Sparse, or Reranker assets are unavailable, bounded SQLite lexical retrieval remains usable while enforcing space, approval, version, and source filters; degraded hits are never presented as semantic hits.
-- **Evaluation and source workspace**: the knowledge page surfaces golden datasets, retrieval experiments, online latency trends, connector pagination/priority/retry controls, and item-level sync history.
-- **Governance loop**: canonical-entity merges migrate aliases, relationships, and insights with immutable audits; approval, retention, deletion records, and cross-space boundaries remain enforced server-side.
-
-- **Retrieval feedback and explainability loop**: expose retrieval plans, filters, selected chunks, latency, and governance aggregates for UI inspection and future quality tuning.
-- **Frontend diagnostics**: the knowledge workspace shows recent retrieval traces, governance quality, and source health; source degradation lowers evidence quality instead of being silently presented as an official source.
-
-- Add optional model-based rewriting or HyDE only for complex requests where the real golden set demonstrates gains over the current zero-LLM direct/multi-hop planner.
-- Extend the current traceable GraphRAG, three-layer insights, and document-review feedback with manual relationship correction, hypothesis approval/rejection, and historical accuracy tracking.
-- Continuously expand authorized real evaluation coverage with completed reports, observation histories, PDF/OCR edge cases, cross-language questions, and hard negatives without training on or contaminating production knowledge.
-
-### Higher concurrency and productionization
-
-- Move in-memory `_store` state to Redis or PostgreSQL for horizontal gateway scaling.
-- Move threaded analysis to Celery or another queue with independent workers.
-- Upgrade SQLite WAL to PostgreSQL for concurrent writes and connection pooling.
-- Add per-user or per-tenant token budgets, rate limits, and search quotas.
-- Extend authentication to full project spaces and permission isolation.
+For frontend checks use `frontend/node_modules/.bin/tsc --noEmit`, `eslint .`, and `prettier --check .`. Real S3/Qdrant connectivity tests require those services and credentials and are not part of the default local suite.
 
 ## License
 
