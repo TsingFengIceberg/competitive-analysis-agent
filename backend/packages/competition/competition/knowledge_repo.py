@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable
@@ -12,7 +13,7 @@ from typing import Any
 
 from competition.db import DEFAULT_DB_PATH, init_db
 from competition.knowledge_governance import personal_space_id
-from competition.knowledge_types import KnowledgeChunk
+from competition.knowledge_types import KnowledgeChunk, RetrievalFilters
 
 _DOCUMENT_UPDATE_FIELDS = {
     "title",
@@ -570,6 +571,96 @@ class KnowledgeRepository:
             item = _apply_version_context(_chunk_row(row))
             result[item["chunk_id"]] = item
         return result
+
+    def search_chunks_lexical(
+        self,
+        query: str,
+        user_id: str,
+        *,
+        filters: RetrievalFilters | None = None,
+        limit: int = 12,
+    ) -> list[tuple[dict[str, Any], float]]:
+        """Search approved chunks with a deterministic local fallback.
+
+        This path keeps the knowledge base useful when embedding, sparse, or
+        reranker weights are unavailable. It intentionally returns the same
+        row shape consumed by ``KnowledgeService._build_hits`` and never
+        crosses the caller's accessible knowledge-space boundary.
+        """
+        filters = filters or RetrievalFilters()
+        spaces = list(filters.space_ids or self.accessible_space_ids(user_id))
+        if not spaces:
+            return []
+        placeholders = ",".join("?" for _ in spaces)
+        where = [
+            f"d.space_id IN ({placeholders})",
+            "d.approval_status = 'approved'",
+            "d.deleted_at IS NULL",
+            "v.status IN ('indexed', 'partial')",
+        ]
+        params: list[Any] = [*spaces]
+        temporal_mode = filters.temporal_mode if filters.temporal_mode in {"current", "historical", "all"} else "current"
+        if temporal_mode == "current":
+            where.append("c.active = 1")
+        elif temporal_mode == "historical":
+            where.append("c.active = 0")
+        if filters.products:
+            product_placeholders = ",".join("?" for _ in filters.products)
+            where.append(f"(LOWER(d.product) IN ({product_placeholders}) OR d.product = '')")
+            params.extend(value.casefold() for value in filters.products)
+        if filters.dimensions:
+            dimension_placeholders = ",".join("?" for _ in filters.dimensions)
+            where.append(f"(d.dimension IN ({dimension_placeholders}) OR d.dimension = '')")
+            params.extend(filters.dimensions)
+        if filters.market_scope:
+            where.append("(d.market_scope IN (?, 'Global / unspecified') OR d.market_scope = '')")
+            params.append(filters.market_scope)
+        if filters.source_types:
+            source_placeholders = ",".join("?" for _ in filters.source_types)
+            where.append(f"d.source_type IN ({source_placeholders})")
+            params.extend(filters.source_types)
+        if filters.authority_tiers:
+            authority_placeholders = ",".join("?" for _ in filters.authority_tiers)
+            where.append(f"d.authority_tier IN ({authority_placeholders})")
+            params.extend(filters.authority_tiers)
+        if not filters.include_reports:
+            where.append("d.authority_tier <> 'report'")
+        rows = self.conn.execute(
+            f"""SELECT c.*, d.title, d.source_uri, d.source_type, d.authority_tier,
+                       d.product, d.dimension, d.market_scope, d.published_at,
+                       d.observed_at, d.filename, d.media_type, d.space_id,
+                       d.approval_status, v.created_at AS version_created_at,
+                       v.superseded_at AS version_superseded_at,
+                       v.metadata_json AS version_metadata_json
+                  FROM knowledge_chunks c
+                  JOIN knowledge_documents d ON d.document_id = c.document_id
+                  JOIN knowledge_document_versions v
+                    ON v.document_id = c.document_id AND v.version_no = c.version_no
+                 WHERE {' AND '.join(where)}
+                 ORDER BY c.created_at DESC
+                 LIMIT 5000""",
+            params,
+        ).fetchall()
+        terms = [term for term in re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]", str(query or '').casefold()) if term]
+        if not terms:
+            return []
+        scored: list[tuple[dict[str, Any], float]] = []
+        for row in rows:
+            item = _apply_version_context(_chunk_row(row))
+            haystack = " ".join(
+                str(item.get(field) or "")
+                for field in ("title", "text", "contextual_text", "product", "dimension")
+            ).casefold()
+            matched = sum(1 for term in terms if term in haystack)
+            if not matched:
+                continue
+            phrase_bonus = 0.1 if str(query or '').strip().casefold() in haystack else 0.0
+            score = min(1.0, 0.75 * matched / len(set(terms)) + phrase_bonus)
+            item["recall_score"] = round(score, 6)
+            item["retrieval_source"] = "lexical_fallback"
+            scored.append((item, round(score, 6)))
+        scored.sort(key=lambda pair: (-pair[1], str(pair[0].get("chunk_id") or "")))
+        return scored[: max(1, min(int(limit), 200))]
 
     def list_timeline(
         self,

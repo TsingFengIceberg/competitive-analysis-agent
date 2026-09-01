@@ -1692,6 +1692,28 @@ async def sync_knowledge_source(source_id: str, fastapi_request: Request) -> dic
     return {"source_id": source_id, "status": "queued", "changed": False, "background_task": task}
 
 
+@router.post("/knowledge/sources/{source_id}/retry", status_code=202)
+async def retry_knowledge_source(source_id: str, fastapi_request: Request) -> dict:
+    """Clear connector backoff and enqueue an explicit owner/editor retry."""
+    from competition.knowledge_sources import SourceRepository
+
+    user_id = _get_user_id(fastapi_request)
+    with SourceRepository() as repository:
+        source = repository.get(source_id, user_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Knowledge source not found")
+        repository.update_result(
+            source_id,
+            user_id,
+            last_status="idle",
+            last_error=None,
+            failure_count=0,
+            cooldown_until=None,
+        )
+    task = _queue_knowledge_source_sync(source_id, user_id, manual=True, priority=100)
+    return {"source_id": source_id, "status": "queued", "retry": True, "background_task": task}
+
+
 def _sync_due_knowledge_sources(limit: int = 10) -> list[dict[str, Any]]:
     """Scheduler hook that queues connector refreshes without blocking polling."""
     from competition.knowledge_sources import SourceRepository

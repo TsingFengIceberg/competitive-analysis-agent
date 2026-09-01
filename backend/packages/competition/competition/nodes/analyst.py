@@ -65,6 +65,21 @@ def analyst_node(state: dict) -> dict:
         return {"analysis_result": _empty_analysis_result(state), "coverage_warning": None, "analysis_context_pack": context_pack, "rag_context": rag_context}
 
     result = _build_analysis_result(raw_output, state)
+    if isinstance(rag_context, dict):
+        # Keep a low-sensitivity provenance snapshot beside the model output.
+        # Full evidence remains in the bounded graph context and citations are
+        # still validated by Reviewer before Writer exposes them.
+        result["rag_evidence"] = {
+            "schema_version": rag_context.get("schema_version"),
+            "selected_count": int(rag_context.get("selected_count", 0) or 0),
+            "candidate_count": int(rag_context.get("candidate_count", 0) or 0),
+            "coverage": rag_context.get("coverage") or {},
+            "evidence_ids": [
+                str(item.get("evidence_id"))
+                for item in rag_context.get("evidence") or []
+                if isinstance(item, dict) and item.get("evidence_id")
+            ],
+        }
     if not result.get("comparison_matrix", {}).get("cells"):
         logger.warning("Analyst produced empty comparison_matrix — raw output type=%s, sample=%s", type(raw_output).__name__, str(raw_output)[:200] if raw_output else "None")
 

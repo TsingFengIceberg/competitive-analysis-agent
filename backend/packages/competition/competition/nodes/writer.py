@@ -203,6 +203,7 @@ def writer_node(state: dict) -> dict:
         else None,
         "analysis_context": _build_context_overview(context_pack),
         "rag_context": _build_rag_context_overview(rag_context),
+        "rag_provenance": _build_rag_provenance(analysis, rag_context),
         "quality_gate": quality_gate,
         "claim_verification": claim_verification,
         "long_term_insights": state.get("long_term_insights") or [],
@@ -248,6 +249,35 @@ def _build_rag_context_overview(bundle: dict | None) -> dict | None:
         "budget_tokens": int(bundle.get("budget_tokens", 0) or 0),
         "abstain": bool(bundle.get("abstain")),
         "abstain_reasons": list(bundle.get("abstain_reasons") or []),
+        "coverage": bundle.get("coverage") or {},
+        "degraded": any(
+            bool(item.get("metadata", {}).get("degraded"))
+            for item in bundle.get("evidence") or []
+            if isinstance(item, dict)
+        ),
+    }
+
+
+def _build_rag_provenance(analysis: dict, bundle: dict | None) -> dict[str, Any] | None:
+    """Expose bounded provenance without leaking prompts or raw private paths."""
+    recorded = analysis.get("rag_evidence") if isinstance(analysis, dict) else None
+    if isinstance(recorded, dict):
+        return {
+            "schema_version": recorded.get("schema_version"),
+            "candidate_count": int(recorded.get("candidate_count", 0) or 0),
+            "selected_count": int(recorded.get("selected_count", 0) or 0),
+            "evidence_ids": [str(value) for value in recorded.get("evidence_ids") or []][:100],
+            "coverage": recorded.get("coverage") or {},
+        }
+    overview = _build_rag_context_overview(bundle)
+    if not overview:
+        return None
+    return {
+        "schema_version": overview.get("schema_version"),
+        "candidate_count": overview.get("candidate_count", 0),
+        "selected_count": overview.get("selected_count", 0),
+        "coverage": overview.get("coverage") or {},
+        "evidence_ids": [],
     }
 
 

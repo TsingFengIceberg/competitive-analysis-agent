@@ -219,6 +219,59 @@ interface EvaluationRun {
   created_at: string;
 }
 
+interface EvaluationDataset {
+  dataset_id: string;
+  dataset_name: string;
+  version: string;
+  case_count?: number;
+  cases?: unknown[];
+  updated_at: string;
+}
+
+interface RetrievalExperiment {
+  experiment_id: string;
+  name: string;
+  status: string;
+  metrics?: {
+    delta?: Record<string, number>;
+    baseline?: Record<string, number>;
+    candidate?: Record<string, number>;
+  };
+  updated_at: string;
+}
+
+interface OnlineMetricTrendPoint {
+  day: string;
+  weighted_mean: number;
+  sample_count: number;
+}
+
+interface SourceHealth {
+  source_count: number;
+  enabled_count: number;
+  failure_count: number;
+  item_count: number;
+  due_count: number;
+  degraded: boolean;
+  latest_sync?: { status: string; finished_at: string | null } | null;
+}
+
+interface KnowledgeEntitySummary {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases?: Array<{ alias: string }>;
+  space_id: string;
+}
+
+interface EntityMergeAudit {
+  audit_id: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  reason: string;
+  created_at: string;
+}
+
 interface GovernanceStats {
   document_reviews: { total: number; approved: number; rejected: number };
   feedback_by_type: Record<string, number>;
@@ -355,6 +408,20 @@ export default function KnowledgePage() {
   const [queryPlan, setQueryPlan] = useState<KnowledgeQueryPlan | null>(null);
   const [retrievalLogs, setRetrievalLogs] = useState<RetrievalLog[]>([]);
   const [evaluationRuns, setEvaluationRuns] = useState<EvaluationRun[]>([]);
+  const [evaluationDatasets, setEvaluationDatasets] = useState<
+    EvaluationDataset[]
+  >([]);
+  const [retrievalExperiments, setRetrievalExperiments] = useState<
+    RetrievalExperiment[]
+  >([]);
+  const [latencyTrend, setLatencyTrend] = useState<OnlineMetricTrendPoint[]>(
+    [],
+  );
+  const [sourceHealth, setSourceHealth] = useState<SourceHealth | null>(null);
+  const [entities, setEntities] = useState<KnowledgeEntitySummary[]>([]);
+  const [entityMergeAudits, setEntityMergeAudits] = useState<
+    EntityMergeAudit[]
+  >([]);
   const [governance, setGovernance] = useState<GovernanceStats | null>(null);
   const [sources, setSources] = useState<IntelligenceSource[]>([]);
   const [sourceConnectors, setSourceConnectors] = useState<
@@ -366,6 +433,10 @@ export default function KnowledgePage() {
   const [sourceUri, setSourceUri] = useState("");
   const [sourceProduct, setSourceProduct] = useState("");
   const [sourceDimension, setSourceDimension] = useState("");
+  const [sourceType, setSourceType] = useState("web");
+  const [sourceInterval, setSourceInterval] = useState("360");
+  const [sourcePriority, setSourcePriority] = useState("50");
+  const [sourceMaxPages, setSourceMaxPages] = useState("1");
   const [newSpaceName, setNewSpaceName] = useState("");
   const [newMemberId, setNewMemberId] = useState("");
   const [newMemberRole, setNewMemberRole] = useState<"editor" | "viewer">(
@@ -406,6 +477,12 @@ export default function KnowledgePage() {
           evaluationPayload,
           connectorPayload,
           retrievalFeedbackPayload,
+          sourceHealthPayload,
+          datasetPayload,
+          experimentPayload,
+          latencyTrendPayload,
+          entityPayload,
+          entityAuditPayload,
         ] = await Promise.all([
           requestJson<KnowledgeStatus>(`${API}/knowledge/status`),
           requestJson<{ documents: KnowledgeDocument[] }>(
@@ -453,6 +530,24 @@ export default function KnowledgePage() {
           requestJson<{ summary: RetrievalFeedbackSummary }>(
             `${API}/knowledge/retrieval-feedback?limit=1`,
           ),
+          requestJson<{ health: SourceHealth }>(
+            `${API}/knowledge/sources/health?limit=100`,
+          ),
+          requestJson<{ datasets: EvaluationDataset[] }>(
+            `${API}/knowledge/evaluation-datasets?limit=8`,
+          ),
+          requestJson<{ experiments: RetrievalExperiment[] }>(
+            `${API}/knowledge/retrieval-experiments?limit=8`,
+          ),
+          requestJson<{ trend: OnlineMetricTrendPoint[] }>(
+            `${API}/knowledge/online-metrics/trends?metric_name=retrieval.latency_ms&limit=14`,
+          ),
+          requestJson<{ entities: KnowledgeEntitySummary[] }>(
+            `${API}/knowledge/entities?${spaceId ? `space_id=${encodeURIComponent(spaceId)}&` : ""}limit=200`,
+          ),
+          requestJson<{ audits: EntityMergeAudit[] }>(
+            `${API}/knowledge/entity-merge-audits?${spaceId ? `space_id=${encodeURIComponent(spaceId)}&` : ""}limit=8`,
+          ),
         ]);
         setStatus(statusPayload);
         setDocuments(documentPayload.documents);
@@ -471,6 +566,12 @@ export default function KnowledgePage() {
         setEvaluationRuns(evaluationPayload.runs ?? []);
         setSourceConnectors(connectorPayload.sources ?? []);
         setFeedbackSummary(retrievalFeedbackPayload.summary ?? null);
+        setSourceHealth(sourceHealthPayload.health ?? null);
+        setEvaluationDatasets(datasetPayload.datasets ?? []);
+        setRetrievalExperiments(experimentPayload.experiments ?? []);
+        setLatencyTrend(latencyTrendPayload.trend ?? []);
+        setEntities(entityPayload.entities ?? []);
+        setEntityMergeAudits(entityAuditPayload.audits ?? []);
         if (!spaceId && statusPayload.spaces?.length) {
           const preferred =
             statusPayload.spaces.find(
@@ -683,12 +784,19 @@ export default function KnowledgePage() {
           dimension: sourceDimension,
           space_id: spaceId,
           authority_tier: "primary",
-          source_type: "web",
+          source_type: sourceType,
+          sync_interval_minutes: Math.max(5, Number(sourceInterval) || 360),
+          priority: Math.max(0, Math.min(1000, Number(sourcePriority) || 50)),
+          max_pages: Math.max(1, Math.min(20, Number(sourceMaxPages) || 1)),
         }),
       });
       setSourceName("");
       setSourceUri("");
       setSourceProduct("");
+      setSourceType("web");
+      setSourceInterval("360");
+      setSourcePriority("50");
+      setSourceMaxPages("1");
       toast.success("来源连接器已添加");
       await refresh(true);
     } catch (error) {
@@ -1074,6 +1182,34 @@ export default function KnowledgePage() {
           ))}
         </section>
 
+        <div className="flex flex-wrap items-center gap-2 border-b px-1 pb-1 text-xs">
+          <span className="text-muted-foreground">检索运行模式</span>
+          <StatusBadge
+            tone={
+              status?.retrieval?.semantic_index_available
+                ? "success"
+                : "warning"
+            }
+            label={
+              status?.retrieval?.semantic_index_available
+                ? "Dense + Sparse + Reranker"
+                : status?.retrieval?.lexical_fallback_enabled
+                  ? "SQLite 词法降级可用"
+                  : "语义索引不可用"
+            }
+          />
+          {status?.index?.points != null && (
+            <span className="text-muted-foreground">
+              {status.index.points} 个向量点
+            </span>
+          )}
+          {status?.index?.embedding_dimension && (
+            <span className="text-muted-foreground">
+              {status.index.embedding_dimension}d
+            </span>
+          )}
+        </div>
+
         <section className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
           <div className="ui-panel min-w-0 overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
@@ -1191,6 +1327,71 @@ export default function KnowledgePage() {
           </div>
         </section>
 
+        <section className="ui-panel min-w-0 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">实体归一化与合并审计</h2>
+              <p className="text-muted-foreground mt-0.5 text-xs">
+                竞品别名统一到规范实体；合并会迁移证据关系并留下可追溯审计记录。
+              </p>
+            </div>
+            <StatusBadge tone="info" label={`${entities.length} 个规范实体`} />
+          </div>
+          <div className="grid divide-y text-xs lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)] lg:divide-x lg:divide-y-0">
+            <div className="max-h-48 divide-y overflow-y-auto">
+              {entities.slice(0, 12).map((entity) => (
+                <div
+                  key={entity.entity_id}
+                  className="flex min-w-0 items-center justify-between gap-3 px-4 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">
+                      {entity.canonical_name}
+                    </div>
+                    <div className="text-muted-foreground mt-0.5 truncate">
+                      {entity.entity_type} ·{" "}
+                      {(entity.aliases ?? [])
+                        .map((alias) => alias.alias)
+                        .join("、") || "暂无别名"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {!entities.length && (
+                <div className="text-muted-foreground px-4 py-5 text-center">
+                  完成资料入库后会自动建立规范实体。
+                </div>
+              )}
+            </div>
+            <div className="max-h-48 divide-y overflow-y-auto">
+              {entityMergeAudits.slice(0, 8).map((audit) => (
+                <div key={audit.audit_id} className="px-4 py-2">
+                  <div className="font-medium">已合并实体</div>
+                  <div className="text-muted-foreground mt-0.5 break-words">
+                    {audit.source_entity_id} → {audit.target_entity_id}
+                  </div>
+                  {audit.reason && (
+                    <div
+                      className="text-muted-foreground mt-0.5 truncate"
+                      title={audit.reason}
+                    >
+                      {audit.reason}
+                    </div>
+                  )}
+                  <div className="text-muted-foreground mt-0.5">
+                    {new Date(audit.created_at).toLocaleString("zh-CN")}
+                  </div>
+                </div>
+              ))}
+              {!entityMergeAudits.length && (
+                <div className="text-muted-foreground px-4 py-5 text-center">
+                  暂无实体合并记录。
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         {sources.length > 0 && (
           <section className="ui-panel overflow-hidden">
             <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
@@ -1268,8 +1469,14 @@ export default function KnowledgePage() {
                 label={`反馈 ${feedbackSummary.total} 条${feedbackSummary.relevance_rate != null ? ` · 相关率 ${Math.round(feedbackSummary.relevance_rate * 100)}%` : ""}`}
               />
             )}
+            {sourceHealth && (
+              <StatusBadge
+                tone={sourceHealth.degraded ? "warning" : "success"}
+                label={`${sourceHealth.enabled_count}/${sourceHealth.source_count} 来源 · ${sourceHealth.item_count} 条目${sourceHealth.due_count ? ` · ${sourceHealth.due_count} 待同步` : ""}`}
+              />
+            )}
           </div>
-          <div className="grid gap-2 border-b p-4 sm:grid-cols-[1fr_1.4fr_1fr_auto]">
+          <div className="grid gap-2 border-b p-4 sm:grid-cols-2 lg:grid-cols-[1fr_1.5fr_1fr_auto]">
             <Input
               value={sourceName}
               onChange={(event) => setSourceName(event.target.value)}
@@ -1310,7 +1517,51 @@ export default function KnowledgePage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex min-w-0 gap-2 sm:col-span-2 lg:col-span-1">
+              <Select value={sourceType} onValueChange={setSourceType}>
+                <SelectTrigger aria-label="来源类型">
+                  <SelectValue placeholder="类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="web">网页</SelectItem>
+                  <SelectItem value="rss">RSS</SelectItem>
+                  <SelectItem value="atom">Atom</SelectItem>
+                  <SelectItem value="sitemap">Sitemap</SelectItem>
+                  <SelectItem value="json_api">JSON API</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                type="number"
+                min={5}
+                max={10080}
+                value={sourceInterval}
+                onChange={(event) => setSourceInterval(event.target.value)}
+                placeholder="间隔(分钟)"
+                aria-label="同步间隔分钟"
+              />
+            </div>
+            <div className="flex min-w-0 gap-2 sm:col-span-2 lg:col-span-1">
+              <Input
+                type="number"
+                min={0}
+                max={1000}
+                value={sourcePriority}
+                onChange={(event) => setSourcePriority(event.target.value)}
+                placeholder="优先级"
+                aria-label="来源优先级"
+              />
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={sourceMaxPages}
+                onChange={(event) => setSourceMaxPages(event.target.value)}
+                placeholder="页数"
+                aria-label="最大抓取页数"
+              />
+            </div>
             <Button
+              className="lg:self-end"
               disabled={busy}
               onClick={() => void createSourceConnector()}
             >
@@ -1354,6 +1605,14 @@ export default function KnowledgePage() {
                     {source.product || "通用"} · {source.dimension || "跨维度"}{" "}
                     · {source.uri}
                   </div>
+                  <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                    <span>{source.source_type || "web"}</span>
+                    <span>每 {source.sync_interval_minutes || 360} 分钟</span>
+                    <span>优先级 {source.priority ?? 50}</span>
+                    {source.max_pages && source.max_pages > 1 && (
+                      <span>最多 {source.max_pages} 页</span>
+                    )}
+                  </div>
                   {source.last_error && (
                     <div
                       className="text-destructive mt-1 truncate"
@@ -1371,6 +1630,37 @@ export default function KnowledgePage() {
                 >
                   <RefreshCw className="size-3" /> 立即同步
                 </Button>
+                {source.last_status === "failed" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await requestJson(
+                          `${API}/knowledge/sources/${source.source_id}/retry`,
+                          {
+                            method: "POST",
+                            headers: csrfHeaders(),
+                          },
+                        );
+                        toast.success(`${source.name} 已清除退避并重新排队`);
+                        await refresh(true);
+                      } catch (error) {
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "来源重试失败",
+                        );
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <RotateCw className="size-3" /> 重试
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -1440,6 +1730,128 @@ export default function KnowledgePage() {
                 尚未运行离线评估。
               </div>
             )}
+          </div>
+        </section>
+
+        <section className="ui-panel min-w-0 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">检索评估工作台</h2>
+              <p className="text-muted-foreground mt-0.5 text-xs">
+                对比黄金数据集、检索策略实验和线上延迟趋势，避免升级后质量悄然回退。
+              </p>
+            </div>
+            <StatusBadge
+              tone={latencyTrend.length ? "info" : "neutral"}
+              label={
+                latencyTrend.length
+                  ? `延迟 ${latencyTrend[0]?.weighted_mean ?? 0} ms`
+                  : "暂无线上样本"
+              }
+            />
+          </div>
+          <div className="grid divide-y text-xs lg:grid-cols-3 lg:divide-x lg:divide-y-0">
+            <div className="p-4">
+              <div className="text-muted-foreground">评估数据集</div>
+              <div className="mt-1 text-lg font-semibold tabular-nums">
+                {evaluationDatasets.length}
+              </div>
+              <div className="mt-1 space-y-1">
+                {evaluationDatasets.slice(0, 3).map((dataset) => (
+                  <div
+                    key={dataset.dataset_id}
+                    className="flex justify-between gap-2"
+                  >
+                    <span className="min-w-0 truncate">
+                      {dataset.dataset_name} · {dataset.version}
+                    </span>
+                    <span className="text-muted-foreground shrink-0">
+                      {dataset.case_count ?? dataset.cases?.length ?? 0} 例
+                    </span>
+                  </div>
+                ))}
+                {!evaluationDatasets.length && (
+                  <span className="text-muted-foreground">
+                    尚未保存黄金评估集
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="p-4">
+              <div className="text-muted-foreground">策略实验</div>
+              <div className="mt-1 text-lg font-semibold tabular-nums">
+                {retrievalExperiments.length}
+              </div>
+              <div className="mt-1 space-y-1">
+                {retrievalExperiments.slice(0, 3).map((experiment) => {
+                  const delta =
+                    experiment.metrics?.delta?.recall_at_5 ??
+                    experiment.metrics?.delta?.mrr ??
+                    null;
+                  return (
+                    <div
+                      key={experiment.experiment_id}
+                      className="flex justify-between gap-2"
+                    >
+                      <span className="min-w-0 truncate">
+                        {experiment.name}
+                      </span>
+                      <StatusBadge
+                        tone={
+                          delta == null
+                            ? "neutral"
+                            : delta >= 0
+                              ? "success"
+                              : "danger"
+                        }
+                        label={
+                          delta == null
+                            ? experiment.status
+                            : `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%`
+                        }
+                      />
+                    </div>
+                  );
+                })}
+                {!retrievalExperiments.length && (
+                  <span className="text-muted-foreground">
+                    尚未运行策略对比
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="p-4">
+              <div className="text-muted-foreground">最近线上延迟</div>
+              <div className="mt-2 flex h-12 items-end gap-1">
+                {latencyTrend
+                  .slice(0, 14)
+                  .reverse()
+                  .map((point) => {
+                    const max = Math.max(
+                      ...latencyTrend.map((item) => item.weighted_mean),
+                      1,
+                    );
+                    return (
+                      <div
+                        key={point.day}
+                        className="bg-primary/70 min-w-1 flex-1 rounded-t"
+                        style={{
+                          height: `${Math.max(8, (point.weighted_mean / max) * 100)}%`,
+                        }}
+                        title={`${point.day}: ${point.weighted_mean} ms`}
+                      />
+                    );
+                  })}
+                {!latencyTrend.length && (
+                  <span className="text-muted-foreground self-center">
+                    完成检索后显示趋势
+                  </span>
+                )}
+              </div>
+              <div className="text-muted-foreground mt-1">
+                按 UTC 日期聚合，含缓存命中与降级检索。
+              </div>
+            </div>
           </div>
         </section>
 

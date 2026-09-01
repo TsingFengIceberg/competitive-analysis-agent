@@ -861,7 +861,26 @@ def sync_source(
         except ValueError:
             pass
     repository.update_result(source_id, user_id, last_status="checking", last_checked_at=_now(), last_error=None)
-    result = fetcher(source)
+    try:
+        result = fetcher(source)
+    except Exception as exc:
+        # A connector exception must close its durable run and enter the same
+        # exponential cooldown path as an explicit failed fetch result.
+        now = _now()
+        failures = int(source.get("failure_count") or 0) + 1
+        backoff_minutes = min(360, 2 ** min(failures, 8))
+        error = str(exc)[:500] or "Source fetch failed"
+        updated = repository.update_result(
+            source_id,
+            user_id,
+            last_checked_at=now,
+            last_status="failed",
+            last_error=error,
+            failure_count=failures,
+            cooldown_until=(datetime.now(UTC) + timedelta(minutes=backoff_minutes)).isoformat(),
+        )
+        finish(status="failed", error=error)
+        return {"source": updated, "status": "failed", "changed": False, "error": error}
     now = _now()
     if result.status == "unchanged":
         updated = repository.update_result(

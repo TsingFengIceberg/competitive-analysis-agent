@@ -78,6 +78,17 @@ class LocalModelProvider:
         self._query_cache_hits = 0
         self._query_cache_misses = 0
 
+    def embedding_dimension(self) -> int:
+        """Return the configured dense vector size without loading model weights."""
+        loaded = getattr(self, "_configured_embedding_dimension", None)
+        if loaded:
+            return int(loaded)
+        configured = os.getenv("CI_AGENT_RAG_EMBEDDING_DIM", "1024")
+        try:
+            return max(1, int(configured))
+        except ValueError:
+            return 1024
+
     def readiness(self) -> dict[str, Any]:
         return {
             "embedding_model": self.embedding_path.exists(),
@@ -86,6 +97,7 @@ class LocalModelProvider:
             "embedding_path": str(self.embedding_path),
             "reranker_path": str(self.reranker_path),
             "sparse_cache_path": str(self.sparse_cache_path),
+            "embedding_dimension": self.embedding_dimension(),
             "loaded": {
                 "embedding_model": self._dense_model is not None,
                 "reranker_model": self._reranker is not None,
@@ -109,6 +121,10 @@ class LocalModelProvider:
                 from sentence_transformers import SentenceTransformer
 
                 self._dense_model = SentenceTransformer(str(self.embedding_path), device="cpu", local_files_only=True)
+                try:
+                    self._configured_embedding_dimension = int(self._dense_model.get_sentence_embedding_dimension())
+                except (AttributeError, TypeError, ValueError):
+                    self._configured_embedding_dimension = self.embedding_dimension()
         return self._dense_model
 
     def _cross_encoder(self) -> Any:
@@ -285,13 +301,18 @@ class KnowledgeIndex:
         from qdrant_client import models
 
         client = self._get_client()
+        dimension = (
+            self.provider.embedding_dimension()
+            if hasattr(self.provider, "embedding_dimension")
+            else 1024
+        )
         with self._lock:
             if client.collection_exists(self.collection):
                 return
             client.create_collection(
                 collection_name=self.collection,
                 vectors_config={
-                    "dense": models.VectorParams(size=1024, distance=models.Distance.COSINE),
+                    "dense": models.VectorParams(size=dimension, distance=models.Distance.COSINE),
                 },
                 sparse_vectors_config={
                     "sparse": models.SparseVectorParams(modifier=models.Modifier.IDF),

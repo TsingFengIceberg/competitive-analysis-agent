@@ -81,9 +81,9 @@ Reviewer 执行 **8 项质量审查**（数据覆盖、交叉验证、来源可�
 
 侧边栏的“本地知识库”支持上传文件、导入受限 Inbox 路径，以及从持续观察情报池选择事实沉淀。持续观察发现的实质变化和新生成的分析报告版本会自动进入知识治理流程；系统按内容置信度、来源可信度、报告质量门与结论有据率决定自动准入或隔离待审。待审内容会保留完整来源追溯，但默认不可检索，失败任务可在界面创建保留原任务关系的新重试。TXT、Markdown、HTML、CSV、JSON 直接解析，PDF、Office 文档和图片由 Docling + RapidOCR 在本地解析；原文件、规范化 Markdown、文档版本、结构化分块和处理任务分别保存，重复内容不会生成新版本，新版本索引失败时继续保留旧版本可用。
 
-检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、知识空间、竞品、维度、市场、来源权威等级、发布时间以及当前/历史/全部/指定时间点版本过滤。查询规划器会让单一事实问题走低成本直查，将比较、时序和多维问题拆成多查询首跳与证据桥接跳，再对重复命中做融合。旧版本继续保存在 SQLite 和 Qdrant 中，索引重建会恢复全部成功版本；从持续观察导入事实时会按原始观察时间依次沉淀完整版本序列。分析阶段按“可引用原始证据、分层长期洞察、历史报告记忆”三个上下文层消费知识：历史报告只用于发现旧结论、补充问题和规划新搜索，不能进入 `collected_data` 或充当事实引用，且当前报告线程会被排除以避免自我引用。
+检索采用 BGE-M3 Dense 向量与中文分词 BM25 Sparse 向量的 Qdrant RRF 混合召回，再由 bge-reranker-v2-m3 重排，并支持用户、知识空间、竞品、维度、市场、来源权威等级、发布时间以及当前/历史/全部/指定时间点版本过滤。查询规划器会让单一事实问题走低成本直查，将比较、时序和多维问题拆成多查询首跳与证据桥接跳，再对重复命中做融合。旧版本继续保存在 SQLite 和 Qdrant 中，索引重建会恢复全部成功版本；从持续观察导入事实时会按原始观察时间依次沉淀完整版本序列。分析阶段按“可引用原始证据、分层长期洞察、历史报告记忆”三个上下文层消费知识：历史报告只用于发现旧结论、补充问题和规划新搜索，不能进入 `collected_data` 或充当事实引用，且当前报告线程会被排除以避免自我引用。语义索引或本地模型暂不可用时，系统会自动切换到有界的 SQLite 词法检索，并在检索日志、报告 provenance 和质量面板中明确标记降级状态。
 
-知识来源连接器支持网页、RSS/Atom、Sitemap 和 JSON API。来源地址会进行协议、凭据和私有网段校验，手动同步与到期同步都进入持久化后台任务队列，使用 ETag、Last-Modified 和内容哈希避免重复摄取；失败会记录冷却与重试状态，发现的条目会保存在文档元数据中。检索模式可设为 `auto`，系统根据事实、比较、时序和关系意图选择稀疏、混合、时效优先或多跳策略；用户对命中分块的“相关/不相关/已引用”反馈会在后续排序中作为有界先验，并自动清理旧缓存。线上延迟、命中数和缓存命中率等指标会持久化并提供加权汇总，实体别名支持按知识空间权限维护并进行冲突校验。
+知识来源连接器支持网页、RSS/Atom、Sitemap 和 JSON API。来源地址会进行协议、凭据和私有网段校验，手动同步与到期同步都进入持久化后台任务队列，使用 ETag、Last-Modified 和内容哈希避免重复摄取；失败会记录冷却与重试状态，发现的条目会保存在文档元数据中，前端可查看条目数、同步历史并清除退避后重新执行。检索模式可设为 `auto`，系统根据事实、比较、时序和关系意图选择稀疏、混合、时效优先或多跳策略；用户对命中分块的“相关/不相关/已引用”反馈会在后续排序中作为有界先验，并自动清理旧缓存。线上延迟、命中数和缓存命中率等指标会持久化并提供加权汇总，实体别名支持按知识空间权限维护并进行冲突校验。
 
 GraphRAG 关系层使用 SQLite 保存竞品、能力、价格、集成、用户群、市场事件、来源和历史报告等类型化实体及带时间范围的关系，不引入额外图数据库。关系只从已批准资料版本和事件中确定性生成，并保留文档、版本、原始分块、事件、权威等级和观察时间追溯。单一事实查询继续走现有混合检索，只有跨竞品、关系或时间演化问题才启用图检索。图路径只有在对应原始分块同时进入本次 `collected_data` 时才能支持事实结论，否则仅作搜索导航和分析记忆；历史报告关系始终不可作为事实引用，当前报告线程同样会被排除。价格关系按版本关闭旧有效期，并将不同有效来源同时存在的价格差异显式标记为冲突。
 
@@ -91,7 +91,7 @@ GraphRAG 关系层使用 SQLite 保存竞品、能力、价格、集成、用户
 
 Collector 会先复用本地证据再补充实时搜索。Reviewer 从对比矩阵、SWOT、趋势和动态洞察中提取事实性主张，批量结合明确引用与本地语义检索，将每条主张标记为“证据支持”“存在矛盾”或“证据不足”，并检查数字与否定关系。Writer 只能把确认支持的证据作为正文引用，矛盾和相关但不足的材料仍保留在报告审计数据中。命中与核验结果沿用 `CollectedDataPoint`、Analysis Context Pack、`ReviewVerdict`、`ReportData` 和 `traceability_map` 契约；模型或索引不可用时核验会明确标记降级，分析主流程仍可继续。
 
-检索验证支持“综合排序”“优先最新资料”和“优先高可信来源”三种策略，返回每条命中的时效分、来源权威分和排序策略，便于人工解释证据排序。`POST /api/competition/knowledge/evaluate` 接收版本化离线样例，计算 Recall、MRR、NDCG、拒答、追溯、核验、规划和治理指标，按阈值给出通过/失败结果并持久化到评估历史；知识库页面会显示最近评估和当前用户的检索配额，超限请求返回 `429` 与 `Retry-After`。
+检索验证支持“综合排序”“优先最新资料”和“优先高可信来源”三种策略，返回每条命中的时效分、来源权威分和排序策略，便于人工解释证据排序。`POST /api/competition/knowledge/evaluate` 接收版本化离线样例，计算 Recall、MRR、NDCG、拒答、追溯、核验、规划和治理指标，按阈值给出通过/失败结果并持久化到评估历史；评估数据集和 baseline/candidate 检索实验也会独立版本化保存，并提供线上延迟趋势和指标差异。知识库页面会显示最近评估、实验变化、线上趋势和当前用户的检索配额，超限请求返回 `429` 与 `Retry-After`。
 
 竞品观察支持独立的情报订阅。用户可以保存关注的竞品、维度、最低严重级别和通知渠道，订阅会复用现有告警引擎的匹配、去重和冷却逻辑。告警历史可直接标记“可信”“忽略”或“修正”，修正内容和反馈时间会持久化，供后续人工治理和告警策略迭代使用。相关接口为 `/api/competition/subscriptions` 和 `/api/competition/alerts/events/{event_id}/feedback`，订阅、反馈和告警均按用户隔离。
 
@@ -278,6 +278,7 @@ make rag-eval
 | `CI_AGENT_DB_PATH` | `.ci-agent/competition.db` | 业务与知识元数据 SQLite 路径 |
 | `CI_AGENT_KNOWLEDGE_ROOT` | `.ci-agent/knowledge` | 原文、规范化文档、Inbox 与索引根目录 |
 | `CI_AGENT_RAG_EMBEDDING_PATH` | `.ci-agent/models/embeddings/bge-m3` | Dense embedding 模型目录 |
+| `CI_AGENT_RAG_EMBEDDING_DIM` | `1024` | Dense 向量维度；必须与 embedding 模型和 Qdrant collection 一致 |
 | `CI_AGENT_RAG_RERANKER_PATH` | `.ci-agent/models/rerankers/bge-reranker-v2-m3` | Cross-Encoder 重排模型目录 |
 | `CI_AGENT_RAG_FASTEMBED_PATH` | `.ci-agent/models/fastembed` | BM25 模型缓存目录 |
 | `CI_AGENT_RAG_QDRANT_PATH` | `.ci-agent/knowledge/indexes/qdrant` | Qdrant Local 存储目录 |
@@ -288,6 +289,7 @@ make rag-eval
 | `CI_AGENT_RAG_RESULT_CACHE_SIZE` | `256` | 按用户和过滤条件隔离的检索结果 LRU 缓存容量 |
 | `CI_AGENT_RAG_RESULT_CACHE_TTL_SECONDS` | `300` | 检索结果缓存有效期，设为 `0` 可禁用 |
 | `CI_AGENT_RAG_QUERY_EXPANSION` | `false` | 是否启用受控的中英文查询词组扩展，不触发额外 LLM 调用 |
+| `CI_AGENT_RAG_LEXICAL_FALLBACK` | `true` | 语义模型或索引不可用时是否启用 SQLite 词法降级检索 |
 
 ### DB 模式（默认）
 
@@ -807,6 +809,7 @@ uv run --locked pytest tests/test_a2a_provider.py
 | GET | `/api/competition/intelligence/sources` | 查询来源健康、失败次数、延迟和备用来源诊断 |
 | GET | `/api/competition/knowledge/sources/health` | 查询知识来源连接器健康、到期数量和失败统计 |
 | POST | `/api/competition/knowledge/sources/{source_id}/sync` | 将单个知识来源同步请求放入后台任务队列 |
+| POST | `/api/competition/knowledge/sources/{source_id}/retry` | 清除来源冷却状态并以高优先级重新同步 |
 | GET | `/api/competition/knowledge/status` | 获取知识库、模型与索引状态 |
 | GET | `/api/competition/knowledge/retrieval-logs` | 查询当前用户的检索规划、过滤条件、命中分块、耗时与状态 |
 | GET / POST / PATCH | `/api/competition/knowledge/spaces` | 管理项目知识空间、审批和保留策略 |
@@ -830,8 +833,13 @@ uv run --locked pytest tests/test_a2a_provider.py
 | POST | `/api/competition/knowledge/retrieval-feedback` | 保存命中分块的相关性或引用反馈并刷新排序缓存 |
 | GET | `/api/competition/knowledge/retrieval-feedback` | 查询当前用户的检索反馈与汇总 |
 | GET / POST | `/api/competition/knowledge/online-metrics` | 查询或记录线上检索指标样本与加权汇总 |
+| GET | `/api/competition/knowledge/online-metrics/trends` | 按 UTC 日期查询线上指标趋势 |
+| GET / POST | `/api/competition/knowledge/evaluation-datasets` | 查询或保存版本化 RAG 评估数据集 |
+| GET / POST | `/api/competition/knowledge/retrieval-experiments` | 查询或记录 baseline/candidate 检索策略实验及指标差异 |
 | GET | `/api/competition/knowledge/entities` | 查询当前知识空间中的规范化实体和别名 |
 | POST | `/api/competition/knowledge/entities/{entity_id}/aliases` | 为实体添加别名并校验空间编辑权限与冲突 |
+| POST | `/api/competition/knowledge/entities/{entity_id}/merge` | 合并同空间实体并迁移别名、关系和洞察 |
+| GET | `/api/competition/knowledge/entity-merge-audits` | 查询实体合并审计记录 |
 | GET | `/api/competition/knowledge/graph` | 按知识空间、关系类型和时间范围查询可追溯关系图谱 |
 | POST | `/api/competition/knowledge/graph/rebuild` | 从已批准资料版本和事件重建指定知识空间的关系图谱 |
 | GET | `/api/competition/knowledge/chunks/{chunk_id}` | 获取用户有权访问的证据原文分块 |
@@ -858,6 +866,11 @@ uv run --locked pytest tests/test_a2a_provider.py
 - 告警支持内容去重、冷却、静默时段、摘要/即时模式；报告、告警和系统错误统一经过隔离失败的通知路由。
 
 ### RAG 深化
+
+- **主流程证据闭环**：Collector 优先复用本地证据，Analyst、Reviewer 和 Writer 共享有界 RAG 上下文；报告记录证据覆盖、降级状态和稳定 provenance，缺口会生成产品 × 维度定向补采任务
+- **检索可用性降级**：Dense/Sparse/Reranker 不可用时自动使用 SQLite 词法召回，仍遵守空间权限、审批、版本和来源过滤，不把降级结果伪装成语义命中
+- **评估与来源工作台**：知识库页面展示黄金数据集、检索策略实验、线上延迟趋势、连接器分页/优先级/重试和条目同步历史
+- **知识治理闭环**：规范实体合并会迁移别名、关系、洞察并写入不可变审计；审批、保留期限、删除记录和跨空间访问边界继续由服务端强制执行
 
 - **检索反馈与可解释性闭环**：通过检索日志接口回放查询规划、过滤条件、命中分块和延迟，并汇总文档、关系和假设治理结果，支持前端展示和后续质量优化
 - **前端诊断面板**：知识库页面展示最近检索记录、治理质量和来源健康；来源异常只会降低证据质量，不会被静默标记为官方来源

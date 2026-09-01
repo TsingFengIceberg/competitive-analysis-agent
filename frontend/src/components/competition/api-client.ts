@@ -386,6 +386,9 @@ export interface KnowledgeSourceConnector {
   last_status: string;
   last_error?: string | null;
   last_job_id?: string | null;
+  priority?: number;
+  max_pages?: number;
+  page_param?: string;
 }
 
 export interface KnowledgeStatus {
@@ -403,6 +406,7 @@ export interface KnowledgeStatus {
     available: boolean;
     collection_exists?: boolean;
     points?: number;
+    embedding_dimension?: number;
     error?: string;
   };
   supported_extensions: string[];
@@ -414,6 +418,10 @@ export interface KnowledgeStatus {
     search_used: number;
     evaluation_limit: number;
     evaluation_used: number;
+  };
+  retrieval?: {
+    semantic_index_available: boolean;
+    lexical_fallback_enabled: boolean;
   };
 }
 

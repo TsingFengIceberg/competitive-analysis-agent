@@ -893,6 +893,39 @@ class KnowledgeService:
                 )
             return [hits or [] for hits in output]
         except Exception as exc:
+            # Keep an already-ingested knowledge base useful when local model
+            # weights or the semantic index are unavailable. The fallback is
+            # bounded, deterministic, and visible in retrieval diagnostics.
+            from competition.knowledge_index import KnowledgeUnavailableError
+
+            if isinstance(exc, KnowledgeUnavailableError) and os.getenv("CI_AGENT_RAG_LEXICAL_FALLBACK", "true").lower() in {"1", "true", "yes", "on"}:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                with self._repo() as repository:
+                    for index, query, filters, limit, cache_key in missing:
+                        lexical = repository.search_chunks_lexical(query, user_id, filters=filters, limit=limit)
+                        hits = self._build_hits(
+                            lexical,
+                            [None] * len(lexical),
+                            limit,
+                            ranking_profile=ranking_profile,
+                            retrieval_mode="sparse",
+                            rerank=False,
+                            feedback_scores=feedback_scores,
+                            credibility_scores=credibility_scores,
+                        )
+                        output[index] = hits
+                        self._put_cached(cache_key, hits)
+                        self._log_retrieval(
+                            user_id=user_id,
+                            query=query,
+                            filters=filters,
+                            hits=hits,
+                            duration_ms=duration_ms,
+                            status="degraded",
+                            error=f"semantic index unavailable; lexical fallback used: {str(exc)[:300]}",
+                        )
+                return [hits or [] for hits in output]
+
             duration_ms = int((time.monotonic() - started) * 1000)
             for _, query, filters, _, _ in missing:
                 self._log_retrieval(
@@ -979,7 +1012,11 @@ class KnowledgeService:
                     valid_to=row.get("valid_to"),
                     temporal_status=row.get("temporal_status") or ("current" if row.get("active") else "historical"),
                     score=score,
-                    retrieval_sources=(("dense", "sparse") if normalized_mode == "hybrid" else (normalized_mode,)) + (("reranker",) if effective_rerank else ()),
+                    retrieval_sources=(
+                        (("dense", "sparse") if normalized_mode == "hybrid" else (normalized_mode,))
+                        + (("reranker",) if effective_rerank else ())
+                        + (("lexical_fallback",) if row.get("retrieval_source") == "lexical_fallback" else ())
+                    ),
                     metadata={
                         **(row.get("metadata") or {}),
                         "version_metadata": row.get("version_metadata") or {},
@@ -988,6 +1025,7 @@ class KnowledgeService:
                         "authority_score": authority,
                         "source_credibility": (credibility_scores or {}).get(self._source_domain(row.get("source_uri") or "")),
                         "retrieval_explanation": explanation,
+                        "degraded": row.get("retrieval_source") == "lexical_fallback",
                         "feedback_prior": feedback_adjustment(
                             relevant=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("relevant", 0),
                             not_relevant=(feedback_scores or {}).get(str(row.get("chunk_id")), {}).get("not_relevant", 0),
@@ -1249,12 +1287,13 @@ class KnowledgeService:
             )
             # Keep a small online metric stream for latency/result regressions;
             # detailed traces remain in knowledge_retrieval_logs.
-            if status == "completed":
+            if status in {"completed", "degraded"}:
                 now = _now()
                 for metric_name, value in (
                     ("retrieval.latency_ms", float(duration_ms)),
                     ("retrieval.result_count", float(len(hits))),
                     ("retrieval.cache_hit", 1.0 if cache_hit else 0.0),
+                    ("retrieval.degraded", 1.0 if status == "degraded" else 0.0),
                 ):
                     repository.conn.execute(
                         """INSERT INTO knowledge_online_metrics (
@@ -2074,10 +2113,15 @@ class KnowledgeService:
         with self._repo() as repository:
             database = repository.stats(user_id)
             spaces = repository.list_spaces(user_id)
+        index_status = self.index.status()
         return {
             "database": database,
             "spaces": spaces,
-            "index": self.index.status(),
+            "index": index_status,
+            "retrieval": {
+                "semantic_index_available": bool(index_status.get("available")),
+                "lexical_fallback_enabled": os.getenv("CI_AGENT_RAG_LEXICAL_FALLBACK", "true").lower() in {"1", "true", "yes", "on"},
+            },
             "supported_extensions": sorted(SUPPORTED_SUFFIXES),
             "max_upload_bytes": MAX_UPLOAD_BYTES,
             "inbox": str(self.inbox),

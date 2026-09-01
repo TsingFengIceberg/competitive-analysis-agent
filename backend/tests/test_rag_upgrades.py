@@ -74,6 +74,24 @@ def test_source_sync_uses_content_hash_and_queues_only_changes(tmp_path: Path):
         assert len(calls) == 1
 
 
+def test_source_sync_closes_run_when_fetcher_raises(tmp_path: Path):
+    with SourceRepository(db_path=tmp_path / "source-error.db") as repository:
+        source = KnowledgeSourceConnector(name="Broken", uri="https://example.test/broken", user_id="owner")
+        saved = repository.save(source)
+
+        result = sync_source(
+            saved,
+            user_id="owner",
+            repository=repository,
+            fetcher=lambda _source: (_ for _ in ()).throw(RuntimeError("upstream unavailable")),
+            register=lambda **_kwargs: {},
+        )
+        assert result["status"] == "failed"
+        run = repository.list_sync_runs("owner", source_id=source.source_id, limit=1)[0]
+        assert run["status"] == "failed"
+        assert "upstream unavailable" in (run["error"] or "")
+
+
 def test_rag_context_is_budgeted_and_marks_report_memory_non_citable():
     bundle = build_agent_evidence_bundle(
         {
@@ -227,3 +245,27 @@ def test_online_metrics_and_entity_alias_governance(tmp_path: Path):
         repository.record_online_metric(user_id="owner", metric_name="retrieval.latency_ms", value=20, sample_count=1)
         summary = repository.online_metric_summary("owner")
     assert summary["metrics"]["retrieval.latency_ms"]["weighted_mean"] == 13.333333
+
+
+def test_lexical_fallback_search_is_scoped_and_ranked(tmp_path: Path):
+    service = build_service(tmp_path)
+    result = service.register_bytes(
+        user_id="owner",
+        filename="cursor.md",
+        data=b"# Cursor pricing\nCursor offers a team plan and enterprise controls.",
+        title="Cursor pricing",
+        product="Cursor",
+        dimension="pricing",
+    )
+    job_id = (result["job"] or {})["job_id"]
+    service.process_job(job_id)
+    with KnowledgeRepository(db_path=service.db_path) as repository:
+        hits = repository.search_chunks_lexical(
+            "Cursor enterprise pricing",
+            "owner",
+            filters=RetrievalFilters(products=("Cursor",), dimensions=("pricing",)),
+            limit=5,
+        )
+    assert hits
+    assert hits[0][1] > 0
+    assert hits[0][0]["retrieval_source"] == "lexical_fallback" or "retrieval_source" not in hits[0][0]
