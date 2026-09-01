@@ -9,12 +9,15 @@
 <p align="center"><strong>AI 驱动的竞品分析 Agent 协作系统</strong></p>
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.1+-ff6f00?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![SQLite](https://img.shields.io/badge/SQLite-WAL-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Qdrant](https://img.shields.io/badge/Qdrant%20Client-1.19%2B-d63aff)](https://qdrant.tech)
+[![Docling](https://img.shields.io/badge/Docling-2.122%2B-4b6cb7)](https://github.com/docling-project/docling)
+[![A2A SDK](https://img.shields.io/badge/A2A%20SDK-1.1.2-2980b9)](https://pypi.org/project/a2a-sdk/)
 
 ## 目录
 
@@ -46,21 +49,31 @@ Competitive-Analysis-Agent 将竞品研究拆分为可追踪、可审查、可�
 
 ## 架构速览
 
-![系统架构图](images/architecture.png)
+```mermaid
+flowchart LR
+    UI[Next.js 前端<br/>报告 · 观察 · 知识库] -->|REST / SSE| API[FastAPI 网关]
+    A2A[A2A Provider<br/>AgentCard · JSON-RPC · Task · SSE] --> API
 
-```text
-Next.js UI ── REST/SSE ── FastAPI Gateway
-                              │
-                       LangGraph Workflow
-             Orchestrator → Collector → Analyst
-                                  ↓          │
-                              Reviewer ←─────┘
-                                  ↓
-                           Writer → HITL Gate
-                              │
-                SQLite + Qdrant + Object Storage
-                              │
-                     A2A Provider (separate adapter)
+    subgraph WF[LangGraph StateGraph 编排引擎]
+        O[Orchestrator<br/>范围与 Schema]
+        C[Collector<br/>搜索与证据]
+        A[Analyst<br/>矩阵与洞察]
+        R[Reviewer<br/>质量门禁]
+        W[Writer<br/>引用报告]
+        H[HITL Gate<br/>人工确认]
+        O --> C --> A --> R
+        R -->|gap| C
+        R -->|pass| W --> H
+        H -->|rework| C
+        H -->|rewrite| W
+    end
+
+    API --> WF
+    WF --> RAG[RAG 知识服务<br/>混合检索 · GraphRAG · 治理]
+    WF --> TASKS[持久化任务队列<br/>SQLite 租约 · Worker]
+    WF --> DB[(SQLite)]
+    RAG --> Q[(Qdrant)]
+    RAG --> OBJ[(Local / S3 对象存储)]
 ```
 
 详细的状态契约、版本模型、HITL 和事件设计见[架构与工作流](docs/architecture.md)。
@@ -115,13 +128,17 @@ CI_AGENT_CONFIG_MODE=file make dev
 
 | 层 | 技术 |
 | --- | --- |
-| 编排 | LangGraph StateGraph、条件路由、反馈闭环 |
-| 后端 | Python 3.12、FastAPI、Pydantic v2、SQLite |
-| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS 4 |
-| 检索 | BGE-M3、FastEmbed BM25、Qdrant RRF、bge-reranker-v2-m3 |
-| 解析 | Docling、RapidOCR、OOXML fallback、BeautifulSoup |
+| 编排 | LangGraph StateGraph 1.1+、条件路由、反馈闭环 |
+| 后端 | Python 3.12、FastAPI 0.115+、Pydantic v2、SQLite |
+| 前端 | Next.js 16.2、React 19、TypeScript 5.8、Tailwind CSS 4 |
+| 检索与 RAG | BGE-M3 Dense、FastEmbed BM25 Sparse、Qdrant RRF、bge-reranker-v2-m3、查询规划 |
+| 知识治理 | SQLite temporal GraphRAG、实体归一化、来源可信度、版本和审批审计 |
+| 文档解析与存储 | Docling、RapidOCR、OOXML fallback、BeautifulSoup、Local/S3 对象存储 |
+| 持续观察 | SQLite observation scheduler、增量变化检测、来源连接器、告警冷却 |
 | 任务 | SQLite durable queue、schedule lease、standalone Worker |
-| 互操作 | `a2a-sdk==1.1.2`、A2A protocol 1.0 |
+| 流式与互操作 | SSE 事件流、`a2a-sdk==1.1.2`、A2A protocol 1.0、JSON-RPC |
+| 通知 | In-app、Feishu Bot、Webhook notification router |
+| 评估与验证 | Pytest、Playwright、RAG golden set、Recall/MRR/NDCG、线上延迟指标 |
 | 部署 | uv、pnpm、Docker 配置、Make 命令 |
 
 ## 项目结构

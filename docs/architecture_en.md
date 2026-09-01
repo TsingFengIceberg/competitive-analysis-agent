@@ -4,6 +4,35 @@
 
 The system consists of a Next.js frontend, a FastAPI gateway, a LangGraph competitive-analysis workflow, and SQLite/Qdrant knowledge storage. It exposes the existing REST/SSE APIs and an independent standard A2A Provider. A2A exposes the complete analysis system as one black-box Agent; internal Agents are not exposed as separate remote Agents.
 
+## Complete architecture diagram
+
+```mermaid
+flowchart LR
+    UI[Next.js Frontend<br/>Reports · Monitoring · Knowledge] -->|REST / SSE| API[FastAPI Gateway]
+    A2A[A2A Provider<br/>AgentCard · JSON-RPC · Task · SSE] --> API
+
+    subgraph WF[LangGraph StateGraph]
+        O[Orchestrator<br/>Scope and schema]
+        C[Collector<br/>Search and evidence]
+        A[Analyst<br/>Matrix and insights]
+        R[Reviewer<br/>Quality gate]
+        W[Writer<br/>Cited report]
+        H{HITL Gate<br/>Human approval}
+        O --> C --> A --> R
+        R -->|gap| C
+        R -->|pass| W --> H
+        H -->|rework| C
+        H -->|rewrite| W
+    end
+
+    API --> WF
+    WF --> RAG[RAG Knowledge Service<br/>Hybrid retrieval · GraphRAG · Governance]
+    WF --> TASKS[Durable Task Queue<br/>SQLite lease · Worker]
+    WF --> DB[(SQLite)]
+    RAG --> Q[(Qdrant)]
+    RAG --> OBJ[(Local / S3 Object Storage)]
+```
+
 ## LangGraph workflow
 
 | Stage | Role | Main output |

@@ -4,6 +4,35 @@
 
 系统由 Next.js 前端、FastAPI 网关、LangGraph 竞品分析流程和 SQLite/Qdrant 知识存储组成。对外提供现有 REST/SSE API，以及独立的标准 A2A Provider。A2A 只暴露整个竞品分析系统这个黑盒 Agent，内部 Agent 不作为外部 Agent 暴露。
 
+## 完整架构图
+
+```mermaid
+flowchart LR
+    UI[Next.js 前端<br/>报告 · 观察 · 知识库] -->|REST / SSE| API[FastAPI 网关]
+    A2A[A2A Provider<br/>AgentCard · JSON-RPC · Task · SSE] --> API
+
+    subgraph WF[LangGraph StateGraph 编排引擎]
+        O[Orchestrator<br/>范围与 Schema]
+        C[Collector<br/>搜索与证据]
+        A[Analyst<br/>矩阵与洞察]
+        R[Reviewer<br/>质量门禁]
+        W[Writer<br/>引用报告]
+        H{HITL Gate<br/>人工确认}
+        O --> C --> A --> R
+        R -->|gap| C
+        R -->|pass| W --> H
+        H -->|rework| C
+        H -->|rewrite| W
+    end
+
+    API --> WF
+    WF --> RAG[RAG 知识服务<br/>混合检索 · GraphRAG · 治理]
+    WF --> TASKS[持久化任务队列<br/>SQLite 租约 · Worker]
+    WF --> DB[(SQLite)]
+    RAG --> Q[(Qdrant)]
+    RAG --> OBJ[(Local / S3 对象存储)]
+```
+
 ## LangGraph 流程
 
 | 阶段 | 角色 | 主要产出 |
