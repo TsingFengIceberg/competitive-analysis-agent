@@ -1,0 +1,54 @@
+{
+  "schema_version": "rag-experiments.v1",
+  "dataset": "evals/rag/real-v2.json",
+  "description": "Reproducible retrieval ablation matrix for the competitive-intelligence RAG pipeline.",
+  "baseline": "no-rag",
+  "drift_baseline_dataset": "evals/rag/real-v1.json",
+  "drift_policy": {
+    "max_category_shift": 0.25
+  },
+  "experiments": [
+    {
+      "id": "no-rag",
+      "description": "No local retrieval; used only as a lower-bound baseline.",
+      "retrieval_mode": "none",
+      "rerank": false,
+      "graph": false
+    },
+    {
+      "id": "dense-only",
+      "description": "Dense vector retrieval without reranking.",
+      "retrieval_mode": "dense",
+      "rerank": false,
+      "graph": false
+    },
+    {
+      "id": "hybrid",
+      "description": "Dense and sparse retrieval fused with reciprocal-rank fusion.",
+      "retrieval_mode": "hybrid",
+      "rerank": false,
+      "graph": false
+    },
+    {
+      "id": "hybrid-rerank",
+      "description": "Hybrid retrieval followed by the configured cross-encoder reranker.",
+      "retrieval_mode": "hybrid",
+      "rerank": true,
+      "graph": false
+    },
+    {
+      "id": "full",
+      "description": "Production candidate: hybrid retrieval, reranking, adaptive planning, and graph context.",
+      "retrieval_mode": "hybrid",
+      "rerank": true,
+      "graph": true
+    },
+    {
+      "id": "adaptive",
+      "description": "Production candidate with intent-aware mode, profile, and reranker selection.",
+      "retrieval_mode": "auto",
+      "rerank": true,
+      "graph": true
+    }
+  ]
+}

@@ -1,0 +1,840 @@
+{
+  "name": "competitive-intelligence-public-snapshots-v2",
+  "description": "Expanded, versioned competitive-intelligence benchmark with answerable, no-answer, multilingual, temporal, multi-hop, and distractor cases.",
+  "schema_version": 2,
+  "curation": {
+    "policy": "Each excerpt must preserve a verifiable first-party claim, source URL, capture date, product, dimension, and expected retrieval labels. Refresh snapshots when the upstream page materially changes.",
+    "review_status": "human_curated",
+    "last_reviewed_at": "2026-09-01",
+    "dataset_version": "v2",
+    "case_policy": "Queries are classified by category, difficulty, split, and answerability; every answerable query names gold evidence and every no-answer query must be abstained from."
+  },
+  "k": 5,
+  "evaluation_policy": {
+    "minimum_cases": 40,
+    "required_categories": ["fact", "comparison", "temporal", "multi_hop", "no_answer"]
+  },
+  "thresholds": {
+    "recall_at_k": 0.8,
+    "mrr": 0.7,
+    "ndcg_at_k": 0.75,
+    "abstention_accuracy": 1.0,
+    "traceability_rate": 1.0,
+    "claim_status_accuracy": 0.8,
+    "contradiction_recall": 0.8,
+    "citation_precision": 0.8,
+    "numeric_consistency_accuracy": 0.8,
+    "groundedness": 0.4,
+    "query_route_accuracy": 0.9,
+    "decomposition_coverage": 0.8,
+    "governance_accuracy": 1.0,
+    "quarantine_recall": 1.0,
+    "memory_recall_at_k": 1.0,
+    "memory_isolation_rate": 1.0,
+    "current_thread_exclusion_rate": 1.0,
+    "graph_route_accuracy": 1.0,
+    "relation_recall_at_k": 1.0,
+    "relation_traceability_rate": 1.0,
+    "temporal_relation_accuracy": 1.0,
+    "unsupported_relation_rate": 0.0,
+    "robustness_invariance_rate": 0.8
+  },
+  "documents": [
+    {
+      "id": "cursor-tab-docs",
+      "filename": "cursor-tab.md",
+      "title": "Cursor Tab overview snapshot",
+      "product": "Cursor",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.cursor.com/tab/overview",
+      "text": "# Cursor Tab\n\nCursor Tab is a specialized autocomplete model that predicts the next action and can suggest edits around the current code. It supports multi-line edits and suggestions that account for recent changes and surrounding code."
+    },
+    {
+      "id": "cursor-privacy-docs",
+      "filename": "cursor-privacy.md",
+      "title": "Cursor privacy overview snapshot",
+      "product": "Cursor",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://www.cursor.com/security",
+      "text": "# Privacy Mode\n\nWhen Privacy Mode is enabled, code data is not stored by model providers or used for training. Cursor is SOC 2 Type II certified and provides enterprise privacy controls."
+    },
+    {
+      "id": "copilot-coding-agent-docs",
+      "filename": "copilot-coding-agent.md",
+      "title": "GitHub Copilot coding agent snapshot",
+      "product": "GitHub Copilot",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-05-19T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-coding-agent",
+      "text": "# About Copilot coding agent\n\nGitHub Copilot coding agent works independently in a GitHub Actions-powered environment. It can complete development tasks and create a pull request for human review."
+    },
+    {
+      "id": "copilot-free-limits-docs",
+      "filename": "copilot-free-limits.md",
+      "title": "GitHub Copilot Free limits snapshot",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "published_at": "2024-12-18T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.github.com/en/copilot/get-started/plans-for-github-copilot",
+      "text": "# GitHub Copilot Free\n\nCopilot Free includes up to 2,000 code completions and 50 chat requests per month. Paid plans provide higher allowances and additional capabilities."
+    },
+    {
+      "id": "codex-cloud-docs",
+      "filename": "codex-cloud.md",
+      "title": "OpenAI Codex cloud snapshot",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-05-16T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://openai.com/index/introducing-codex/",
+      "text": "# Codex cloud tasks\n\nCodex can work on many tasks in parallel in isolated cloud environments. Each task runs in a sandbox preloaded with the repository and produces changes that a developer can review."
+    },
+    {
+      "id": "codex-cli-docs",
+      "filename": "codex-cli.md",
+      "title": "OpenAI Codex CLI snapshot",
+      "product": "OpenAI Codex",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-04-16T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://developers.openai.com/codex/cli/",
+      "text": "# Codex CLI\n\nCodex CLI is a coding agent that runs locally from the terminal. It can read, change, and run code in the selected directory while presenting actions for review and approval."
+    },
+    {
+      "id": "claude-code-overview-docs",
+      "filename": "claude-code-overview.md",
+      "title": "Claude Code overview snapshot",
+      "product": "Claude Code",
+      "dimension": "features",
+      "authority_tier": "primary",
+      "published_at": "2025-02-24T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/overview",
+      "text": "# Claude Code overview\n\nClaude Code is an agentic coding tool that lives in the terminal, understands a codebase, and helps developers code faster through natural language commands."
+    },
+    {
+      "id": "claude-code-security-docs",
+      "filename": "claude-code-security.md",
+      "title": "Claude Code security snapshot",
+      "product": "Claude Code",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-02-24T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/security",
+      "text": "# Security safeguards\n\nClaude Code uses permission-based controls for sensitive operations. Write operations and commands are governed by explicit permissions that users can review and configure."
+    },
+    {
+      "id": "nextjs-routing-docs",
+      "filename": "nextjs-routing.md",
+      "title": "Next.js routing snapshot",
+      "product": "Next.js",
+      "dimension": "technology",
+      "authority_tier": "primary",
+      "published_at": "2025-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://nextjs.org/docs/app/building-your-application/routing",
+      "text": "# Routing fundamentals\n\nNext.js uses file-system routing where folders define routes and files create user interface segments."
+    },
+    {
+      "id": "cursor-irrelevant-community",
+      "filename": "cursor-community.md",
+      "title": "Cursor community discussion distractor",
+      "product": "Cursor",
+      "dimension": "community",
+      "authority_tier": "third_party",
+      "published_at": "2023-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://community.example.test/cursor",
+      "text": "A community discussion mentions editor themes and keyboard shortcuts. It is not an authoritative source for current pricing, privacy, or agent behavior."
+    },
+    {
+      "id": "copilot-irrelevant-roadmap",
+      "filename": "copilot-roadmap.md",
+      "title": "Copilot roadmap distractor",
+      "product": "GitHub Copilot",
+      "dimension": "roadmap",
+      "authority_tier": "third_party",
+      "published_at": "2022-06-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://community.example.test/copilot-roadmap",
+      "text": "An old roadmap discussion speculates about future integrations. It should not answer current plan limits or security questions."
+    },
+    {
+      "id": "codex-irrelevant-benchmark",
+      "filename": "codex-benchmark.md",
+      "title": "Codex benchmark distractor",
+      "product": "OpenAI Codex",
+      "dimension": "benchmarks",
+      "authority_tier": "third_party",
+      "published_at": "2023-04-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://community.example.test/codex-benchmark",
+      "text": "A historical benchmark compares completion speed. It contains no verified information about current cloud tasks, CLI permissions, or pricing."
+    },
+    {
+      "id": "generic-security-distractor",
+      "filename": "generic-security.md",
+      "title": "Generic security guidance distractor",
+      "product": "General tooling",
+      "dimension": "security",
+      "authority_tier": "third_party",
+      "published_at": "2024-01-01T00:00:00+00:00",
+      "captured_at": "2026-08-27T00:00:00+08:00",
+      "source_url": "https://security.example.test/guidance",
+      "text": "General guidance recommends least privilege and audit logs. It does not establish product-specific controls for any competitor."
+    }
+  ],
+  "queries": [
+    {
+      "id": "cursor-tab-direct",
+      "query": "What does Cursor Tab predict and suggest?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "category": "fact", "difficulty": "easy", "split": "regression",
+      "relevant": ["cursor-tab-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "cursor-privacy-direct-zh",
+      "query": "Cursor 隐私模式如何处理代码数据？",
+      "products": ["Cursor"],
+      "dimensions": ["technology"],
+      "category": "fact", "difficulty": "medium", "split": "regression",
+      "relevant": ["cursor-privacy-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "copilot-agent-direct",
+      "query": "Where does GitHub Copilot coding agent work and what artifact does it create for review?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["features"],
+      "category": "fact", "difficulty": "medium", "split": "regression",
+      "relevant": ["copilot-coding-agent-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "copilot-free-direct",
+      "query": "How many completions and chat requests are included in Copilot Free each month?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["pricing"],
+      "category": "fact", "difficulty": "easy", "split": "regression",
+      "relevant": ["copilot-free-limits-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "codex-cloud-direct",
+      "query": "How are Codex cloud tasks isolated and reviewed?",
+      "products": ["OpenAI Codex"],
+      "dimensions": ["technology"],
+      "category": "fact", "difficulty": "medium", "split": "regression",
+      "relevant": ["codex-cloud-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "claude-permission-direct",
+      "query": "Which Claude Code safeguards govern write operations and commands?",
+      "products": ["Claude Code"],
+      "dimensions": ["technology"],
+      "category": "fact", "difficulty": "medium", "split": "regression",
+      "relevant": ["claude-code-security-docs"],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "codex-copilot-comparison",
+      "query": "Compare how Codex and GitHub Copilot execute delegated tasks and return work for human review",
+      "products": ["OpenAI Codex", "GitHub Copilot"],
+      "dimensions": ["features", "technology"],
+      "category": "comparison", "difficulty": "hard", "split": "regression",
+      "relevant": ["codex-cloud-docs", "copilot-coding-agent-docs"],
+      "expected_route": "multi_hop",
+      "required_step_purposes": ["scoped_rewrite", "bridge_from_first_hop_evidence"]
+    },
+    {
+      "id": "terminal-agents-comparison",
+      "query": "比较 Codex CLI 和 Claude Code 的终端工作方式以及权限控制",
+      "products": ["OpenAI Codex", "Claude Code"],
+      "dimensions": ["features", "technology"],
+      "category": "comparison", "difficulty": "hard", "split": "regression",
+      "relevant": ["codex-cli-docs", "claude-code-overview-docs", "claude-code-security-docs"],
+      "expected_route": "multi_hop",
+      "required_step_purposes": ["scoped_rewrite", "bridge_from_first_hop_evidence"]
+    },
+    {
+      "id": "absent-product-abstention",
+      "query": "What enterprise controls are documented for Product Zeta Quantum?",
+      "products": ["Product Zeta Quantum"],
+      "dimensions": ["technology"],
+      "category": "no_answer", "difficulty": "medium", "split": "regression",
+      "relevant": [],
+      "expected_route": "direct",
+      "required_step_purposes": ["direct_lookup"]
+    },
+    {
+      "id": "v2-cursor-tab-multiline",
+      "query": "Does Cursor Tab support multi-line edits?",
+      "products": ["Cursor"], "dimensions": ["features"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["cursor-tab-docs"]
+    },
+    {
+      "id": "v2-cursor-tab-context",
+      "query": "What context does Cursor Tab account for when suggesting code?",
+      "products": ["Cursor"], "dimensions": ["features"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["cursor-tab-docs"]
+    },
+    {
+      "id": "v2-cursor-privacy-training",
+      "query": "When Privacy Mode is enabled, is Cursor code used for training?",
+      "products": ["Cursor"], "dimensions": ["technology"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-cursor-soc",
+      "query": "What security certification is mentioned in the Cursor privacy snapshot?",
+      "products": ["Cursor"], "dimensions": ["technology"], "category": "fact", "difficulty": "medium", "split": "test",
+      "relevant": ["cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-copilot-actions",
+      "query": "Which environment powers GitHub Copilot coding agent?",
+      "products": ["GitHub Copilot"], "dimensions": ["features"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["copilot-coding-agent-docs"]
+    },
+    {
+      "id": "v2-copilot-pr",
+      "query": "What reviewable artifact can GitHub Copilot coding agent create?",
+      "products": ["GitHub Copilot"], "dimensions": ["features"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["copilot-coding-agent-docs"]
+    },
+    {
+      "id": "v2-copilot-completions",
+      "query": "What is the monthly completion allowance in Copilot Free?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "v2-copilot-chat",
+      "query": "What is the monthly chat allowance in Copilot Free?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "v2-codex-sandbox",
+      "query": "Are Codex cloud tasks run in isolated environments?",
+      "products": ["OpenAI Codex"], "dimensions": ["technology"], "category": "fact", "difficulty": "easy", "split": "test",
+      "relevant": ["codex-cloud-docs"]
+    },
+    {
+      "id": "v2-claude-permissions",
+      "query": "How are sensitive Claude Code operations governed?",
+      "products": ["Claude Code"], "dimensions": ["technology"], "category": "fact", "difficulty": "medium", "split": "test",
+      "relevant": ["claude-code-security-docs"]
+    },
+    {
+      "id": "v2-compare-privacy-cloud",
+      "query": "Compare Cursor Privacy Mode with Codex isolated cloud execution.",
+      "products": ["Cursor", "OpenAI Codex"], "dimensions": ["technology"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["cursor-privacy-docs", "codex-cloud-docs"]
+    },
+    {
+      "id": "v2-compare-terminal-tools",
+      "query": "Which of Codex CLI and Claude Code runs from a terminal, and what controls actions?",
+      "products": ["OpenAI Codex", "Claude Code"], "dimensions": ["features", "technology"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cli-docs", "claude-code-overview-docs", "claude-code-security-docs"]
+    },
+    {
+      "id": "v2-compare-review",
+      "query": "Compare the human review outputs of Codex cloud tasks and GitHub Copilot coding agent.",
+      "products": ["OpenAI Codex", "GitHub Copilot"], "dimensions": ["features"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cloud-docs", "copilot-coding-agent-docs"]
+    },
+    {
+      "id": "v2-compare-code-editing",
+      "query": "Compare Cursor Tab suggestions with local Codex CLI code changes.",
+      "products": ["Cursor", "OpenAI Codex"], "dimensions": ["features"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["cursor-tab-docs", "codex-cli-docs"]
+    },
+    {
+      "id": "v2-compare-security",
+      "query": "Compare the documented security controls of Cursor and Claude Code.",
+      "products": ["Cursor", "Claude Code"], "dimensions": ["technology"], "category": "comparison", "difficulty": "medium", "split": "test",
+      "relevant": ["cursor-privacy-docs", "claude-code-security-docs"]
+    },
+    {
+      "id": "v2-compare-limits",
+      "query": "Which source documents a usage limit and which documents an enterprise privacy control?",
+      "products": ["GitHub Copilot", "Cursor"], "dimensions": ["pricing", "technology"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["copilot-free-limits-docs", "cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-compare-agent-capabilities",
+      "query": "Compare delegated task execution in Codex and Claude Code.",
+      "products": ["OpenAI Codex", "Claude Code"], "dimensions": ["features"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cloud-docs", "claude-code-overview-docs"]
+    },
+    {
+      "id": "v2-compare-product-set",
+      "query": "Across Cursor, Copilot, and Codex, which documents mention review by a developer?",
+      "products": ["Cursor", "GitHub Copilot", "OpenAI Codex"], "dimensions": ["features"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["copilot-coding-agent-docs", "codex-cloud-docs"]
+    },
+    {
+      "id": "v2-compare-official-sources",
+      "query": "Compare the authority and content of first-party Cursor and Copilot snapshots.",
+      "products": ["Cursor", "GitHub Copilot"], "dimensions": ["features"], "category": "comparison", "difficulty": "medium", "split": "test",
+      "relevant": ["cursor-tab-docs", "copilot-coding-agent-docs"]
+    },
+    {
+      "id": "v2-compare-chinese",
+      "query": "比较 Cursor 隐私模式与 Claude Code 权限控制的区别",
+      "products": ["Cursor", "Claude Code"], "dimensions": ["technology"], "category": "comparison", "difficulty": "hard", "split": "test",
+      "relevant": ["cursor-privacy-docs", "claude-code-security-docs"]
+    },
+    {
+      "id": "v2-temporal-pricing-current",
+      "query": "What is the latest Cursor Teams price in the pricing history?",
+      "products": ["Cursor"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "medium", "split": "test", "published_after": "2026-07-15T00:00:00+00:00",
+      "relevant": ["graph-cursor-pricing-history"]
+    },
+    {
+      "id": "v2-temporal-pricing-before",
+      "query": "What did Cursor Teams cost before the latest price change?",
+      "products": ["Cursor"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "hard", "split": "test",
+      "relevant": ["graph-cursor-pricing-history"]
+    },
+    {
+      "id": "v2-temporal-security",
+      "query": "What is the current documented Cursor privacy policy?",
+      "products": ["Cursor"], "dimensions": ["technology"], "category": "temporal", "difficulty": "medium", "split": "test",
+      "relevant": ["cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-temporal-copilot",
+      "query": "What current Copilot Free limits are documented, and what kind of source records them?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "medium", "split": "test",
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "v2-temporal-codex",
+      "query": "What is the latest documented Codex cloud execution behavior?",
+      "products": ["OpenAI Codex"], "dimensions": ["technology"], "category": "temporal", "difficulty": "medium", "split": "test",
+      "relevant": ["codex-cloud-docs"]
+    },
+    {
+      "id": "v2-temporal-history",
+      "query": "Show the historical and current values in the Cursor pricing timeline.",
+      "products": ["Cursor"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "hard", "split": "test",
+      "relevant": ["graph-cursor-pricing-history"]
+    },
+    {
+      "id": "v2-temporal-asof",
+      "query": "As of July 2026, which Cursor Teams price is recorded?",
+      "products": ["Cursor"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "hard", "split": "test",
+      "relevant": ["graph-cursor-pricing-history"]
+    },
+    {
+      "id": "v2-temporal-stale-distractor",
+      "query": "Does the old community roadmap establish a current Copilot plan limit?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "temporal", "difficulty": "hard", "split": "test",
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "v2-multihop-review-chain",
+      "query": "Trace from Codex cloud isolation to the artifact a reviewer receives.",
+      "products": ["OpenAI Codex"], "dimensions": ["technology"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cloud-docs"]
+    },
+    {
+      "id": "v2-multihop-copilot-chain",
+      "query": "Connect Copilot's execution environment to its human review workflow.",
+      "products": ["GitHub Copilot"], "dimensions": ["features"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["copilot-coding-agent-docs"]
+    },
+    {
+      "id": "v2-multihop-privacy-adoption",
+      "query": "Which Cursor privacy controls matter for enterprise adoption and why?",
+      "products": ["Cursor"], "dimensions": ["technology"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-multihop-terminal-governance",
+      "query": "Relate terminal-based coding assistance to permission governance for Codex CLI and Claude Code.",
+      "products": ["OpenAI Codex", "Claude Code"], "dimensions": ["features", "technology"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cli-docs", "claude-code-security-docs"]
+    },
+    {
+      "id": "v2-multihop-pricing-decision",
+      "query": "Use Copilot usage limits and Cursor privacy evidence to frame an enterprise decision.",
+      "products": ["GitHub Copilot", "Cursor"], "dimensions": ["pricing", "technology"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["copilot-free-limits-docs", "cursor-privacy-docs"]
+    },
+    {
+      "id": "v2-multihop-feature-review",
+      "query": "Which products provide an actionable artifact or permission review after coding work?",
+      "products": ["OpenAI Codex", "GitHub Copilot", "Claude Code"], "dimensions": ["features"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cloud-docs", "copilot-coding-agent-docs", "claude-code-security-docs"]
+    },
+    {
+      "id": "v2-multihop-alias",
+      "query": "Compare OpenAI's terminal and cloud Codex workflows and connect them to review.",
+      "products": ["OpenAI Codex"], "dimensions": ["features", "technology"], "category": "multi_hop", "difficulty": "hard", "split": "test",
+      "relevant": ["codex-cli-docs", "codex-cloud-docs"]
+    },
+    {
+      "id": "v2-noanswer-zeta-price",
+      "query": "What is Product Zeta Quantum's verified monthly price?",
+      "products": ["Product Zeta Quantum"], "dimensions": ["pricing"], "category": "no_answer", "difficulty": "medium", "split": "test",
+      "relevant": []
+    },
+    {
+      "id": "v2-noanswer-cursor-quantum",
+      "query": "Does Cursor offer the fictional Quantum Mesh protocol?",
+      "products": ["Cursor"], "dimensions": ["technology"], "category": "no_answer", "difficulty": "hard", "split": "test",
+      "abstention_expected": false,
+      "relevant": []
+    },
+    {
+      "id": "v2-noanswer-copilot-region",
+      "query": "What is the verified Copilot Free limit in the fictional Mars region?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "no_answer", "difficulty": "hard", "split": "test",
+      "abstention_expected": false,
+      "relevant": []
+    },
+    {
+      "id": "v2-noanswer-codex-cert",
+      "query": "Which certification does the Codex benchmark distractor prove?",
+      "products": ["OpenAI Codex"], "dimensions": ["security"], "category": "no_answer", "difficulty": "hard", "split": "test",
+      "abstention_expected": false,
+      "relevant": []
+    },
+    {
+      "id": "v2-noanswer-generic-product",
+      "query": "Which competitor-specific privacy policy is contained in generic security guidance?",
+      "products": ["General tooling"], "dimensions": ["security"], "category": "no_answer", "difficulty": "medium", "split": "test",
+      "abstention_expected": false,
+      "relevant": []
+    },
+    {
+      "id": "v2-noanswer-roadmap",
+      "query": "What exact current Copilot plan price is stated by the old roadmap discussion?",
+      "products": ["GitHub Copilot"], "dimensions": ["pricing"], "category": "no_answer", "difficulty": "hard", "split": "test",
+      "abstention_expected": false,
+      "relevant": []
+    }
+  ],
+  "governance_cases": [
+    {
+      "id": "official-high-confidence-auto-admit",
+      "kind": "intelligence",
+      "source_credibility": 0.8,
+      "expected_status": "approved",
+      "payload": {
+        "product": "Cursor",
+        "dimension": "pricing",
+        "label": "Official team price",
+        "value": "$40 per user per month",
+        "source_url": "https://cursor.com/pricing",
+        "confidence": 0.92,
+        "credibility_tier": "official"
+      }
+    },
+    {
+      "id": "uncertain-missing-source-quarantine",
+      "kind": "intelligence",
+      "source_credibility": 0.2,
+      "expected_status": "pending",
+      "payload": {
+        "product": "Cursor",
+        "dimension": "pricing",
+        "label": "Rumored price",
+        "value": "$99",
+        "source_url": "",
+        "confidence": 0.3,
+        "credibility_tier": "secondary"
+      }
+    },
+    {
+      "id": "grounded-report-auto-admit",
+      "kind": "report",
+      "expected_status": "approved",
+      "payload": {
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    },
+    {
+      "id": "warning-report-quarantine",
+      "kind": "report",
+      "expected_status": "pending",
+      "payload": {
+        "quality_gate": {"status": "warning", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.8},
+        "claim_verification": {"groundedness": 0.4, "citation_precision": 0.9}
+      }
+    }
+  ],
+  "robustness_queries": [
+    {
+      "id": "robust-cursor-tab-baseline",
+      "query": "Does Cursor Tab support multi-line edits?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "category": "fact", "difficulty": "easy", "split": "robustness",
+      "robustness_group": "cursor-tab-multiline",
+      "variant_type": "baseline",
+      "relevant": ["cursor-tab-docs"]
+    },
+    {
+      "id": "robust-cursor-tab-paraphrase",
+      "query": "Can Cursor Tab suggest edits spanning multiple lines?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "category": "fact", "difficulty": "medium", "split": "robustness",
+      "robustness_group": "cursor-tab-multiline",
+      "variant_type": "paraphrase",
+      "expected_invariant": true,
+      "relevant": ["cursor-tab-docs"]
+    },
+    {
+      "id": "robust-copilot-limit-baseline",
+      "query": "What is the monthly completion allowance in Copilot Free?",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["pricing"],
+      "category": "fact", "difficulty": "easy", "split": "robustness",
+      "robustness_group": "copilot-free-completions",
+      "variant_type": "baseline",
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "robust-copilot-limit-zh",
+      "query": "Copilot Free 每月包含多少代码补全次数？",
+      "products": ["GitHub Copilot"],
+      "dimensions": ["pricing"],
+      "category": "fact", "difficulty": "medium", "split": "robustness",
+      "robustness_group": "copilot-free-completions",
+      "variant_type": "translation",
+      "expected_invariant": true,
+      "relevant": ["copilot-free-limits-docs"]
+    },
+    {
+      "id": "robust-codex-review-baseline",
+      "query": "How are Codex cloud tasks isolated and reviewed?",
+      "products": ["OpenAI Codex"],
+      "dimensions": ["technology"],
+      "category": "fact", "difficulty": "medium", "split": "robustness",
+      "robustness_group": "codex-cloud-review",
+      "variant_type": "baseline",
+      "relevant": ["codex-cloud-docs"]
+    },
+    {
+      "id": "robust-codex-review-short",
+      "query": "Codex cloud sandbox and human review process",
+      "products": ["OpenAI Codex"],
+      "dimensions": ["technology"],
+      "category": "fact", "difficulty": "hard", "split": "robustness",
+      "robustness_group": "codex-cloud-review",
+      "variant_type": "short_query",
+      "expected_invariant": true,
+      "relevant": ["codex-cloud-docs"]
+    }
+  ],
+  "memory_documents": [
+    {
+      "id": "memory-enterprise-adoption",
+      "thread_id": "comp-memory-enterprise",
+      "version": 1,
+      "generation_id": "eval-memory-enterprise-v1",
+      "analysis_brief": {
+        "objective": "Compare enterprise adoption considerations for Cursor and OpenAI Codex",
+        "target_products": ["Cursor", "OpenAI Codex"]
+      },
+      "report_data": {
+        "title": "Prior enterprise adoption analysis",
+        "generated_at": "2026-08-20T00:00:00+00:00",
+        "products": ["Cursor", "OpenAI Codex"],
+        "sections": [
+          {
+            "id": "enterprise-memory",
+            "title": "Decision themes",
+            "content": "The previous analysis identified enterprise privacy controls and isolated cloud task execution as decision themes that should be rechecked against current first-party evidence."
+          }
+        ],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    },
+    {
+      "id": "memory-current-thread",
+      "thread_id": "comp-memory-current",
+      "version": 1,
+      "generation_id": "eval-memory-current-v1",
+      "analysis_brief": {
+        "objective": "Current in-progress report that must not retrieve itself",
+        "target_products": ["Cursor", "OpenAI Codex"]
+      },
+      "report_data": {
+        "title": "Current report self-reference trap",
+        "generated_at": "2026-08-27T00:00:00+00:00",
+        "products": ["Cursor", "OpenAI Codex"],
+        "sections": [
+          {
+            "id": "self-reference",
+            "title": "Self reference",
+            "content": "This current report repeats enterprise privacy controls and isolated cloud task execution but must be excluded from its own memory context."
+          }
+        ],
+        "quality_gate": {"status": "pass", "blocking_count": 0},
+        "quality_summary": {"overall_quality_score": 0.9},
+        "claim_verification": {"groundedness": 0.9, "citation_precision": 0.9}
+      }
+    }
+  ],
+  "memory_cases": [
+    {
+      "id": "historical-report-planning-memory",
+      "query": "Which prior analysis identified enterprise privacy controls and isolated cloud task execution as decision themes?",
+      "products": ["Cursor", "OpenAI Codex"],
+      "dimensions": ["technology"],
+      "current_thread_id": "comp-memory-current",
+      "relevant": ["memory-enterprise-adoption"],
+      "forbidden": ["comp-memory-current"]
+    }
+  ],
+  "graph_documents": [
+    {
+      "id": "graph-cursor-pricing-history",
+      "filename": "cursor-pricing-history.md",
+      "title": "Cursor official pricing history",
+      "product": "Cursor",
+      "dimension": "pricing",
+      "authority_tier": "primary",
+      "source_type": "official_documentation",
+      "source_url": "https://www.cursor.com/pricing",
+      "versions": [
+        {
+          "published_at": "2026-07-01T00:00:00+00:00",
+          "observed_at": "2026-07-01T00:00:00+00:00",
+          "text": "# Cursor Teams pricing\n\nCursor Teams costs $40 per month."
+        },
+        {
+          "published_at": "2026-08-01T00:00:00+00:00",
+          "observed_at": "2026-08-01T00:00:00+00:00",
+          "text": "# Cursor Teams pricing\n\nCursor Teams now costs $45 per month."
+        }
+      ]
+    }
+  ],
+  "graph_cases": [
+    {
+      "id": "focused-fact-bypasses-graph",
+      "query": "What does Cursor Tab predict?",
+      "products": ["Cursor"],
+      "dimensions": ["features"],
+      "expected_route": "vector_only",
+      "relevant": []
+    },
+    {
+      "id": "cross-product-capability-paths",
+      "query": "Compare how OpenAI Codex and GitHub Copilot execute delegated work and relate it to human review",
+      "products": ["OpenAI Codex", "GitHub Copilot"],
+      "dimensions": ["features", "technology"],
+      "expected_route": "hybrid_graph",
+      "k": 8,
+      "relevant": [
+        "OpenAI Codex|uses_capability|OpenAI Codex cloud snapshot",
+        "GitHub Copilot|provides|GitHub Copilot coding agent snapshot"
+      ]
+    },
+    {
+      "id": "temporal-pricing-paths",
+      "query": "How did Cursor pricing change over time?",
+      "products": ["Cursor"],
+      "dimensions": ["pricing"],
+      "expected_route": "hybrid_graph",
+      "k": 8,
+      "relevant": [
+        "Cursor|priced_at|$45 per month",
+        "Cursor|priced_at|$40 per month"
+      ],
+      "expected_current": ["Cursor|priced_at|$45 per month"],
+      "expected_historical": ["Cursor|priced_at|$40 per month"]
+    }
+  ],
+  "verification_cases": [
+    {
+      "id": "supported-copilot-free-limits",
+      "claim": "Copilot Free includes 2,000 code completions and 50 chat requests per month.",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "cited_documents": ["copilot-free-limits-docs"],
+      "expected_status": "supported",
+      "expected_supporting": ["copilot-free-limits-docs"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": true
+    },
+    {
+      "id": "contradictory-copilot-free-limits",
+      "claim": "Copilot Free includes 5,000 code completions and 50 chat requests per month.",
+      "product": "GitHub Copilot",
+      "dimension": "pricing",
+      "cited_documents": ["copilot-free-limits-docs"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["copilot-free-limits-docs"],
+      "expected_numeric_consistency": false
+    },
+    {
+      "id": "insufficient-absent-product",
+      "claim": "Product Zeta Quantum offers an isolated private cloud coding agent.",
+      "product": "Product Zeta Quantum",
+      "dimension": "technology",
+      "cited_documents": [],
+      "expected_status": "insufficient",
+      "expected_supporting": [],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": null
+    },
+    {
+      "id": "polarity-contradiction-codex-cli",
+      "claim": "Codex CLI cannot read, change, or run code in the selected directory.",
+      "product": "OpenAI Codex",
+      "dimension": "features",
+      "cited_documents": ["codex-cli-docs"],
+      "expected_status": "contradicted",
+      "expected_supporting": [],
+      "expected_contradicting": ["codex-cli-docs"],
+      "expected_numeric_consistency": null
+    },
+    {
+      "id": "incorrect-citation-recovers-codex-cloud",
+      "claim": "Codex can work on many tasks in parallel in isolated cloud environments.",
+      "product": "OpenAI Codex",
+      "dimension": "technology",
+      "cited_documents": ["nextjs-routing-docs"],
+      "expected_status": "supported",
+      "expected_supporting": ["codex-cloud-docs"],
+      "expected_contradicting": [],
+      "expected_numeric_consistency": null
+    }
+  ]
+}

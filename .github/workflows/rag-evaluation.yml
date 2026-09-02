@@ -1,0 +1,67 @@
+name: RAG evaluation
+
+on:
+  push:
+    paths:
+      - "backend/app/competition_router.py"
+      - "backend/packages/competition/competition/knowledge_eval.py"
+      - "backend/packages/competition/competition/knowledge_evaluation_repo.py"
+      - "backend/tests/test_rag_*.py"
+      - "evals/rag/**"
+      - "scripts/run-rag-experiments.py"
+      - "Makefile"
+  pull_request:
+    paths:
+      - "backend/app/competition_router.py"
+      - "backend/packages/competition/competition/knowledge_eval.py"
+      - "backend/packages/competition/competition/knowledge_evaluation_repo.py"
+      - "backend/tests/test_rag_*.py"
+      - "evals/rag/**"
+      - "scripts/run-rag-experiments.py"
+      - "Makefile"
+  workflow_dispatch:
+
+jobs:
+  rag-contracts:
+    name: RAG contracts and deterministic quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - name: Run RAG contract tests
+        working-directory: backend
+        run: uv run pytest tests/test_rag_experiments.py tests/test_rag_upgrades.py tests/test_knowledge_evaluation_api.py -q
+      - name: Validate experiment configuration
+        working-directory: backend
+        run: uv run python -c "import json; from pathlib import Path; import importlib.util; p=Path('../scripts/run-rag-experiments.py'); s=importlib.util.spec_from_file_location('runner', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); c=json.loads(Path('../evals/rag/experiments-v1.json').read_text()); d=json.loads(Path('../evals/rag/real-v2.json').read_text()); m.validate_experiment_config(c, Path('../evals/rag/experiments-v1.json')); m.validate_dataset(d, Path('../evals/rag/real-v2.json'))"
+
+  rag-golden:
+    name: Full RAG golden experiment
+    if: github.event_name == 'workflow_dispatch' && vars.CI_AGENT_RAG_GOLDEN_ENABLED == 'true'
+    needs: rag-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - name: Run isolated B0-B4 experiment
+        working-directory: backend
+        run: uv run python ../scripts/run-rag-experiments.py --strict --output ../rag-experiment-report.json
+      - name: Upload experiment report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-experiment-report
+          path: rag-experiment-report.json
