@@ -79,4 +79,27 @@ SQLite 保存产品、能力、价格、集成、用户群、市场事件、来�
 - `evals/rag/experiments-v1.json`
 - `scripts/run-rag-experiments.py`
 
+## 商品数据离线基准
+
+公开商品样本通过 `backend/packages/competition/competition/product_dataset_adapter.py` 先转换为统一的 `product-rag-record.v1` schema，再经过清洗、稳定 ID、去重和来源/许可证元数据治理。适配器会排除评论者身份和图片字段；这些数据只用于离线评测，不会作为竞品事实自动混入业务报告。
+
+准备标准化语料和四组专项评测集：
+
+```text
+cd backend
+uv run --locked python ../scripts/prepare-product-rag-datasets.py
+```
+
+输出写入被忽略的 `.ci-agent/datasets/normalized/product-rag-v1/`：ESCI 用于商品检索，Abt-Buy 和 Amazon-Google 用于实体匹配，Amazon Reviews 用于评论证据，ABO 用于商品元数据。完整语料保留在 `corpus/`，小型可复现实验集保留在 `evaluations/`。
+
+默认将四个评测集导入独立 SQLite/Qdrant 索引，不触碰默认知识库：
+
+```text
+cd backend
+uv run --locked python ../scripts/ingest-product-rag-datasets.py --warmup
+uv run --locked python ../scripts/evaluate-product-rag.py --all-datasets
+```
+
+导入完整标准化语料时显式使用 `--source corpus`；可用 `--max-documents` 控制 CPU 和磁盘规模。评测报告位于 `.ci-agent/datasets/index-runs/product-rag-v1/evaluation-report.json`，包含无 RAG、稀疏、Hybrid 和 Hybrid+Reranker 的 Recall/MRR/NDCG、拒答、可追溯性及相对基线结果。实体匹配单独报告正配对 Recall@5/MRR 与负配对误入 Top-5 比例，不错误地把负配对当作普通检索的无答案。这里的数字是公开样本上的离线指标，不代表线上业务效果、成本节省或模型能力承诺。
+
 运行 `make rag-eval` 可在临时存储中执行摄取、规划、检索、关系构建和主张核验，报告写入被 Git 忽略的 `.ci-agent/evaluations/`。

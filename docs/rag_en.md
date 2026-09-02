@@ -79,4 +79,27 @@ Common variables include `CI_AGENT_KNOWLEDGE_ROOT`, `CI_AGENT_RAG_QDRANT_URL`, `
 - `evals/rag/experiments-v1.json`
 - `scripts/run-rag-experiments.py`
 
+## Product Dataset Offline Benchmark
+
+Public product samples first pass through `backend/packages/competition/competition/product_dataset_adapter.py`, which emits the unified `product-rag-record.v1` schema and applies cleaning, stable IDs, deduplication, and source/license metadata governance. Reviewer identity and image fields are excluded. These records are evaluation-only and are never automatically treated as competitor facts in business reports.
+
+Prepare normalized corpora and four focused evaluation sets:
+
+```text
+cd backend
+uv run --locked python ../scripts/prepare-product-rag-datasets.py
+```
+
+Outputs are written below the ignored `.ci-agent/datasets/normalized/product-rag-v1/`: ESCI measures product retrieval, Abt-Buy and Amazon-Google measure entity matching, Amazon Reviews measures review evidence retrieval, and ABO measures product metadata retrieval. Full normalized corpora are kept under `corpus/`, while small reproducible experiment snapshots are under `evaluations/`.
+
+By default, import the four evaluation snapshots into an isolated SQLite/Qdrant index without touching the default knowledge base:
+
+```text
+cd backend
+uv run --locked python ../scripts/ingest-product-rag-datasets.py --warmup
+uv run --locked python ../scripts/evaluate-product-rag.py --all-datasets
+```
+
+Use `--source corpus` to ingest the complete normalized corpora and `--max-documents` to control CPU and disk scale. The report is written to `.ci-agent/datasets/index-runs/product-rag-v1/evaluation-report.json` and includes no-RAG, sparse, hybrid, and hybrid-plus-reranker Recall/MRR/NDCG, abstention, traceability, and baseline deltas. Entity matching separately reports positive-pair Recall@5/MRR and the rate at which a negative pair enters Top-5, rather than incorrectly treating negative pairs as ordinary no-answer retrieval. These are offline public-snapshot measurements, not claims about production outcomes, savings, or model capability.
+
 Run `make rag-eval` to execute ingestion, planning, retrieval, relation construction, and claim verification using temporary stores. Reports are written under ignored `.ci-agent/evaluations/`.
