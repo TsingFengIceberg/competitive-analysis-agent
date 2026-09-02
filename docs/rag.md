@@ -52,6 +52,16 @@ SQLite 保存产品、能力、价格、集成、用户群、市场事件、来�
 
 `POST /api/competition/knowledge/evaluate` 支持版本化离线样例，计算 Recall、MRR、NDCG、拒答、追溯、核验、规划和治理指标。反馈还可以生成新的版本化评估集，用于 baseline/candidate 实验和 CI 回归。线上延迟、命中数和缓存命中率持久化后在知识库页面展示。
 
+### RAG 实验与质量门
+
+`evals/rag/real-v2.json` 是扩展评测集，包含事实、比较、时序、多跳和无答案问题，并为每条查询标注难度、语言/数据切分和 gold evidence。`evals/rag/experiments-v1.json` 定义 B0（无 RAG）、Dense-only、Hybrid、Hybrid + Reranker、完整方案和 Adaptive 六组对照。
+
+运行 `make rag-experiments` 会在临时 SQLite/Qdrant 中依次运行这些策略（另含 intent-aware 的自适应候选），输出绝对变化、方向感知的相对变化、P50/P95 延迟、按类别/难度/切分聚合的指标，以及数据集和运行环境元数据。零基线的相对变化会明确标记为 undefined，避免产生虚假的百分比；报告仍写入被忽略的 `.ci-agent/evaluations/`。
+
+评测 API 支持 `minimum_case_count` 和 `required_categories` 质量门。缺少样本或类别会使严格评测失败，而不是把空分组当作满分。检索命中率、答案正确率和 groundedness 必须分开解释。
+
+`bootstrap` 置信区间和 `answer_quality_cases` 为答案级人工/评审模型评分预留了结构化入口；缺少真实评分时只报告覆盖率，不会生成虚假质量分数。运行时还会报告真实模型 usage（若调用方提供）、可选价格估算、失败/降级/超时/重试率、P99 延迟、吞吐和成本门禁；没有 usage 或价格时保持 `null`，并发吞吐只有在调用方提供真实 wall time 时才作为实测值。成对的 `robustness_queries` 可测试改写、翻译和短查询的检索稳定性。数据集质量指标检查元数据完整性、重复文本、干扰文档和类别分布，并可与上一版本计算漂移；若旧版本没有类别标签，会明确报告基线元数据不足，而不是误报漂移。`.github/workflows/rag-evaluation.yml` 默认运行确定性契约门，完整模型实验仅在手动触发且配置仓库变量 `CI_AGENT_RAG_GOLDEN_ENABLED=true` 时执行。
+
 ## 关键配置
 
 常用变量：`CI_AGENT_KNOWLEDGE_ROOT`、`CI_AGENT_RAG_QDRANT_URL`、`CI_AGENT_RAG_QDRANT_API_KEY`、`CI_AGENT_OBJECT_STORE`、`CI_AGENT_RAG_MIN_SCORE`、`CI_AGENT_RAG_QUERY_EXPANSION` 和 `CI_AGENT_RAG_LEXICAL_FALLBACK`。完整配置见[配置指南](configuration.md)。
@@ -65,5 +75,8 @@ SQLite 保存产品、能力、价格、集成、用户群、市场事件、来�
 - `backend/packages/competition/competition/knowledge_storage.py`
 - `backend/packages/competition/competition/graph_algorithms.py`
 - `evals/rag/real-v1.json`
+- `evals/rag/real-v2.json`
+- `evals/rag/experiments-v1.json`
+- `scripts/run-rag-experiments.py`
 
 运行 `make rag-eval` 可在临时存储中执行摄取、规划、检索、关系构建和主张核验，报告写入被 Git 忽略的 `.ci-agent/evaluations/`。

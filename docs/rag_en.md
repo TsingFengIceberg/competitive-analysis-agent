@@ -52,6 +52,16 @@ Retrieval logs record planning, filters, hits, ranking profile, and latency. Hum
 
 `POST /api/competition/knowledge/evaluate` accepts versioned offline cases and computes Recall, MRR, NDCG, abstention, traceability, verification, planning, and governance metrics. Feedback can generate versioned evaluation datasets for baseline/candidate experiments and CI regression. Online latency, result count, and cache-hit samples are persisted and shown in the workspace.
 
+### RAG experiments and quality gates
+
+`evals/rag/real-v2.json` is an expanded benchmark covering fact, comparison, temporal, multi-hop, and no-answer queries, with difficulty, split, and gold-evidence labels for every query. `evals/rag/experiments-v1.json` defines six controlled strategies: B0 (no RAG), dense-only, hybrid, hybrid plus reranker, the full candidate pipeline, and adaptive retrieval.
+
+Run `make rag-experiments` to execute the matrix in temporary SQLite/Qdrant storage, including an intent-aware adaptive candidate. The report contains absolute and direction-aware relative changes, P50/P95 latency, category/difficulty/split aggregates, and dataset/runtime metadata. Relative changes from a zero baseline are explicitly marked undefined so the report cannot manufacture a percentage. Reports remain under ignored `.ci-agent/evaluations/`.
+
+The evaluation API supports `minimum_case_count` and `required_categories` quality gates. Missing samples or required categories fail a strict evaluation instead of being treated as a perfect empty group. Retrieval hit rate, answer correctness, and groundedness must be interpreted separately.
+
+Bootstrap confidence intervals and `answer_quality_cases` provide structured entry points for human or judge-model answer scoring. Without real scores, the system reports coverage only and never invents a quality value. Runtime reports also expose supplied model usage, optional price estimates, failure/degraded/timeout/retry rates, P99 latency, throughput, and cost gates; values remain `null` when usage or pricing is unavailable, and concurrent throughput is treated as measured only when the caller supplies real wall time. Paired `robustness_queries` measure retrieval stability under paraphrases, translations, and short queries. Dataset-quality checks cover metadata completeness, duplicate text, distractors, and category drift against the previous version; when the older version lacks category labels, the report explicitly marks baseline metadata as insufficient instead of claiming drift. `.github/workflows/rag-evaluation.yml` runs deterministic contract gates by default; the full model experiment runs only on manual dispatch when the repository variable `CI_AGENT_RAG_GOLDEN_ENABLED=true` is enabled.
+
 ## Key configuration
 
 Common variables include `CI_AGENT_KNOWLEDGE_ROOT`, `CI_AGENT_RAG_QDRANT_URL`, `CI_AGENT_RAG_QDRANT_API_KEY`, `CI_AGENT_OBJECT_STORE`, `CI_AGENT_RAG_MIN_SCORE`, `CI_AGENT_RAG_QUERY_EXPANSION`, and `CI_AGENT_RAG_LEXICAL_FALLBACK`. See the [configuration guide](configuration_en.md) for the complete table.
@@ -65,5 +75,8 @@ Common variables include `CI_AGENT_KNOWLEDGE_ROOT`, `CI_AGENT_RAG_QDRANT_URL`, `
 - `backend/packages/competition/competition/knowledge_storage.py`
 - `backend/packages/competition/competition/graph_algorithms.py`
 - `evals/rag/real-v1.json`
+- `evals/rag/real-v2.json`
+- `evals/rag/experiments-v1.json`
+- `scripts/run-rag-experiments.py`
 
 Run `make rag-eval` to execute ingestion, planning, retrieval, relation construction, and claim verification using temporary stores. Reports are written under ignored `.ci-agent/evaluations/`.
