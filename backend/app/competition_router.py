@@ -205,8 +205,15 @@ class KnowledgeEvaluationRequest(BaseModel):
     verification_cases: list[dict] = Field(default_factory=list, max_length=500)
     planning_cases: list[dict] = Field(default_factory=list, max_length=500)
     governance_cases: list[dict] = Field(default_factory=list, max_length=500)
+    answer_quality_cases: list[dict] = Field(default_factory=list, max_length=500)
+    runtime_logs: list[dict] = Field(default_factory=list, max_length=1000)
+    pricing: dict[str, dict[str, float]] = Field(default_factory=dict)
+    runtime_wall_time_ms: float | None = Field(default=None, ge=0)
+    runtime_concurrency: int = Field(default=1, ge=1, le=1000)
     k: int = Field(default=5, ge=1, le=50)
     thresholds: dict[str, float] = Field(default_factory=dict)
+    minimum_case_count: int = Field(default=0, ge=0, le=100000)
+    required_categories: list[str] = Field(default_factory=list, max_length=30)
 
 
 class KnowledgeDatasetRequest(BaseModel):
@@ -2124,16 +2131,20 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
     from competition.knowledge_eval import (
         EvaluationThresholds,
         check_thresholds,
+        compute_answer_quality_metrics,
         compute_governance_metrics,
         compute_planning_metrics,
         compute_retrieval_metrics,
+        compute_robustness_metrics,
+        compute_runtime_metrics,
         compute_verification_metrics,
         evaluate_governance_cases,
+        evaluation_coverage,
     )
     from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository, compare_evaluation_metrics
     from competition.knowledge_quota import QuotaExceeded, quota
 
-    if not body.cases and not body.verification_cases and not body.planning_cases and not body.governance_cases:
+    if not body.cases and not body.verification_cases and not body.planning_cases and not body.governance_cases and not body.answer_quality_cases:
         raise HTTPException(status_code=422, detail="At least one evaluation case is required")
     try:
         quota.check(_get_user_id(fastapi_request), "evaluation")
@@ -2142,6 +2153,19 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
     metrics: dict[str, Any] = {}
     if body.cases:
         metrics["retrieval"] = compute_retrieval_metrics(body.cases, k=body.k)
+        metrics["robustness"] = compute_robustness_metrics(body.cases, k=body.k)
+        metrics["runtime"] = compute_runtime_metrics(
+            body.cases,
+            body.runtime_logs,
+            pricing=body.pricing,
+            wall_time_ms=body.runtime_wall_time_ms,
+            concurrency=body.runtime_concurrency,
+        )
+        metrics["coverage"] = evaluation_coverage(
+            body.cases,
+            minimum_cases=body.minimum_case_count,
+            required_categories=tuple(body.required_categories),
+        )
     if body.verification_cases:
         metrics["verification"] = compute_verification_metrics(body.verification_cases)
     if body.planning_cases:
@@ -2149,13 +2173,16 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
     if body.governance_cases:
         governance = evaluate_governance_cases(body.governance_cases)
         metrics["governance"] = compute_governance_metrics(governance)
+    if body.answer_quality_cases:
+        metrics["answer_quality"] = compute_answer_quality_metrics(body.answer_quality_cases)
     threshold_fields = set(EvaluationThresholds.__dataclass_fields__)
     threshold_values = {key: value for key, value in body.thresholds.items() if key in threshold_fields}
     thresholds = EvaluationThresholds(**threshold_values)
     failures: list[str] = []
     if metrics.get("retrieval"):
         failures.extend(check_thresholds(metrics["retrieval"], thresholds, k=body.k))
-    for group in ("verification", "planning", "governance"):
+    failures.extend(f"coverage.{warning}" for warning in (metrics.get("coverage") or {}).get("warnings", []))
+    for group in ("verification", "planning", "governance", "robustness", "runtime"):
         group_metrics = metrics.get(group)
         if group_metrics:
             failures.extend(check_thresholds({group: group_metrics}, thresholds, k=body.k))
@@ -2170,7 +2197,13 @@ async def evaluate_knowledge_retrieval(body: KnowledgeEvaluationRequest, fastapi
             status=status,
             metrics={"schema_version": "rag-evaluation.v1", **metrics, "regression": regression},
             failures=failures,
-            case_count=len(body.cases) + len(body.verification_cases) + len(body.planning_cases) + len(body.governance_cases),
+            case_count=(
+                len(body.cases)
+                + len(body.verification_cases)
+                + len(body.planning_cases)
+                + len(body.governance_cases)
+                + len(body.answer_quality_cases)
+            ),
         )
     return {"ok": not failures, "regression": regression, **run}
 
@@ -2225,7 +2258,12 @@ async def create_feedback_evaluation_dataset(body: KnowledgeFeedbackDatasetReque
 
 @router.post("/knowledge/retrieval-experiments", status_code=201)
 async def create_knowledge_retrieval_experiment(body: KnowledgeExperimentRequest, fastapi_request: Request) -> dict:
-    from competition.knowledge_eval import compute_retrieval_metrics
+    from competition.knowledge_eval import (
+        aggregate_query_metrics,
+        compare_metric_sets,
+        compute_retrieval_metrics,
+        evaluation_coverage,
+    )
     from competition.knowledge_evaluation_repo import KnowledgeEvaluationRepository
     from competition.knowledge_quota import QuotaExceeded, quota
 
@@ -2245,14 +2283,16 @@ async def create_knowledge_retrieval_experiment(body: KnowledgeExperimentRequest
         metrics: dict[str, Any] = {"baseline_strategy": body.baseline, "candidate_strategy": body.candidate}
         if baseline_cases:
             metrics["baseline"] = compute_retrieval_metrics(baseline_cases, k=body.k)
+            metrics["baseline_by_group"] = aggregate_query_metrics(baseline_cases, k=body.k)
+            metrics["baseline_coverage"] = evaluation_coverage(baseline_cases)
         if candidate_cases:
             metrics["candidate"] = compute_retrieval_metrics(candidate_cases, k=body.k)
+            metrics["candidate_by_group"] = aggregate_query_metrics(candidate_cases, k=body.k)
+            metrics["candidate_coverage"] = evaluation_coverage(candidate_cases)
         if "baseline" in metrics and "candidate" in metrics:
-            metrics["delta"] = {
-                key: round(float(metrics["candidate"].get(key, 0.0)) - float(metrics["baseline"].get(key, 0.0)), 6)
-                for key in set(metrics["baseline"]).intersection(metrics["candidate"])
-                if isinstance(metrics["baseline"].get(key), (int, float)) and isinstance(metrics["candidate"].get(key), (int, float))
-            }
+            comparison = compare_metric_sets(metrics["baseline"], metrics["candidate"])
+            metrics["delta"] = comparison["absolute_delta"]
+            metrics["comparison"] = comparison
         experiment = repository.save_experiment(
             user_id=user_id,
             name=body.name,

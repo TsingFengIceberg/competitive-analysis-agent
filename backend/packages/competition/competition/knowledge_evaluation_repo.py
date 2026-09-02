@@ -444,11 +444,17 @@ def compare_evaluation_metrics(current: dict[str, Any], previous: dict[str, Any]
         for key, delta in deltas.items()
         if (delta < -0.000001 if _metric_direction(key) == "lower" else delta > 0.000001)
     ]
+    from competition.knowledge_eval import compare_metric_sets
+
+    direction_aware = compare_metric_sets(old_metrics, current)
     return {
         "status": "regressed" if regressions else ("improved" if improvements else "stable"),
         "previous_run_id": previous.get("run_id"),
         "deltas": deltas,
+        "absolute_delta": direction_aware["absolute_delta"],
+        "relative_change": direction_aware["relative_change"],
         "regressions": regressions,
         "improvements": improvements,
         "directions": {key: _metric_direction(key) for key in deltas},
+        "undefined": direction_aware["undefined"],
     }
