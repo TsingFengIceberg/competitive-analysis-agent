@@ -29,6 +29,7 @@ config.yaml.bak
 
 # Runtime data and logs
 .ci-agent/
+:memory:*.ses
 backend/.ci-agent/
 backend/model_context_registry.json
 logs/
@@ -48,6 +49,7 @@ AGENTS.md
 .hanoff/
 .agent-plans/
 .plan/
+interview-materials/
 
 # Locally installed custom skills
 skills/custom/*
